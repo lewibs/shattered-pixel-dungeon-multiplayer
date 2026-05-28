@@ -6,7 +6,7 @@
 
 ## System Intent
 
-- What this is: The turn-based simulation engine that drives all game logic in Shattered Pixel Dungeon. It schedules and executes every character, buff, and environmental effect in a priority-ordered time queue. User input is translated into a `HeroAction` intent stored on the Hero, and the actor loop picks it up on the Hero's next scheduled turn. This document also details how the system would need to change to support multiple human players acting in lockstep before any actor advances.
+- What this is: The turn-based simulation engine that drives all game logic in Shattered Pixel Dungeon. It schedules and executes every character, buff, and environmental effect in a priority-ordered time queue. User input is translated into a `HeroAction` intent stored on the Hero, and the actor loop picks it up on the Hero's next scheduled turn. The engine supports multiple Hero instances via a singleton-swap pattern: `Dungeon.heroes` holds all active heroes, and `Hero.act()` sets `Dungeon.hero = this` as its first action so all existing UI, camera, and input code continues to reference the correct hero without modification.
 
 ## Mermaid Diagram
 
@@ -15,10 +15,12 @@ flowchart TD
   UI["User input\n(touch, click, keyboard)"]
   CS["CellSelector\nonClick / keyListener / moveFromActions"]
   Handle["Hero.handle(cell)\nsets Hero.curAction"]
-  HeroAct["Hero.act()\ncalled by Actor.process()"]
+  Heroes["Dungeon.heroes\nArrayList of all Hero instances"]
+  Singleton["Dungeon.hero\nvolatile singleton — always active hero"]
+  HeroAct["Hero.act()\nDungeon.hero = this  first line\ncalled by Actor.process()"]
   ActorThread["Actor Thread\nActor.process() loop"]
   Queue["Actor queue\nHashSet<Actor> Actor.all\nordered by Actor.time + actPriority"]
-  Mobs["Mob.act()"]
+  Mobs["Mob.act()\nchooseEnemy loops Dungeon.heroes"]
   Buffs["Buff.act()"]
   Blobs["Blob.act()"]
   Spend["actor.spend(time)\nadvances actor.time"]
@@ -28,12 +30,16 @@ flowchart TD
   UI --> CS
   CS --> Handle
   Handle -->|"curAction = new HeroAction.*"| HeroAct
+  Heroes -->|"Actor.init() registers all\nwith priority offsets"| Queue
   RenderThread -->|"actorThread.notify()"| ActorThread
   ActorThread --> Queue
   Queue -->|"lowest time first\nhighest actPriority breaks ties"| HeroAct
   Queue --> Mobs
   Queue --> Buffs
   Queue --> Blobs
+  HeroAct -->|"sets Dungeon.hero = this"| Singleton
+  Singleton --> UI
+  Heroes --> Mobs
   HeroAct --> Spend
   Mobs --> Spend
   Buffs --> Spend
@@ -203,6 +209,7 @@ Hero.resting: boolean       -- true when auto-resting (no enemy visible)
 
 ```
 // Hero.act()
+Dungeon.hero = this;  // swap singleton to this hero before any logic (NEW)
 fieldOfView = Dungeon.level.heroFOV
 if paralysed > 0:
     curAction = null; spend(TICK); next(); return false
@@ -230,18 +237,127 @@ switch curAction type:
 
 ---
 
-### Flow: `actorRegistration`
+### Flow: `mobEnemySelection`
 - Core files:
-  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/actors/Actor.java`
-  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/Dungeon.java`
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/actors/mobs/Mob.java`
+
+#### Types
+
+```txt
+// Mob.chooseEnemy() previously hardcoded a single check against Dungeon.hero.
+// Now loops over Dungeon.heroes so all active heroes are candidate targets.
+```
 
 #### Paths
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `Actor.init()` | Dungeon.hero, level.mobs, level.blobs | all registered in Actor.all | level start | called when entering a floor |
+| `mobEnemySelection.singleHero` | `Dungeon.heroes` size 1 | identical behaviour to pre-multi-hero | happy path | loop over array of size 1 produces same result |
+| `mobEnemySelection.multiHero` | N heroes in `Dungeon.heroes` | all visible, non-invisible heroes added as candidates; closest reachable one chosen | happy path | mob picks closest hero the same way it picks the closest ally |
+| `mobEnemySelection.heroInvisible` | hero with `invisible > 0` | that hero not added as candidate | edge case | per-hero invisibility check preserved |
+
+#### Pseudocode
+
+```
+// Mob.java — Mob.chooseEnemy(), inside the ENEMY alignment block
+// Old:
+if (fieldOfView[Dungeon.hero.pos] && Dungeon.hero.invisible <= 0) {
+    enemies.add(Dungeon.hero);
+}
+
+// New:
+for (Hero h : Dungeon.heroes) {
+    if (fieldOfView[h.pos] && h.invisible <= 0) {
+        enemies.add(h);
+    }
+}
+```
+
+---
+
+### Flow: `heroesSaveLoad`
+- Core files:
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/Dungeon.java`
+
+#### Types
+
+```txt
+// Existing bundle key "hero" still written for Hero.preview() compatibility.
+// New bundle key "heroes" (a Collection<Bundlable>) carries the full array.
+// On load: "heroes" key is preferred; falls back to wrapping the legacy "hero" for old saves.
+```
+
+#### Paths
+
+| path | input | output | path-type | notes |
+| --- | --- | --- | --- | --- |
+| `heroesSaveLoad.save` | `Dungeon.heroes` array | serialized into bundle under key `"heroes"`; `"hero"` key still written for preview compat | happy path | `Dungeon.java:641` |
+| `heroesSaveLoad.load` | bundle with `"heroes"` key | `Dungeon.heroes` restored from collection; `Dungeon.hero = heroes.get(0)` | happy path | `Dungeon.java:818–838` |
+| `heroesSaveLoad.oldSaveCompat` | bundle without `"heroes"` key | `heroes` built by wrapping the legacy `hero` object in a new list | backwards compat | existing single-hero saves load cleanly |
+| `heroesSaveLoad.corruptedSave` | `"heroes"` collection present but all entries invalid | `RuntimeException` thrown: "Save file corrupted: no valid heroes found" | error | `Dungeon.java:827` |
+
+#### Pseudocode
+
+```
+// Dungeon.java — save
+bundle.put("heroes", heroes);  // Collection<Bundlable>
+// "hero" key still written earlier for Hero.preview() compat
+
+// Dungeon.java — load
+if (bundle.contains("heroes")) {
+    heroes = new ArrayList<>();
+    for (Bundlable b : bundle.getCollection("heroes")) {
+        if (b instanceof Hero) heroes.add((Hero) b);
+    }
+    if (heroes.isEmpty()) throw new RuntimeException("Save file corrupted: no valid heroes found");
+} else {
+    // old save: wrap single hero
+    heroes = new ArrayList<>();
+    heroes.add(hero);
+}
+hero = heroes.get(0);  // singleton always points to player 0 initially
+```
+
+---
+
+### Flow: `actorRegistration`
+- Core files:
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/actors/Actor.java`
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/Dungeon.java`
+
+#### Types
+
+```txt
+Actor.init() requires Dungeon.heroes to be non-null and non-empty or throws IllegalStateException.
+Each Hero's actPriority is set to HERO_PRIO + (N - 1 - i), where i is the index in Dungeon.heroes.
+Player 0 (index 0) receives the highest actPriority and acts first among heroes in any tied tick.
+```
+
+#### Paths
+
+| path | input | output | path-type | notes |
+| --- | --- | --- | --- | --- |
+| `Actor.init() — single hero` | `Dungeon.heroes` with one entry | hero registered with `actPriority = HERO_PRIO + 0 = 0`; behaviour identical to pre-multi-hero | happy path | |
+| `Actor.init() — multiple heroes` | `Dungeon.heroes` with N entries | each hero registered; player 0 gets `HERO_PRIO + (N-1)`, player N-1 gets `HERO_PRIO + 0` | happy path | priority tie-break in `Actor.process()` ensures player 0 always acts first within the same tick |
+| `Actor.init() — heroes null/empty` | `Dungeon.heroes == null` or empty | `IllegalStateException` thrown | error | guard added in `Actor.java:196` |
 | `Actor.add(actor)` | any Actor subclass | inserted into Actor.all with current `now` time | dynamic add | also registers Buffs attached to a Char |
 | `Actor.remove(actor)` | Actor instance | removed from Actor.all and Actor.chars | dynamic remove | called on death, de-buff, etc. |
+
+#### Pseudocode
+
+```
+// Actor.java — Actor.init()
+// Old: add(Dungeon.hero);
+// New:
+if (Dungeon.heroes == null || Dungeon.heroes.isEmpty())
+    throw new IllegalStateException("Dungeon.heroes not initialized");
+int n = Dungeon.heroes.size();
+for (int i = 0; i < n; i++) {
+    Hero h = Dungeon.heroes.get(i);
+    h.actPriority = HERO_PRIO + (n - 1 - i);  // player 0 acts first
+    add(h);
+}
+```
 
 ---
 
@@ -251,14 +367,14 @@ switch curAction type:
 |---|---|---|
 | `Actor` | `actors` | Abstract base for everything in the simulation. Owns the global `HashSet<Actor> all`, the `now` clock, and the `process()` loop. |
 | `Char` | `actors` | Abstract character (HP, position, buffs). Subclasses are Hero and Mob. |
-| `Hero` | `actors/hero` | The single player-controlled actor. Holds `curAction`, `ready`, `resting`. Its `act()` is the only actor that can pause the loop to wait for input. |
+| `Hero` | `actors/hero` | A player-controlled actor. Holds `curAction`, `ready`, `resting`. Its `act()` sets `Dungeon.hero = this` as its first line (singleton swap) and is the only actor type that can pause the loop to wait for input. |
 | `HeroAction` | `actors/hero` | Plain data objects encoding player intent (Move, Attack, PickUp, etc.). Set by `Hero.handle(cell)`, consumed by `Hero.act()`. |
 | `Mob` | `actors/mobs` | AI-controlled characters. `act()` is driven entirely by internal state machines (SLEEPING, WANDERING, HUNTING, INVESTIGATING, FLEEING, PASSIVE). |
 | `Buff` | `actors/buffs` | Status effects that act each turn (actPriority = BUFF_PRIO = -30). |
 | `Blob` | `actors/blobs` | Area-of-effect environmental actors (gas, fire, etc.) (actPriority = BLOB_PRIO = -10). |
 | `GameScene` | `scenes` | Render thread owner. Creates and wakes the actor thread each frame when `!Actor.processing()`. Owns the `CellSelector`. |
 | `CellSelector` | `scenes` | Handles all raw pointer and keyboard input. Translates physical input events into cell selections and calls `Hero.handle(cell)` followed by `Hero.next()`. |
-| `Dungeon` | (root package) | Global state: `Dungeon.hero` (single Hero reference), `Dungeon.level` (current Level). |
+| `Dungeon` | (root package) | Global state: `public static volatile Hero hero` (singleton — always the currently-acting hero), `public static ArrayList<Hero> heroes` (all active hero instances, index = player number), `Dungeon.level` (current Level). |
 | `Level` | `levels` | Holds `mobs`, `blobs`, `heaps`, map data. |
 
 ### Actor Priority Values (tie-breaking when time is equal)
@@ -266,60 +382,39 @@ switch curAction type:
 | Constant | Value | Who uses it |
 |---|---|---|
 | `VFX_PRIO` | 100 | Visual effects actors |
-| `HERO_PRIO` | 0 | Hero |
+| `HERO_PRIO` | 0 | Base for Hero priority; each Hero's actual `actPriority` is `HERO_PRIO + (N - 1 - i)` where `i` is the hero's index in `Dungeon.heroes` |
 | `BLOB_PRIO` | -10 | Blob subclasses |
 | `MOB_PRIO` | -20 | Mob subclasses |
 | `BUFF_PRIO` | -30 | Buff subclasses |
 | `DEFAULT` | -100 | Fallback for unspecified actors |
 
-Higher value = acts earlier when time values are equal.
+Higher value = acts earlier when time values are equal. With N heroes registered, player 0 receives `HERO_PRIO + (N-1)` (highest) and always resolves first within the same tick.
 
 ---
 
-## Multiplayer Extension: All Players Submit Before Any Actors Advance
+## Multi-Hero Singleton-Swap Pattern
 
-The current architecture supports exactly one Hero (referenced via `Dungeon.hero`). To add N players who must all commit their move before the round resolves, the following structural changes are needed.
+The implemented approach supports N Hero instances while keeping all 1,800+ existing references to `Dungeon.hero` (UI, camera, input gating, FOV) working without changes.
 
-### What must change
+### How it works
 
-1. **Multiple Hero references** — `Dungeon.hero` would become `Dungeon.heroes[]` (or a list). Each player controls one Hero instance.
+1. **`Dungeon.heroes`** — `public static ArrayList<Hero> heroes` holds all active Hero instances (index = player number). Initialized in `Dungeon.init()` after the first hero is created.
 
-2. **Hero.act() barrier** — Currently, when Hero has no `curAction`, it immediately calls `ready()` and returns `false`, pausing the actor thread. With N players, the Hero must instead wait until **all** heroes have submitted a `curAction`. A shared counter (e.g. `int readyPlayers`, `int totalPlayers`) can implement this. The last hero to submit unblocks the loop.
+2. **`Dungeon.hero`** — `public static volatile Hero hero` remains the singleton that all UI, camera, and input code reads. It is declared `volatile` so writes from the actor thread are immediately visible to the render thread.
 
-3. **Turn ordering by player number** — To guarantee player 1 always resolves before player 2 etc., assign each Hero a distinct `actPriority` offset derived from player number. Since all heroes start a turn at the same simulation time, the priority tie-break in `Actor.process()` already handles ordering: player 1 gets `HERO_PRIO + (N - 1)`, player 2 gets `HERO_PRIO + (N - 2)`, down to player N getting `HERO_PRIO + 0`. The highest priority value acts first.
+3. **Singleton swap in `Hero.act()`** — The very first line of `Hero.act()` is `Dungeon.hero = this;`. Whenever the actor loop schedules any hero's turn, `Dungeon.hero` is immediately updated to point to that hero before any game logic runs. FOV, input gating, and camera all automatically reflect the currently-acting hero with zero code changes.
 
-4. **Input routing** — Each player's input must target only their own Hero. The `CellSelector` and `defaultCellListener` currently hardcode `Dungeon.hero`. These would need to be parameterized by player index, or separate UI threads per player would each write to their own Hero's `curAction`.
+4. **Priority-ordered registration** — `Actor.init()` iterates `Dungeon.heroes` and assigns `actPriority = HERO_PRIO + (N - 1 - i)` to each hero, ensuring player 0 always acts before player 1 etc. when their simulation times are equal.
 
-5. **UI gating** — `cellSelector.enable(Dungeon.hero.ready)` gates input on a single hero. With N players, each player's input channel is gated independently on their own Hero's `ready` flag.
+5. **Mob targeting** — `Mob.chooseEnemy()` loops over `Dungeon.heroes` instead of hardcoding `Dungeon.hero`, so mobs correctly target any visible, non-invisible hero.
 
-6. **`Dungeon.observe()` and fog-of-war** — Currently bound to the single hero's FOV (`Dungeon.level.heroFOV`). With multiple players, either maintain per-player FOV arrays or union them.
+6. **Save / load** — `Dungeon.heroes` is serialized under bundle key `"heroes"`. Old saves that lack this key are handled by wrapping the legacy `"hero"` object in a new list.
 
-### Minimal pseudocode sketch
+### What remains unchanged
 
-```java
-// In Hero.act() — replace the single "ready()" call:
-if (curAction == null) {
-    if (resting) { spend(TIME_TO_REST); next(); return false; }
-    // Mark this hero as ready
-    MultiplayerManager.markReady(this.playerIndex);
-    if (!MultiplayerManager.allPlayersReady()) {
-        // block: do not advance; actor thread stays asleep for this hero
-        // give hero a future time so other actors can still run
-        postpone(Float.MAX_VALUE / 2f);  // effectively remove from queue temporarily
-        return false;
-    }
-    // All heroes ready — proceed
-    MultiplayerManager.resetReady();
-}
-
-// In Actor.process() — actPriority tie-break is already present:
-// Player 1 Hero: actPriority = HERO_PRIO + (N-1)   acts first
-// Player 2 Hero: actPriority = HERO_PRIO + (N-2)
-// ...
-// Player N Hero: actPriority = HERO_PRIO + 0        acts last
-```
-
-Note: the `postpone` approach above is a simplification. A cleaner approach uses an explicit `waiting` flag and prevents the actor thread from scheduling that Hero at all until all inputs are collected, similar to how sprite animation blocking currently works via `synchronized(sprite) { sprite.wait() }`.
+- All UI, camera, and input code reads `Dungeon.hero` — no changes needed.
+- FOV (`Dungeon.observe()`) uses `Dungeon.hero` which is always the acting hero at the time it is called — no changes needed.
+- `CellSelector` and input routing still target `Dungeon.hero` — no changes needed for the current single-active-hero-at-a-time model.
 
 ---
 

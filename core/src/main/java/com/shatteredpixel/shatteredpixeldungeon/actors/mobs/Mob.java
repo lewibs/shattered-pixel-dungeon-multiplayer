@@ -351,9 +351,11 @@ public abstract class Mob extends Char {
 						}
 					
 					if (enemies.isEmpty()) {
-						//try to find the hero third
-						if (fieldOfView[Dungeon.hero.pos] && Dungeon.hero.invisible <= 0) {
-							enemies.add(Dungeon.hero);
+						//try to find the hero(es) third
+						for (Hero h : Dungeon.heroes) {
+							if (fieldOfView[h.pos] && h.invisible <= 0) {
+								enemies.add(h);
+							}
 						}
 					}
 				}
@@ -378,9 +380,11 @@ public abstract class Mob extends Char {
 					if (mob.alignment == Alignment.ALLY && fieldOfView[mob.pos] && mob.invisible <= 0)
 						enemies.add(mob);
 
-				//and look for the hero
-				if (fieldOfView[Dungeon.hero.pos] && Dungeon.hero.invisible <= 0) {
-					enemies.add(Dungeon.hero);
+				//and look for the hero(es)
+				for (Hero h : Dungeon.heroes) {
+					if (fieldOfView[h.pos] && h.invisible <= 0) {
+						enemies.add(h);
+					}
 				}
 				
 			}

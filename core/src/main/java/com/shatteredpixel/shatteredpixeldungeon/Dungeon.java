@@ -182,7 +182,8 @@ public class Dungeon {
 	public static int challenges;
 	public static float mobsToChampion;
 
-	public static Hero hero;
+	public static volatile Hero hero;
+	public static ArrayList<Hero> heroes;
 	public static Level level;
 
 	public static QuickSlot quickslot = new QuickSlot();
@@ -280,10 +281,12 @@ public class Dungeon {
 
 		hero = new Hero();
 		hero.live();
-		
+
 		Badges.reset();
-		
+
 		GamesInProgress.selectedClass.initHero( hero );
+		heroes = new ArrayList<>();
+		heroes.add(hero);
 	}
 
 	public static boolean isChallenged( int mask ) {
@@ -635,6 +638,7 @@ public class Dungeon {
 			bundle.put( CHALLENGES, challenges );
 			bundle.put( MOBS_TO_CHAMPION, mobsToChampion );
 			bundle.put( HERO, hero );
+			bundle.put( "heroes", heroes ); // serialize all heroes; HERO kept for Hero.preview() compat
 			bundle.put( DEPTH, depth );
 			bundle.put( BRANCH, branch );
 
@@ -811,7 +815,28 @@ public class Dungeon {
 		
 		hero = null;
 		hero = (Hero)bundle.get( HERO );
-		
+		if (bundle.contains("heroes")) {
+			heroes = new ArrayList<>();
+			for (com.watabou.utils.Bundlable b : bundle.getCollection("heroes")) {
+				if (b instanceof Hero) {
+					heroes.add((Hero) b);
+				} else {
+					throw new RuntimeException("Invalid hero in save file: " + (b == null ? "null" : b.getClass()));
+				}
+			}
+			if (heroes.isEmpty()) {
+				throw new RuntimeException("Save file corrupted: no valid heroes found");
+			}
+		} else {
+			// old save compatibility: wrap single hero in list
+			if (hero == null) {
+				throw new RuntimeException("Save file corrupted: no hero found");
+			}
+			heroes = new ArrayList<>();
+			heroes.add(hero);
+		}
+		hero = heroes.get(0); // singleton always points to player 0 initially
+
 		depth = bundle.getInt( DEPTH );
 		branch = bundle.getInt( BRANCH );
 

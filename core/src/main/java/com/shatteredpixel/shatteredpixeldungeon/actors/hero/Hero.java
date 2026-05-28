@@ -829,7 +829,8 @@ public class Hero extends Char {
 	
 	@Override
 	public boolean act() {
-		
+		Dungeon.hero = this; // swap singleton to this hero before any logic
+
 		//calls to dungeon.observe will also update hero's local FOV.
 		fieldOfView = Dungeon.level.heroFOV;
 
