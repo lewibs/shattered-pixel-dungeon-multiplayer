@@ -101,8 +101,10 @@ if Dungeon.hero.handle(cell):
 // Hero.handle(cell)  -- sets curAction based on what is at cell
 if alchemy pot at cell: curAction = new HeroAction.Alchemy(cell)
 else if mob in FOV:     curAction = new HeroAction.Attack(mob) or Interact
-else if locked door:    curAction = new HeroAction.Unlock(cell)
+else if MiningLevel and hero has Pickaxe and cell is WALL/WALL_DECO/MINE_CRYSTAL/MINE_BOULDER:
+                        curAction = new HeroAction.Mine(cell)
 else if heap:           curAction = new HeroAction.PickUp / Buy / OpenChest
+else if locked door:    curAction = new HeroAction.Unlock(cell)
 else if transition:     curAction = new HeroAction.LvlTransition(cell)
 else:                   curAction = new HeroAction.Move(cell)
 return true
