@@ -121,6 +121,7 @@ import com.shatteredpixel.shatteredpixeldungeon.windows.WndInfoTrap;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndKeyBindings;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndMessage;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndOptions;
+import com.shatteredpixel.shatteredpixeldungeon.windows.WndPlayerCount;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndResurrect;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndUpgrade;
 import com.watabou.gltextures.TextureCache;
@@ -1503,9 +1504,12 @@ public class GameScene extends PixelScene {
 		StyledButton restart = new StyledButton(Chrome.Type.GREY_BUTTON_TR, Messages.get(StartScene.class, "new"), 9){
 			@Override
 			protected void onClick() {
-				GamesInProgress.selectedClass = Dungeon.hero.heroClass;
+				GamesInProgress.selectedClass = null;
 				GamesInProgress.curSlot = GamesInProgress.firstEmpty();
-				ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
+				GamesInProgress.playerCount = 1;
+				GamesInProgress.selectedClasses = new ArrayList<>();
+				GamesInProgress.currentPlayerSelecting = 0;
+				GameScene.show(new WndPlayerCount());
 			}
 
 			@Override

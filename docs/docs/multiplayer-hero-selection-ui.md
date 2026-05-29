@@ -13,6 +13,7 @@
 ```mermaid
 flowchart TD
   Slot["SaveSlotButton.onClick()\nor TitleScene 'Play' (no saves)"]
+  GameOver["GameScene.gameOver()\n'New Game' button\nresets playerCount=1, selectedClasses=[], currentPlayerSelecting=0"]
   Count["WndPlayerCount\nPick 1–4 players\nstores GamesInProgress.playerCount"]
   HS["HeroSelectScene\ntitle: 'Player N'\nalready-taken classes dimmed/blocked"]
   Store["GamesInProgress.selectedClasses.add(class)\nGamesInProgress.currentPlayerSelecting++"]
@@ -21,6 +22,7 @@ flowchart TD
   Game["Game starts\nN heroes spawned"]
 
   Slot --> Count
+  GameOver --> Count
   Count --> HS
   HS --> Store
   Store --> More
@@ -46,6 +48,7 @@ GamesInProgress.currentPlayerSelecting: int          -- 0-based index of player 
   - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/windows/WndPlayerCount.java`
   - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/scenes/StartScene.java`
   - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/scenes/TitleScene.java`
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/scenes/GameScene.java`
 
 #### Types
 
@@ -62,6 +65,7 @@ WndPlayerCount extends Window
 | --- | --- | --- | --- | --- |
 | `playerCountWindow.startScene` | New-game slot selected in `StartScene.SaveSlotButton.onClick()` | `WndPlayerCount` shown via `scene().add()` | happy path | Replaced direct `switchScene(HeroSelectScene.class)` |
 | `playerCountWindow.titleScene` | No existing saves — `TitleScene` 'Play' button | `WndPlayerCount` shown via `addToFront()` | happy path | Both the normal click and debug long-click paths route here |
+| `playerCountWindow.gameOver` | "New Game" clicked on game-over screen — `GameScene.gameOver()` restart button | `playerCount` reset to 1, `selectedClasses` cleared, `currentPlayerSelecting` reset to 0, then `WndPlayerCount` shown via `GameScene.show()` | happy path | Fixed bug where game restarted with stale multiplayer state; mirrors TitleScene/StartScene pattern |
 | `playerCountWindow.selectCount` | Player taps 1–4 button | `GamesInProgress.playerCount` set, `selectedClasses` cleared to empty ArrayList, `currentPlayerSelecting = 0`, window hidden, `switchScene(HeroSelectScene.class)` | happy path | |
 
 #### Pseudocode
@@ -76,6 +80,14 @@ ShatteredPixelDungeon.scene().add(new WndPlayerCount());
 GamesInProgress.selectedClass = null;
 GamesInProgress.curSlot = 1;
 ShatteredPixelDungeon.scene().addToFront(new WndPlayerCount());
+
+// GameScene.java — gameOver() restart button onClick() (post-fix)
+GamesInProgress.selectedClass = null;
+GamesInProgress.curSlot = GamesInProgress.firstEmpty();
+GamesInProgress.playerCount = 1;
+GamesInProgress.selectedClasses = new ArrayList<>();
+GamesInProgress.currentPlayerSelecting = 0;
+GameScene.show(new WndPlayerCount());
 
 // WndPlayerCount.java — button onClick() for playerCount = N
 GamesInProgress.playerCount = playerCount;

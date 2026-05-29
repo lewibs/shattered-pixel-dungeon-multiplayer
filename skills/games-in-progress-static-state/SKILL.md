@@ -8,7 +8,7 @@ When a multi-step UI flow (spanning scene switches) needs to pass configuration 
 
 ## Steps
 1. Declare new fields as `public static` on `GamesInProgress`. Initialise them to safe single-player defaults (e.g. `playerCount = 1`, `selectedClasses = new ArrayList<>()`, `currentPlayerSelecting = 0`).
-2. Reset all new fields explicitly in the window/scene that begins the new flow (do not rely on field initializers surviving a game restart within the same process).
+2. Reset all new fields explicitly at the call site that triggers the new flow (do not rely on field initializers surviving a game restart within the same process). Reset must happen at the call site, not only inside `WndPlayerCount`: if `selectedClasses` is non-empty when `WndPlayerCount` opens, `HeroSelectScene` may iterate through stale entries from the prior run before the window ever fires its confirm handler.
 3. In consuming code (`Dungeon.init()`, scenes), guard with a null/empty check and fall back to the legacy field (`selectedClass`) so existing saves and single-player games continue to work:
    ```java
    if (GamesInProgress.selectedClasses != null && !GamesInProgress.selectedClasses.isEmpty()) {
