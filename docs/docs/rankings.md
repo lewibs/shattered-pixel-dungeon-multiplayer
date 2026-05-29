@@ -104,7 +104,7 @@ if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
 }
 
 // Rankings.Record.storeInBundle()
-if (heroClasses != null) {
+if (heroClasses != null && heroClasses.length > 0) {
     String[] classNames = new String[heroClasses.length];
     for (int i = 0; i < heroClasses.length; i++) classNames[i] = heroClasses[i].name();
     bundle.put("heroClasses", classNames);

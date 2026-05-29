@@ -566,10 +566,16 @@ public enum Rankings {
 			// Restore multi-hero arrays, fallback to single hero fields if absent
 			if (bundle.contains(HERO_CLASSES)) {
 				String[] names = bundle.getStringArray(HERO_CLASSES);
-				heroClasses = new HeroClass[names.length];
-				for (int i = 0; i < names.length; i++) heroClasses[i] = HeroClass.valueOf(names[i]);
-				armorTiers  = bundle.getIntArray(ARMOR_TIERS);
-				heroLevels  = bundle.getIntArray(HERO_LEVELS);
+				if (names != null) {
+					heroClasses = new HeroClass[names.length];
+					for (int i = 0; i < names.length; i++) heroClasses[i] = HeroClass.valueOf(names[i]);
+				} else {
+					heroClasses = new HeroClass[]{ heroClass };
+				}
+				armorTiers = bundle.getIntArray(ARMOR_TIERS);
+				if (armorTiers == null) armorTiers = new int[]{ armorTier };
+				heroLevels = bundle.getIntArray(HERO_LEVELS);
+				if (heroLevels == null) heroLevels = new int[]{ herolevel };
 			} else {
 				heroClasses = new HeroClass[]{ heroClass };
 				armorTiers  = new int[]{ armorTier };
@@ -601,7 +607,8 @@ public enum Rankings {
 			bundle.put( ID, gameID );
 
 			// Store hero class names as string array for bundle compat
-			if (heroClasses != null && heroClasses.length > 0) {
+			if (heroClasses != null && heroClasses.length > 0
+					&& armorTiers != null && heroLevels != null) {
 				String[] classNames = new String[heroClasses.length];
 				for (int i = 0; i < heroClasses.length; i++) classNames[i] = heroClasses[i].name();
 				bundle.put( HERO_CLASSES, classNames );
