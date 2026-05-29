@@ -308,10 +308,10 @@ public class GameScene extends PixelScene {
 		mobs = new Group();
 		add( mobs );
 
-		hero = new HeroSprite();
-		hero.place( Dungeon.hero.pos );
-		hero.updateArmor();
-		mobs.add( hero );
+		for (Hero h : Dungeon.heroes) {
+			HeroSprite hs = createHeroSprite( h );
+			if (h == Dungeon.heroes.get(0)) hero = hs;
+		}
 		
 		for (Mob mob : Dungeon.level.mobs) {
 			addMobSprite( mob );
@@ -1051,6 +1051,19 @@ public class GameScene extends PixelScene {
 		}
 	}
 	
+	// Creates and registers a sprite for the given hero.
+	// Temporarily sets Dungeon.hero so HeroSprite's constructor links to the right hero.
+	private HeroSprite createHeroSprite( Hero h ) {
+		Hero previous = Dungeon.hero;
+		Dungeon.hero = h;
+		HeroSprite hs = new HeroSprite();
+		hs.place( h.pos );
+		hs.updateArmor();
+		mobs.add( hs );
+		Dungeon.hero = previous;
+		return hs;
+	}
+
 	private synchronized void addMobSprite( Mob mob ) {
 		CharSprite sprite = mob.sprite();
 		sprite.visible = Dungeon.level.heroFOV[mob.pos];

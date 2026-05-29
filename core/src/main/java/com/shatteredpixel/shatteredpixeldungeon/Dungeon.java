@@ -33,6 +33,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.MindVision;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.RevealedArea;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Terror;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.cleric.PowerOfMany;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.huntress.SpiritHawk;
@@ -75,6 +76,7 @@ import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.secret.SecretRoom;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.special.SpecialRoom;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene;
+import com.shatteredpixel.shatteredpixeldungeon.QuickSlot;
 import com.shatteredpixel.shatteredpixeldungeon.ui.QuickSlotButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Toolbar;
 import com.shatteredpixel.shatteredpixeldungeon.utils.DungeonSeed;
@@ -284,9 +286,26 @@ public class Dungeon {
 
 		Badges.reset();
 
-		GamesInProgress.selectedClass.initHero( hero );
 		heroes = new ArrayList<>();
-		heroes.add(hero);
+		spawnHero( GamesInProgress.selectedClass );
+
+		// TEMP: spawn a second hero for multiplayer testing
+		HeroClass secondClass = GamesInProgress.selectedClass == HeroClass.WARRIOR ? HeroClass.MAGE : HeroClass.WARRIOR;
+		spawnHero( secondClass );
+	}
+
+	// Creates, initializes, and registers a new hero of the given class.
+	// Temporarily points Dungeon.quickslot at the new hero so initHero's slot assignments go to the right place.
+	public static Hero spawnHero( HeroClass heroClass ) {
+		Hero h = new Hero();
+		h.live();
+		QuickSlot savedSlot = quickslot;
+		quickslot = h.quickslot;
+		heroClass.initHero( h );
+		quickslot = savedSlot;
+		heroes.add( h );
+		if (heroes.size() == 1) hero = h; // first hero is the active singleton
+		return h;
 	}
 
 	public static boolean isChallenged( int mask ) {
@@ -482,6 +501,12 @@ public class Dungeon {
 		
 		Dungeon.level = level;
 		hero.pos = pos;
+
+		// TEMP: place extra heroes adjacent to hero1 for multiplayer testing
+		// Actor.init() below handles registration — just set positions here
+		for (int i = 1; i < heroes.size(); i++) {
+			heroes.get(i).pos = pos + i;
+		}
 
 		if (hero.buff(AscensionChallenge.class) != null){
 			hero.buff(AscensionChallenge.class).onLevelSwitch();
@@ -937,6 +962,16 @@ public class Dungeon {
 		}
 		
 		level.updateFieldOfView(hero, level.heroFOV);
+		// union FOV for all other heroes so their light shows simultaneously
+		if (heroes != null) {
+			boolean[] tmpFOV = new boolean[level.heroFOV.length];
+			for (Hero h : heroes) {
+				if (h == hero) continue;
+				level.updateFieldOfView(h, tmpFOV);
+				BArray.or(level.heroFOV, tmpFOV, level.heroFOV);
+				GameScene.updateFog(h.pos, h.viewDistance + 1);
+			}
+		}
 
 		int x = hero.pos % level.width();
 		int y = hero.pos / level.width();

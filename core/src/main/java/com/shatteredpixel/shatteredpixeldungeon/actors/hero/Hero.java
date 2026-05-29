@@ -167,12 +167,15 @@ import com.shatteredpixel.shatteredpixeldungeon.sprites.CharSprite;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.HeroSprite;
 import com.shatteredpixel.shatteredpixeldungeon.ui.AttackIndicator;
 import com.shatteredpixel.shatteredpixeldungeon.ui.BuffIndicator;
+import com.shatteredpixel.shatteredpixeldungeon.ui.InventoryPane;
 import com.shatteredpixel.shatteredpixeldungeon.ui.QuickSlotButton;
+import com.shatteredpixel.shatteredpixeldungeon.QuickSlot;
 import com.shatteredpixel.shatteredpixeldungeon.ui.StatusPane;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndHero;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndResurrect;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndTradeItem;
+import com.watabou.noosa.Camera;
 import com.watabou.noosa.Game;
 import com.watabou.noosa.audio.Sample;
 import com.watabou.noosa.tweeners.Delayer;
@@ -224,6 +227,7 @@ public class Hero extends Char {
 	public boolean resting = false;
 	
 	public Belongings belongings;
+	public QuickSlot quickslot;
 	
 	public int STR;
 	
@@ -247,7 +251,8 @@ public class Hero extends Char {
 		STR = STARTING_STR;
 		
 		belongings = new Belongings( this );
-		
+		quickslot = new QuickSlot();
+
 		visibleEnemies = new ArrayList<>();
 	}
 	
@@ -827,9 +832,17 @@ public class Hero extends Char {
 		next();
 	}
 	
+	// Called whenever this hero becomes the active player. Updates all singletons and UI to reflect this hero.
+	public void activate() {
+		Dungeon.hero     = this;
+		Dungeon.quickslot = this.quickslot;
+		InventoryPane.lastBag = this.belongings.backpack;
+		if (sprite != null) Camera.main.panTo(sprite.center(), 5f);
+	}
+
 	@Override
 	public boolean act() {
-		Dungeon.hero = this; // swap singleton to this hero before any logic
+		activate();
 
 		//calls to dungeon.observe will also update hero's local FOV.
 		fieldOfView = Dungeon.level.heroFOV;

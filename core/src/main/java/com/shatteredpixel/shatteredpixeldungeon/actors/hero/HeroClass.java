@@ -106,13 +106,13 @@ public enum HeroClass {
 		if (!Challenges.isItemBlocked(i)) hero.belongings.armor = (ClothArmor)i;
 
 		i = new Food();
-		if (!Challenges.isItemBlocked(i)) i.collect();
+		if (!Challenges.isItemBlocked(i)) i.collect(hero.belongings.backpack);
 
-		new VelvetPouch().collect();
+		new VelvetPouch().collect(hero.belongings.backpack);
 		Dungeon.LimitedDrops.VELVET_POUCH.drop();
 
 		Waterskin waterskin = new Waterskin();
-		waterskin.collect();
+		waterskin.collect(hero.belongings.backpack);
 
 		new ScrollOfIdentify().identify();
 
@@ -174,7 +174,7 @@ public enum HeroClass {
 	private static void initWarrior( Hero hero ) {
 		(hero.belongings.weapon = new WornShortsword()).identify();
 		ThrowingStone stones = new ThrowingStone();
-		stones.identify().collect();
+		stones.identify().collect(hero.belongings.backpack);
 
 		Dungeon.quickslot.setSlot(0, stones);
 
@@ -209,7 +209,7 @@ public enum HeroClass {
 		hero.belongings.artifact.activate( hero );
 
 		ThrowingKnife knives = new ThrowingKnife();
-		knives.identify().collect();
+		knives.identify().collect(hero.belongings.backpack);
 
 		Dungeon.quickslot.setSlot(0, cloak);
 		Dungeon.quickslot.setSlot(1, knives);
@@ -222,7 +222,7 @@ public enum HeroClass {
 
 		(hero.belongings.weapon = new Gloves()).identify();
 		SpiritBow bow = new SpiritBow();
-		bow.identify().collect();
+		bow.identify().collect(hero.belongings.backpack);
 
 		Dungeon.quickslot.setSlot(0, bow);
 
@@ -236,7 +236,7 @@ public enum HeroClass {
 		hero.belongings.weapon.activate(hero);
 
 		ThrowingSpike spikes = new ThrowingSpike();
-		spikes.quantity(2).identify().collect(); //set quantity is 3, but Duelist starts with 2
+		spikes.quantity(2).identify().collect(hero.belongings.backpack); //set quantity is 3, but Duelist starts with 2
 
 		Dungeon.quickslot.setSlot(0, hero.belongings.weapon);
 		Dungeon.quickslot.setSlot(1, spikes);
