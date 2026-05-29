@@ -161,13 +161,25 @@ public class Chasm implements Hero.Doom {
 	}
 	
 	public static class Falling extends Buff {
-		
+
 		{
 			actPriority = VFX_PRIO;
 		}
-		
+
 		@Override
 		public boolean act() {
+			if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+				Hero fallen = (Hero) target;
+				for (Hero h : Dungeon.heroes) {
+					if (h == fallen) continue;
+					if (!h.isAlive()) continue;
+					if (h.buff(Chasm.Falling.class) != null) continue;
+					if (h.depth != fallen.depth) {
+						spend(TICK);
+						return true;
+					}
+				}
+			}
 			heroLand();
 			detach();
 			return true;

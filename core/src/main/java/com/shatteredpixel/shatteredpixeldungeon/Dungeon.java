@@ -217,6 +217,7 @@ public class Dungeon {
 	public static long lastPlayed;
 
 	public static boolean heroesNeedInitialPlacement = false;
+	public static int heroFallCell = -1;
 
 	//we initialize the seed separately so that things like interlevelscene can access it early
 	public static void initSeed(){
@@ -511,6 +512,12 @@ public class Dungeon {
 
 		Dungeon.level = level;
 		hero.pos = pos;
+		hero.depth = Dungeon.depth;
+
+		if (heroFallCell != -1) {
+			hero.pos = heroFallCell;
+			heroFallCell = -1;
+		}
 
 		if (heroesNeedInitialPlacement) {
 			heroesNeedInitialPlacement = false;
@@ -526,6 +533,7 @@ public class Dungeon {
 					}
 				}
 				heroes.get(i).pos = (placed != -1) ? placed : pos;
+				heroes.get(i).depth = Dungeon.depth;
 			}
 		}
 
