@@ -693,6 +693,17 @@ public abstract class RegularLevel extends Level {
 			}
 		Random.popGenerator();
 
+		// Scale food drops for multiplayer: add one food item per extra player
+		int playerCount = (Dungeon.heroes != null && !Dungeon.heroes.isEmpty())
+				? Dungeon.heroes.size()
+				: 1;
+		for (int i = 0; i < playerCount - 1; i++) {
+			int cell = randomDropCell();
+			if (cell != -1) {
+				drop(Generator.random(Generator.Category.FOOD), cell);
+			}
+		}
+
 	}
 
 	private static HashMap<Document, Dungeon.LimitedDrops> limitedDocs = new HashMap<>();
