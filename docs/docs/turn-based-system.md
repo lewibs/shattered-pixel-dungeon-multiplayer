@@ -376,6 +376,47 @@ if (heroesNeedInitialPlacement) {
 
 ---
 
+### Flow: `partyStairGate`
+- Test files: N/A
+- Core files:
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/levels/Level.java`
+  - `core/src/main/assets/messages/levels/levels.properties`
+
+#### Types
+
+```txt
+// No new types. Uses existing Level.distance(a, b) — Chebyshev distance — and Dungeon.heroes.
+// Distance <= 1 means adjacent (including diagonals) or same cell.
+```
+
+#### Paths
+
+| path | input | output | path-type | notes |
+| --- | --- | --- | --- | --- |
+| `partyStairGate.singlePlayer` | `heroes.size() == 1` | transition proceeds normally, no check | happy path | Guard is a no-op for single-player; completely unaffected |
+| `partyStairGate.allAdjacent` | all heroes within distance 1 of stair hero | `beforeTransition()` called, `InterlevelScene` scene switched | happy path | Party moves together to next floor |
+| `partyStairGate.heroNotAdjacent` | any hero distance > 1 from stair hero | `return false`, `GLog.w` warning shown | blocked path | "All players must be adjacent to use the stairs!"; stair hero must wait or re-attempt |
+
+#### Pseudocode
+
+```
+// Level.java — activateTransition() — inserted AFTER locked check, BEFORE beforeTransition():
+if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+    for (Hero other : Dungeon.heroes) {
+        if (other == hero) continue;
+        if (distance(hero.pos, other.pos) > 1) {
+            GLog.w(Messages.get(Level.class, "need_party_adjacent"));
+            return false;
+        }
+    }
+}
+
+// levels.properties key (levels.level.need_party_adjacent):
+// "All players must be adjacent to use the stairs!"
+```
+
+---
+
 ### Flow: `actorRegistration`
 - Core files:
   - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/actors/Actor.java`
@@ -470,6 +511,8 @@ The implemented approach supports N Hero instances while keeping all 1,800+ exis
 
 8. **Initial placement gate (`heroesNeedInitialPlacement`)** — `Dungeon.init()` sets `heroesNeedInitialPlacement = true` after spawning all heroes when `heroes.size() > 1`. `Dungeon.switchLevel()` checks this flag on the first level transition: if true, it places `heroes[1..N]` adjacent to `hero[0]` using `PathFinder.NEIGHBOURS8` (with passability validation) and immediately clears the flag to false. On all subsequent transitions — including every load via `InterlevelScene.restore()` — the flag is false and no repositioning occurs, so heroes restore at their exact saved positions. The flag is never serialized; it always defaults to false on load.
 
+9. **Party stair gate** — `Level.activateTransition()` checks Chebyshev distance (≤ 1) between every non-stair hero and the stair hero before allowing a floor transition. If any hero is more than 1 tile away, the method returns `false` and emits a `GLog.w` warning ("All players must be adjacent to use the stairs!"). The check only runs when `heroes.size() > 1`; single-player games are completely unaffected. Applies to all transition types. See the `partyStairGate` flow above.
+
 ### What remains unchanged
 
 - All UI, camera, and input code reads `Dungeon.hero` — no changes needed.
@@ -483,6 +526,7 @@ The implemented approach supports N Hero instances while keeping all 1,800+ exis
 | Source | Location |
 |--------|----------|
 | `GLog` (in-game text log) | Written to game log UI via `GameLog`; no file output by default |
+| `GLog.w` — party stair gate | "All players must be adjacent to use the stairs!" shown when `Level.activateTransition()` blocks a transition because a hero is more than 1 tile away |
 | Crash/exception reporting | `ShatteredPixelDungeon.reportException()` — platform-specific |
 | Actor thread errors | `RuntimeException` thrown in `GameScene.destroy()` if actor thread does not stop within 4500 ms |
 

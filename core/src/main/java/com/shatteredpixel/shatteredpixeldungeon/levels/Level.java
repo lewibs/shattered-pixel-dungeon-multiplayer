@@ -568,6 +568,16 @@ public abstract class Level implements Bundlable {
 			return false;
 		}
 
+		if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+			for (Hero other : Dungeon.heroes) {
+				if (other == hero) continue;
+				if (distance(hero.pos, other.pos) > 1) {
+					GLog.w(Messages.get(Level.class, "need_party_adjacent"));
+					return false;
+				}
+			}
+		}
+
 		beforeTransition();
 		InterlevelScene.curTransition = transition;
 		if (transition.type == LevelTransition.Type.REGULAR_EXIT
