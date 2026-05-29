@@ -410,6 +410,8 @@ The implemented approach supports N Hero instances while keeping all 1,800+ exis
 
 6. **Save / load** — `Dungeon.heroes` is serialized under bundle key `"heroes"`. Old saves that lack this key are handled by wrapping the legacy `"hero"` object in a new list.
 
+7. **Hero class selection** — Before `Dungeon.init()` runs, the multiplayer hero selection UI (see `docs/multiplayer-hero-selection-ui.md`) populates `GamesInProgress.selectedClasses` with one `HeroClass` per player. `Dungeon.init()` iterates this list and calls `spawnHero()` for each entry. If the list is null or empty it falls back to `GamesInProgress.selectedClass` for single-player compatibility.
+
 ### What remains unchanged
 
 - All UI, camera, and input code reads `Dungeon.hero` — no changes needed.

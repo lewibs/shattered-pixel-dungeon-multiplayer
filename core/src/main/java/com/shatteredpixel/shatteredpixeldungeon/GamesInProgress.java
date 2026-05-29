@@ -43,6 +43,11 @@ public class GamesInProgress {
 	
 	public static HeroClass selectedClass;
 	public static boolean randomizedClass = false;
+
+	// Multiplayer support
+	public static int playerCount = 1;
+	public static ArrayList<HeroClass> selectedClasses = new ArrayList<>();
+	public static int currentPlayerSelecting = 0;
 	
 	private static final String GAME_FOLDER = "game%d";
 	private static final String GAME_FILE	= "game.dat";

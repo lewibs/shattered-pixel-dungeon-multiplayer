@@ -287,11 +287,15 @@ public class Dungeon {
 		Badges.reset();
 
 		heroes = new ArrayList<>();
-		spawnHero( GamesInProgress.selectedClass );
 
-		// TEMP: spawn a second hero for multiplayer testing
-		HeroClass secondClass = GamesInProgress.selectedClass == HeroClass.WARRIOR ? HeroClass.MAGE : HeroClass.WARRIOR;
-		spawnHero( secondClass );
+		if (GamesInProgress.selectedClasses != null && !GamesInProgress.selectedClasses.isEmpty()) {
+			for (HeroClass cls : GamesInProgress.selectedClasses) {
+				spawnHero(cls);
+			}
+		} else {
+			// Fallback: single-player using legacy selectedClass
+			spawnHero(GamesInProgress.selectedClass);
+		}
 	}
 
 	// Creates, initializes, and registers a new hero of the given class.

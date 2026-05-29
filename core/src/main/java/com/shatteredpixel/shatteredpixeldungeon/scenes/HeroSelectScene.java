@@ -83,6 +83,7 @@ public class HeroSelectScene extends PixelScene {
 
 	//fading UI elements
 	private RenderedTextBlock title;
+	private RenderedTextBlock subtitle;
 	private ArrayList<StyledButton> heroBtns = new ArrayList<>();
 	private RenderedTextBlock heroName; //only on landscape
 	private RenderedTextBlock heroDesc; //only on landscape
@@ -147,6 +148,13 @@ public class HeroSelectScene extends PixelScene {
 		PixelScene.align(title);
 		add(title);
 
+		if (GamesInProgress.playerCount > 1) {
+			subtitle = PixelScene.renderTextBlock(Messages.get(this, "player_selecting", GamesInProgress.currentPlayerSelecting + 1), 9);
+			subtitle.hardlight(Window.TITLE_COLOR);
+			PixelScene.align(subtitle);
+			add(subtitle);
+		}
+
 		startBtn = new StyledButton(Chrome.Type.GREY_BUTTON_TR, ""){
 			@Override
 			protected void onClick() {
@@ -154,13 +162,23 @@ public class HeroSelectScene extends PixelScene {
 
 				if (GamesInProgress.selectedClass == null) return;
 
-				Dungeon.hero = null;
-				Dungeon.daily = Dungeon.dailyReplay = false;
-				Dungeon.initSeed();
-				ActionIndicator.clearAction();
-				InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+				GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
+				GamesInProgress.currentPlayerSelecting++;
 
-				Game.switchScene( InterlevelScene.class );
+				if (GamesInProgress.currentPlayerSelecting < GamesInProgress.playerCount) {
+					// More players to select — loop back
+					GamesInProgress.selectedClass = null;
+					ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
+				} else {
+					// All players selected — start game
+					Dungeon.hero = null;
+					Dungeon.daily = Dungeon.dailyReplay = false;
+					Dungeon.initSeed();
+					ActionIndicator.clearAction();
+					InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+
+					Game.switchScene( InterlevelScene.class );
+				}
 			}
 		};
 		startBtn.icon(Icons.get(Icons.ENTER));
@@ -254,6 +272,11 @@ public class HeroSelectScene extends PixelScene {
 
 			title.setPos(insets.left + (leftArea - title.width())/2f, (h-uiHeight)/2f);
 			align(title);
+
+			if (subtitle != null) {
+				subtitle.setPos(insets.left + (leftArea - subtitle.width())/2f, title.bottom() + 2);
+				align(subtitle);
+			}
 
 			int btnWidth = HeroBtn.MIN_WIDTH + 15;
 			int btnHeight = HeroBtn.HEIGHT;
@@ -350,6 +373,11 @@ public class HeroSelectScene extends PixelScene {
 			}
 
 			title.setPos(insets.left + (w - title.width()) / 2f, insets.top + (h - HeroBtn.HEIGHT - title.height() - 4));
+
+			if (subtitle != null) {
+				subtitle.setPos(insets.left + (w - subtitle.width()) / 2f, title.bottom() + 2);
+				align(subtitle);
+			}
 
 			btnOptions.setRect(heroBtns.get(0).left() + 16, Camera.main.height-HeroBtn.HEIGHT-16, 20, 21);
 			optionsPane.setPos(heroBtns.get(0).left(), 0);
@@ -556,6 +584,9 @@ public class HeroSelectScene extends PixelScene {
 	@Override
 	protected void onBackPressed() {
 		if (btnExit.active){
+			GamesInProgress.playerCount = 1;
+			GamesInProgress.selectedClasses = new ArrayList<>();
+			GamesInProgress.currentPlayerSelecting = 0;
 			ShatteredPixelDungeon.switchScene(TitleScene.class);
 		} else {
 			super.onBackPressed();
@@ -584,6 +615,9 @@ public class HeroSelectScene extends PixelScene {
 			if (cl != GamesInProgress.selectedClass){
 				if (!cl.isUnlocked()){
 					icon.brightness(0.1f);
+				} else if (GamesInProgress.selectedClasses != null && GamesInProgress.selectedClasses.contains(cl)) {
+					// Already taken in multiplayer
+					icon.brightness(0.3f);
 				} else {
 					icon.brightness(0.6f);
 				}
@@ -598,6 +632,9 @@ public class HeroSelectScene extends PixelScene {
 
 			if( !cl.isUnlocked() ){
 				ShatteredPixelDungeon.scene().addToFront( new WndMessage(cl.unlockMsg()));
+			} else if (GamesInProgress.selectedClasses != null && GamesInProgress.selectedClasses.contains(cl)) {
+				// Already taken in multiplayer
+				ShatteredPixelDungeon.scene().addToFront( new WndMessage(Messages.get(HeroSelectScene.class, "hero_taken")));
 			} else if (GamesInProgress.selectedClass == cl) {
 				Window w = new WndHeroInfo(cl);
 				if (landscape()){

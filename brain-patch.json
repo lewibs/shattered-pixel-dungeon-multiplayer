@@ -1,4 +1,13 @@
 {
-  "prUrl": "https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1",
-  "notes": ["pr-agent: opened PR at https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1"]
+  "docsWritten": [
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/multiplayer-hero-selection-ui.md",
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/turn-based-system.md"
+  ],
+  "summary": "Created multiplayer-hero-selection-ui.md covering WndPlayerCount, per-player HeroSelectScene loop, and Dungeon.init() selectedClasses spawn; updated turn-based-system.md with cross-reference to hero class selection flow",
+  "artifacts": {
+    "modified": [
+      "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/multiplayer-hero-selection-ui.md",
+      "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/turn-based-system.md"
+    ]
+  }
 }
