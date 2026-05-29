@@ -17,3 +17,4 @@ Whenever calling `HeroClass.initHero(hero)` for any hero that is not the first (
 - This pattern lives in `Dungeon.spawnHero()`. Any future hero-spawning helper must replicate this swap or hero quickslots will be corrupted.
 - `Dungeon.hero` (the active singleton) must remain pointed at `heroes.get(0)` after all heroes are spawned; systems that haven't been updated for multi-hero still read `Dungeon.hero`.
 - The `heroes` list in `Dungeon` is reset to `new ArrayList<>()` at the start of `Dungeon.init()` — always clear it before calling `spawnHero` in a loop.
+- For save/load persistence of per-hero quickslot state, see `skills/per-hero-subbundle-serialization/SKILL.md` — that is a separate concern from the spawn-time swap covered here.

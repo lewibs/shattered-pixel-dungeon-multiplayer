@@ -17,15 +17,15 @@ flowchart TD
   DungeonQS["Dungeon.quickslot (static singleton)"]
   QSButton["QuickSlotButton (UI)"]
   Activate["hero.activate()"]
-  SaveGame["Dungeon.saveGame()"]
-  LoadGame["Dungeon.loadGame()"]
+  SaveGame["Hero.storeInBundle()"]
+  LoadGame["Hero.restoreFromBundle()"]
 
   Hero -->|"owns"| HeroQS
   Activate -->|"Dungeon.quickslot = this.quickslot"| DungeonQS
   DungeonQS -->|"read/write"| QSButton
 
-  SaveGame -->|"Dungeon.quickslot.storePlaceholders(bundle)"| BundleTop["top-level Bundle (active hero only)"]
-  LoadGame -->|"Dungeon.quickslot.restorePlaceholders(bundle)"| DungeonQS
+  SaveGame -->|"quickslot.storePlaceholders(qsBundle)"| HeroBundle["hero sub-bundle (per hero)"]
+  LoadGame -->|"quickslot.restorePlaceholders(bundle.getBundle(QUICKSLOT))"| HeroQS
 ```
 
 ## Flows
@@ -58,7 +58,7 @@ QuickSlot {
 ```
 // Singleton swap on hero switch
 hero.activate():
-  Dungeon.hero     = this
+  Dungeon.hero      = this
   Dungeon.quickslot = this.quickslot    // UI now reads from this hero's slots
   QuickSlotButton.refresh()
 
@@ -78,24 +78,27 @@ QuickSlotButton.setItem(slot, item):
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `save-load.save-active` | `Dungeon.quickslot` | placeholders + placements written to top-level Bundle | happy path | Only the active hero's QuickSlot is saved at Dungeon level |
-| `save-load.save-hero` | `hero.storeInBundle()` | hero data written (no quickslot) | **bug path** | `Hero.storeInBundle()` does NOT serialize `this.quickslot` |
-| `save-load.load-restore` | top-level Bundle | `Dungeon.quickslot.restorePlaceholders(bundle)` | partial | Only restores active hero's slots; other heroes get empty QuickSlot |
-| `save-load.load-hero` | `hero.restoreFromBundle()` | hero data read (no quickslot) | **bug path** | `Hero.restoreFromBundle()` does NOT restore `this.quickslot` |
+| `save-load.save-hero` | `hero.storeInBundle()` | `hero.quickslot` written to `"quickslot"` sub-bundle inside the hero's bundle entry | happy path | Fixed in Issue #11; each hero's QuickSlot is now independently persisted |
+| `save-load.load-hero` | `hero.restoreFromBundle()` | `hero.quickslot.restorePlaceholders(bundle.getBundle("quickslot"))` — guarded by `bundle.contains("quickslot")` | happy path | Backward-compat guard allows old saves (no sub-bundle) to load without error |
+| `save-load.dungeon-level-compat` | `Dungeon.saveGame/loadGame` | `Dungeon.quickslot.storePlaceholders/restorePlaceholders` on top-level bundle | compat path | Retained for backward compatibility with pre-fix single-hero saves; per-hero sub-bundle is authoritative for new saves |
 
 #### Pseudocode
 
 ```
-// SAVE (Dungeon.saveGame)
-bundle.put("hero", hero)        // triggers Hero.storeInBundle — NO quickslot data
-bundle.put("heroes", heroes)    // triggers Hero.storeInBundle for each — NO quickslot data
-Dungeon.quickslot.storePlaceholders(bundle)  // saves ONLY the active hero's QuickSlot
+// SAVE (Hero.storeInBundle)
+Bundle qsBundle = new Bundle()
+this.quickslot.storePlaceholders(qsBundle)   // serialize THIS hero's slots
+bundle.put("quickslot", qsBundle)            // nest under hero's own bundle entry
 
-// LOAD (Dungeon.loadGame)
-quickslot.reset()
-quickslot.restorePlaceholders(bundle)  // restores into Dungeon.quickslot only
-heroes = bundle.getCollection("heroes")  // each hero's quickslot = new QuickSlot() (empty)
-hero = heroes.get(0)                     // hero[0]'s quickslot is then used as Dungeon.quickslot via activate()
+// LOAD (Hero.restoreFromBundle)
+if (bundle.contains("quickslot")) {
+  quickslot.restorePlaceholders(bundle.getBundle("quickslot"))  // restore THIS hero's slots
+}
+// if sub-bundle absent (old save), quickslot stays as new QuickSlot() from constructor
+
+// SINGLETON SWAP (hero.activate)
+Dungeon.quickslot = this.quickslot   // point global singleton at this hero's restored QuickSlot
+QuickSlotButton.refresh()
 ```
 
 ### Flow: `new-game-init`
@@ -115,13 +118,9 @@ heroes.add(h)
 if (heroes.size() == 1) hero = h
 ```
 
-## Known Bug
+## Known Issues
 
-**Issue #11**: `Hero.storeInBundle()` does not call `this.quickslot.storePlaceholders()`, and `Hero.restoreFromBundle()` does not call `this.quickslot.restorePlaceholders()`.
-
-On save, `Dungeon.quickslot.storePlaceholders(bundle)` only persists the **active hero's** quickslot into the top-level bundle. On load, all heroes get a `new QuickSlot()` from the `Hero()` constructor; their quickslot data was never written, so it is lost.
-
-**Fix**: Serialize each hero's quickslot in a named sub-bundle inside `Hero.storeInBundle()` and restore it in `Hero.restoreFromBundle()`. See `docs/bugs/2026-05-28-quickslot-reset-on-reload.md`.
+None. Issue #11 (quickslot reset on reload) was fixed 2026-05-28. See `docs/bugs/2026-05-28-quickslot-reset-on-reload.md`.
 
 ## Logs
 

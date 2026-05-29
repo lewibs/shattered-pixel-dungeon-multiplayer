@@ -301,6 +301,8 @@ public class Hero extends Char {
 	private static final String EXPERIENCE	= "exp";
 	private static final String HTBOOST     = "htboost";
 	
+	private static final String QUICKSLOT = "quickslot";
+
 	@Override
 	public void storeInBundle( Bundle bundle ) {
 
@@ -310,20 +312,24 @@ public class Hero extends Char {
 		bundle.put( SUBCLASS, subClass );
 		bundle.put( ABILITY, armorAbility );
 		Talent.storeTalentsInBundle( bundle, this );
-		
+
 		bundle.put( ATTACK, attackSkill );
 		bundle.put( DEFENSE, defenseSkill );
-		
+
 		bundle.put( STRENGTH, STR );
-		
+
 		bundle.put( LEVEL, lvl );
 		bundle.put( EXPERIENCE, exp );
-		
+
 		bundle.put( HTBOOST, HTBoost );
 
 		belongings.storeInBundle( bundle );
+
+		Bundle qsBundle = new Bundle();
+		quickslot.storePlaceholders( qsBundle );
+		bundle.put( QUICKSLOT, qsBundle );
 	}
-	
+
 	@Override
 	public void restoreFromBundle( Bundle bundle ) {
 
@@ -338,13 +344,17 @@ public class Hero extends Char {
 		subClass = bundle.getEnum( SUBCLASS, HeroSubClass.class );
 		armorAbility = (ArmorAbility)bundle.get( ABILITY );
 		Talent.restoreTalentsFromBundle( bundle, this );
-		
+
 		attackSkill = bundle.getInt( ATTACK );
 		defenseSkill = bundle.getInt( DEFENSE );
-		
+
 		STR = bundle.getInt( STRENGTH );
 
 		belongings.restoreFromBundle( bundle );
+
+		if (bundle.contains( QUICKSLOT )) {
+			quickslot.restorePlaceholders( bundle.getBundle( QUICKSLOT ) );
+		}
 	}
 	
 	public static void preview( GamesInProgress.Info info, Bundle bundle ) {
