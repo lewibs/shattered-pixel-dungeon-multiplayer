@@ -670,17 +670,6 @@ public class InterlevelScene extends PixelScene {
 			if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
 				Dungeon.heroesNeedInitialPlacement = true;
 			}
-
-			// If the main hero was waiting to fall (fell into a pit before others used stairs),
-			// land them at the pit fall cell on this new floor instead of near the entrance.
-			Chasm.WaitingToFall waiting = Dungeon.hero.buff(Chasm.WaitingToFall.class);
-			if (waiting != null) {
-				int fallCell = level.fallCell(waiting.fallIntoPit);
-				Dungeon.heroFallCell = fallCell;
-				waiting.detach();
-				Buff.affect(Dungeon.hero, Chasm.Falling.class);
-			}
-
 			Dungeon.switchLevel( level, destTransition.cell() );
 		}
 
@@ -701,9 +690,7 @@ public class InterlevelScene extends PixelScene {
 		} else {
 			level = Dungeon.newLevel();
 		}
-		int fallLandingCell = level.fallCell( fallIntoPit );
-		Dungeon.heroFallCell = fallLandingCell;
-		Dungeon.switchLevel( level, fallLandingCell );
+		Dungeon.switchLevel( level, level.fallCell( fallIntoPit ));
 	}
 
 	private void ascend() throws IOException {

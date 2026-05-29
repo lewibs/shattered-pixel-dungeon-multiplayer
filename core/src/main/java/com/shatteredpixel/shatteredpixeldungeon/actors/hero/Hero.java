@@ -230,9 +230,7 @@ public class Hero extends Char {
 	public QuickSlot quickslot;
 	
 	public int STR;
-
-	public int depth = 1; // tracks which floor this hero is on; updated by Dungeon.switchLevel
-
+	
 	public float awareness;
 	
 	public int lvl = 1;
@@ -302,8 +300,7 @@ public class Hero extends Char {
 	private static final String LEVEL		= "lvl";
 	private static final String EXPERIENCE	= "exp";
 	private static final String HTBOOST     = "htboost";
-	private static final String HERO_DEPTH  = "heroDepth";
-
+	
 	private static final String QUICKSLOT = "quickslot";
 
 	@Override
@@ -325,7 +322,6 @@ public class Hero extends Char {
 		bundle.put( EXPERIENCE, exp );
 
 		bundle.put( HTBOOST, HTBoost );
-		bundle.put( HERO_DEPTH, depth );
 
 		belongings.storeInBundle( bundle );
 
@@ -341,8 +337,6 @@ public class Hero extends Char {
 		exp = bundle.getInt( EXPERIENCE );
 
 		HTBoost = bundle.getInt(HTBOOST);
-		depth = bundle.getInt(HERO_DEPTH);
-		if (depth == 0) depth = 1; // default for saves that predate this field
 
 		super.restoreFromBundle( bundle );
 
