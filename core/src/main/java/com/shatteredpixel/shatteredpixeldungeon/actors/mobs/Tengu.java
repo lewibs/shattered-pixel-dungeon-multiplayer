@@ -213,7 +213,7 @@ public class Tengu extends Mob {
 
 		boolean anyNeedsSubclass = false;
 		for (Hero h : Dungeon.heroes) {
-			if (h.subClass == HeroSubClass.NONE) { anyNeedsSubclass = true; break; }
+			if (h.isAlive() && h.subClass == HeroSubClass.NONE) { anyNeedsSubclass = true; break; }
 		}
 		if (anyNeedsSubclass) {
 			Dungeon.level.drop( new TengusMask(), pos ).sprite.drop();

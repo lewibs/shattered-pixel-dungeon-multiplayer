@@ -78,7 +78,7 @@ Old keys kept for backward compat:
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `rankingsRecordMultiHeroData.submit` | Game ends; `Dungeon.heroes` non-empty | `heroClasses/armorTiers/heroLevels` populated in iteration order of `Dungeon.heroes` | happy path | Multiplayer: length equals `Dungeon.heroes.size()` |
+| `rankingsRecordMultiHeroData.submit` | Game ends; `Dungeon.heroes` non-empty | `heroClasses/armorTiers/heroLevels` populated in iteration order of `Dungeon.heroes` | happy path | Multiplayer: length equals `Dungeon.heroes.size()` (all heroes, alive or dead — dead heroes remain in the list with HP <= 0 so the full party is recorded) |
 | `rankingsRecordMultiHeroData.submitFallback` | `Dungeon.heroes` null or empty | arrays initialized as length-1 wrappers around the existing scalar `heroClass/armorTier/herolevel` | happy path | Ensures arrays are always set before record is stored |
 | `rankingsRecordMultiHeroData.store` | `storeInBundle` called | `heroClasses` written as `String[]` via `HeroClass.name()`; tiers and levels written as `int[]` | happy path | Old scalar keys also written — old clients can still read the record |
 | `rankingsRecordMultiHeroData.restore` | `restoreFromBundle` called, bundle has `"heroClasses"` key | `heroClasses` parsed via `HeroClass.valueOf()`; `armorTiers/heroLevels` read as int arrays | happy path | |
@@ -217,4 +217,4 @@ steps.x = izoneX - 18 + (16 - steps.width()) / 2f;
   ```bash
   ./gradlew desktop:debug
   ```
-- Notes: Old ranking records missing the `"heroClasses"` bundle key load cleanly — `restoreFromBundle` wraps the existing scalar `heroClass/armorTier/herolevel` into length-1 arrays, so `classIcons` always has at least one entry and the row renders correctly. Single-player row layout is pixel-identical to the pre-multiplayer version.
+- Notes: Old ranking records missing the `"heroClasses"` bundle key load cleanly — `restoreFromBundle` wraps the existing scalar `heroClass/armorTier/herolevel` into length-1 arrays, so `classIcons` always has at least one entry and the row renders correctly. Single-player row layout is pixel-identical to the pre-multiplayer version. Dead heroes are never removed from `Dungeon.heroes` (they remain with HP <= 0); `Rankings.submit()` therefore always sees the full original party size, preventing a multiplayer run from being recorded as a solo run when a non-last hero dies first.

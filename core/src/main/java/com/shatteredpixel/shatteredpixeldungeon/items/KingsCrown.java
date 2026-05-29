@@ -82,7 +82,7 @@ public class KingsCrown extends Item {
 				// Populate pendingHeroes with all other heroes
 				pendingHeroes.clear();
 				for (Hero h : Dungeon.heroes) {
-					if (h != hero) {
+					if (h != hero && h.isAlive()) {
 						pendingHeroes.add(h);
 					}
 				}

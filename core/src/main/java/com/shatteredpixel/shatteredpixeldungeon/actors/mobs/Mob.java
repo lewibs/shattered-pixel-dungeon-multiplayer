@@ -353,7 +353,7 @@ public abstract class Mob extends Char {
 					if (enemies.isEmpty()) {
 						//try to find the hero(es) third
 						for (Hero h : Dungeon.heroes) {
-							if (fieldOfView[h.pos] && h.invisible <= 0) {
+							if (h.isAlive() && fieldOfView[h.pos] && h.invisible <= 0) {
 								enemies.add(h);
 							}
 						}
@@ -382,7 +382,7 @@ public abstract class Mob extends Char {
 
 				//and look for the hero(es)
 				for (Hero h : Dungeon.heroes) {
-					if (fieldOfView[h.pos] && h.invisible <= 0) {
+					if (h.isAlive() && fieldOfView[h.pos] && h.invisible <= 0) {
 						enemies.add(h);
 					}
 				}

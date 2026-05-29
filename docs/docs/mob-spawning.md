@@ -6,7 +6,7 @@
 
 ## System Intent
 
-- What this is: Controls how many monsters can exist on a floor at once (`mobLimit()`) and how the `MobSpawner` actor fills up to that cap over time. In multiplayer the cap scales linearly with the number of players so each player faces a full solo density of enemies. Spawn frequency (`respawnCooldown`) is unchanged — the spawner fills the higher cap at the same natural rate.
+- What this is: Controls how many monsters can exist on a floor at once (`mobLimit()`) and how the `MobSpawner` actor fills up to that cap over time. In multiplayer the cap scales linearly with the number of **living** players so each alive player faces a full solo density of enemies; dead heroes do not inflate the cap. Spawn frequency (`respawnCooldown`) is unchanged — the spawner fills the higher cap at the same natural rate.
 
 ## Mermaid Diagram
 
@@ -14,7 +14,7 @@
 flowchart TD
   Spawner["MobSpawner.act()\nspawn tick fires"]
   Count["Level.mobCount()\ncount current mobs (by spawningWeight)"]
-  Limit["RegularLevel.mobLimit()\nbase = 3 + depth%5 + rand(3)\n× Dungeon.heroes.size()"]
+  Limit["RegularLevel.mobLimit()\nbase = 3 + depth%5 + rand(3)\n× alive hero count"]
   Check{"mobCount() < mobLimit()?"}
   Spawn["Spawn a mob via Level.createMob()"]
   Wait["Wait for next respawnCooldown()"]
@@ -54,7 +54,8 @@ StandardError {
 //   mobs * playerCount     otherwise, where mobs = 3 + depth%5 + Random.Int(3)
 //                          (×1.33 ceil if Feeling.LARGE)
 //
-// playerCount = Dungeon.heroes.size() if heroes != null && !isEmpty(), else 1
+// playerCount = count of heroes in Dungeon.heroes where h.isAlive(), else 1
+// Dead heroes remain in Dungeon.heroes (HP <= 0) but are excluded from the count.
 //
 // Level.mobLimit() base returns 0 — boss/special levels that do not override are capped at 0
 // MiningLevel.mobLimit() returns super.mobLimit() - 1 (inherits scaling, then subtracts 1)
@@ -64,11 +65,12 @@ StandardError {
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `scaleRegularMobLimit.singlePlayer` | `heroes.size() == 1` | base limit × 1 (unchanged) | happy path | pixel-identical to pre-multiplayer behavior |
-| `scaleRegularMobLimit.twoPlayers` | `heroes.size() == 2` | base limit × 2 | happy path | e.g. depth 5 base 5 → limit 10 |
-| `scaleRegularMobLimit.fourPlayers` | `heroes.size() == 4` | base limit × 4 | happy path | |
+| `scaleRegularMobLimit.singlePlayer` | 1 alive hero | base limit × 1 (unchanged) | happy path | pixel-identical to pre-multiplayer behavior |
+| `scaleRegularMobLimit.twoPlayers` | 2 alive heroes | base limit × 2 | happy path | e.g. depth 5 base 5 → limit 10 |
+| `scaleRegularMobLimit.fourPlayers` | 4 alive heroes | base limit × 4 | happy path | |
+| `scaleRegularMobLimit.heroDeadMidFloor` | hero dies; remaining alive count drops to n-1 | mob limit recalculates with alive count only — dead hero excluded | happy path | dead heroes remain in `Dungeon.heroes` with HP <= 0 but `isAlive()` returns false |
 | `scaleRegularMobLimit.depth1NoAmulet` | `depth <= 1`, amulet not obtained | `0` | happy path | floor 1 remains mob-free at start regardless of player count |
-| `scaleRegularMobLimit.depth1Amulet` | `depth <= 1`, amulet obtained | `10 * playerCount` | happy path | post-amulet floor 1 scales with player count |
+| `scaleRegularMobLimit.depth1Amulet` | `depth <= 1`, amulet obtained | `10 * playerCount` | happy path | post-amulet floor 1 scales with alive player count |
 | `scaleRegularMobLimit.miningLevel` | `MiningLevel` | `super.mobLimit() - 1` | happy path | inherits scaling from `RegularLevel`; offset of -1 is preserved |
 | `scaleRegularMobLimit.bossLevel` | any boss/special `Level` subclass that does not override `mobLimit()` | `0` | happy path | base `Level.mobLimit()` returns 0; boss levels are unaffected |
 
@@ -76,9 +78,12 @@ StandardError {
 
 ```
 // RegularLevel.java — mobLimit()
-int playerCount = (Dungeon.heroes != null && !Dungeon.heroes.isEmpty())
-        ? Dungeon.heroes.size()
-        : 1;
+int playerCount = 1;
+if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+    int alive = 0;
+    for (Hero h : Dungeon.heroes) { if (h.isAlive()) alive++; }
+    playerCount = alive > 0 ? alive : 1;
+}
 
 if (Dungeon.depth <= 1) {
     if (!Statistics.amuletObtained) return 0;
@@ -110,4 +115,4 @@ if (Dungeon.level.mobCount() < Dungeon.level.mobLimit()) {
   ```bash
   ./gradlew desktop:debug
   ```
-- Notes: Single-player (`heroes.size() == 1`) is pixel-identical to before. Boss levels return 0 from the base `Level.mobLimit()` and are unaffected. `MiningLevel` calls `super.mobLimit() - 1` and inherits the scaling automatically. Spawn frequency (`respawnCooldown`) is not modified.
+- Notes: Single-player (1 alive hero) is pixel-identical to before. Dead heroes remain in `Dungeon.heroes` with HP <= 0 but are excluded from the alive count, so a mid-floor death does not inflate the mob cap. Boss levels return 0 from the base `Level.mobLimit()` and are unaffected. `MiningLevel` calls `super.mobLimit() - 1` and inherits the scaling automatically. Spawn frequency (`respawnCooldown`) is not modified.

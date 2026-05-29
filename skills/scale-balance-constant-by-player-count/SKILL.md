@@ -8,11 +8,15 @@ Any time a numeric game constant (mob cap, loot quantity, resource rate, XP amou
 
 ## Steps
 1. Locate the method that returns the constant (e.g. `RegularLevel.mobLimit()`).
-2. Compute `playerCount` at the top of the method using a null-safe guard:
+2. Compute `playerCount` at the top of the method counting only **alive** heroes. Dead heroes remain in `Dungeon.heroes` as tombstones for record-keeping (see `dungeon-heroes-tombstone-pattern` skill), so `Dungeon.heroes.size()` is NOT a safe alive count:
    ```java
-   int playerCount = (Dungeon.heroes != null && !Dungeon.heroes.isEmpty())
-           ? Dungeon.heroes.size()
-           : 1;
+   int playerCount = 0;
+   if (Dungeon.heroes != null) {
+       for (Hero h : Dungeon.heroes) {
+           if (h.isAlive()) playerCount++;
+       }
+   }
+   if (playerCount == 0) playerCount = 1;
    ```
 3. Multiply every `return <value>;` path by `playerCount`:
    ```java

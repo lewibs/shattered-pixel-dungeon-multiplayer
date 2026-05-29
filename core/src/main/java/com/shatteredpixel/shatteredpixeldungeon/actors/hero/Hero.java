@@ -2231,11 +2231,15 @@ public class Hero extends Char {
 		}
 
 		if (livingOthers > 0) {
-			// Other heroes alive — remove this hero silently, no game over, no item drops
-			Dungeon.heroes.remove(this);
-			// Switch active hero to next living one
-			Hero next = Dungeon.heroes.get(0);
-			next.activate(); // sets Dungeon.hero, Dungeon.quickslot, pans camera
+			// Leave this dead hero in Dungeon.heroes so Rankings.submit() sees the full party.
+			// The hero is already inert: HP <= 0 (isAlive()==false) and removed from the Actor
+			// system via super.die() / Actor.remove(), so it will never act again.
+			// Switch active hero to next living one.
+			Hero next = null;
+			for (Hero h : Dungeon.heroes) {
+				if (h != this && h.isAlive()) { next = h; break; }
+			}
+			if (next != null) next.activate(); // sets Dungeon.hero, Dungeon.quickslot, pans camera
 			return;
 		}
 		// Fall through to reallyDie() — this was the last hero

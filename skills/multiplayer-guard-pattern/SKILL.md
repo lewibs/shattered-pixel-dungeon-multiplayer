@@ -24,6 +24,7 @@ Any time a mechanic (transition, action gate, event trigger, etc.) needs to beha
 
 ## Notes
 - The guard `heroes.size() > 1` is the canonical single-player bypass. Never skip it — code that iterates `heroes` unconditionally will run on single-player if `heroes` contains exactly one entry (which it does).
+- `Dungeon.heroes` may contain dead heroes (tombstones) — dead heroes stay in the list so `Rankings.submit()` can record the full party. Inside any gameplay loop, add `if (!other.isAlive()) continue;` as the first statement. See `dungeon-heroes-tombstone-pattern` skill for the full audit.
 - `Dungeon.hero` is still the acting/primary hero singleton. Use it for single-player-safe reads; use `Dungeon.heroes` only inside the size guard.
 - `Level.adjacent(a, b)` returns `distance(a,b) == 1` (excludes same cell). Use `distance(a,b) <= 1` when same-cell should also be considered "close enough."
 - This pattern was first applied to `Level.activateTransition()` for the party stair gate feature. The same idiom applies to any future party-cohesion gates (boss entry, shop entry, portal use, etc.).

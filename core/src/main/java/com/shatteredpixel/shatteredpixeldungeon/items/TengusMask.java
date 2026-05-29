@@ -87,7 +87,7 @@ public class TengusMask extends Item {
 			// Populate pendingHeroes with all other heroes that need a subclass
 			pendingHeroes.clear();
 			for (Hero h : Dungeon.heroes) {
-				if (h != hero && h.subClass == HeroSubClass.NONE) {
+				if (h != hero && h.isAlive() && h.subClass == HeroSubClass.NONE) {
 					pendingHeroes.add(h);
 				}
 			}

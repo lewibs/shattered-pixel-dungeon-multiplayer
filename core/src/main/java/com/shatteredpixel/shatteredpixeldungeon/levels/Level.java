@@ -571,6 +571,7 @@ public abstract class Level implements Bundlable {
 		if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
 			for (Hero other : Dungeon.heroes) {
 				if (other == hero) continue;
+				if (!other.isAlive()) continue; // dead heroes have stale positions; ignore them
 				if (distance(hero.pos, other.pos) > 1) {
 					GLog.w(Messages.get(Level.class, "need_party_adjacent"));
 					return false;

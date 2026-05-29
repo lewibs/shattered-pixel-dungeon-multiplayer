@@ -30,6 +30,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
 import com.shatteredpixel.shatteredpixeldungeon.actors.blobs.Blob;
 import com.shatteredpixel.shatteredpixeldungeon.actors.blobs.SacrificialFire;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.EbonyMimic;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.GoldenMimic;
@@ -204,9 +205,12 @@ public abstract class RegularLevel extends Level {
 	
 	@Override
 	public int mobLimit() {
-		int playerCount = (Dungeon.heroes != null && !Dungeon.heroes.isEmpty())
-				? Dungeon.heroes.size()
-				: 1;
+		int playerCount = 1;
+		if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+			int alive = 0;
+			for (Hero h : Dungeon.heroes) { if (h.isAlive()) alive++; }
+			playerCount = alive > 0 ? alive : 1;
+		}
 
 		if (Dungeon.depth <= 1){
 			if (!Statistics.amuletObtained) return 0;
@@ -693,10 +697,13 @@ public abstract class RegularLevel extends Level {
 			}
 		Random.popGenerator();
 
-		// Scale food drops for multiplayer: add one food item per extra player
-		int playerCount = (Dungeon.heroes != null && !Dungeon.heroes.isEmpty())
-				? Dungeon.heroes.size()
-				: 1;
+		// Scale food drops for multiplayer: add one food item per extra living player
+		int playerCount = 1;
+		if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+			int alive = 0;
+			for (Hero h : Dungeon.heroes) { if (h.isAlive()) alive++; }
+			playerCount = alive > 0 ? alive : 1;
+		}
 		for (int i = 0; i < playerCount - 1; i++) {
 			int cell = randomDropCell();
 			if (cell != -1) {
