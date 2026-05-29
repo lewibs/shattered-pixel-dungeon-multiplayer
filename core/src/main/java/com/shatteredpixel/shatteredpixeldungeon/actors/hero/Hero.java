@@ -838,6 +838,8 @@ public class Hero extends Char {
 		Dungeon.quickslot = this.quickslot;
 		InventoryPane.lastBag = this.belongings.backpack;
 		if (sprite != null) Camera.main.panTo(sprite.center(), 5f);
+		QuickSlotButton.refresh();
+		InventoryPane.refresh();
 	}
 
 	@Override

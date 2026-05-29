@@ -164,6 +164,20 @@ public class GamesInProgress {
 		info.heroClass = Dungeon.hero.heroClass;
 		info.subClass = Dungeon.hero.subClass;
 		info.armorTier = Dungeon.hero.tier();
+
+		info.heroClasses = new ArrayList<>();
+		info.armorTiers = new ArrayList<>();
+		info.heroLevels = new ArrayList<>();
+		for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : Dungeon.heroes) {
+			info.heroClasses.add(h.heroClass);
+			info.armorTiers.add(h.tier());
+			info.heroLevels.add(h.lvl);
+		}
+		if (info.heroClasses.isEmpty()) {
+			info.heroClasses.add(info.heroClass);
+			info.armorTiers.add(info.armorTier);
+			info.heroLevels.add(info.level);
+		}
 		
 		info.goldCollected = Statistics.goldCollected;
 		info.maxDepth = Statistics.deepestFloor;
@@ -202,7 +216,12 @@ public class GamesInProgress {
 		public HeroClass heroClass;
 		public HeroSubClass subClass;
 		public int armorTier;
-		
+
+		// multiplayer: all hero classes, armor tiers, and levels in order (size >= 1)
+		public ArrayList<HeroClass> heroClasses = new ArrayList<>();
+		public ArrayList<Integer> armorTiers = new ArrayList<>();
+		public ArrayList<Integer> heroLevels = new ArrayList<>();
+
 		public int goldCollected;
 		public int maxDepth;
 	}

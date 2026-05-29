@@ -26,6 +26,7 @@ import com.shatteredpixel.shatteredpixeldungeon.Chrome;
 import com.shatteredpixel.shatteredpixeldungeon.GamesInProgress;
 import com.shatteredpixel.shatteredpixeldungeon.SPDSettings;
 import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroSubClass;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Journal;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
@@ -165,180 +166,179 @@ public class StartScene extends PixelScene {
 	}
 	
 	private static class SaveSlotButton extends Button {
-		
+
 		private NinePatch bg;
-		
-		private Image hero;
+
+		private final ArrayList<Image> heroImages   = new ArrayList<>();
 		private RenderedTextBlock name;
 		private RenderedTextBlock lastPlayed;
-		
-		private Image steps;
+
+		private Image     steps;
 		private BitmapText depth;
-		private Image classIcon;
-		private BitmapText level;
-		
+		private final ArrayList<Image>      classIcons  = new ArrayList<>();
+		private final ArrayList<BitmapText> levelTexts  = new ArrayList<>();
+
 		private int slot;
 		private boolean newGame;
-		
+		private int heroCount;
+
 		@Override
 		protected void createChildren() {
 			super.createChildren();
-			
 			bg = Chrome.get(Chrome.Type.TOAST_TR);
-			add( bg );
-			
+			add(bg);
 			name = PixelScene.renderTextBlock(9);
 			add(name);
-
 			lastPlayed = PixelScene.renderTextBlock(6);
 			add(lastPlayed);
 		}
-		
-		public void set( int slot ){
+
+		public void set(int slot) {
 			this.slot = slot;
 			GamesInProgress.Info info = GamesInProgress.check(slot);
 			newGame = info == null;
-			if (newGame){
-				name.text( Messages.get(StartScene.class, "new"));
-				
-				if (hero != null){
-					remove(hero);
-					hero = null;
-					remove(steps);
-					steps = null;
-					remove(depth);
-					depth = null;
-					remove(classIcon);
-					classIcon = null;
-					remove(level);
-					level = null;
-				}
+
+			for (Image img : heroImages)   remove(img);  heroImages.clear();
+			for (Image img : classIcons)   remove(img);  classIcons.clear();
+			for (BitmapText t : levelTexts) remove(t);   levelTexts.clear();
+			if (steps != null) { remove(steps); steps = null; }
+			if (depth != null) { remove(depth); depth = null; }
+
+			if (newGame) {
+				heroCount = 0;
+				name.text(Messages.get(StartScene.class, "new"));
 			} else {
-				
-				if (info.subClass != HeroSubClass.NONE){
-					name.text(Messages.titleCase(info.subClass.title()));
+				heroCount = info.heroClasses.size();
+
+				if (heroCount <= 1) {
+					if (info.subClass != HeroSubClass.NONE) name.text(Messages.titleCase(info.subClass.title()));
+					else                                     name.text(Messages.titleCase(info.heroClass.title()));
 				} else {
-					name.text(Messages.titleCase(info.heroClass.title()));
-				}
-				
-				if (hero == null){
-					hero = new Image(info.heroClass.spritesheet(), 0, 15*info.armorTier, 12, 15);
-					add(hero);
-					
-					steps = new Image(Icons.get(Icons.STAIRS));
-					add(steps);
-					depth = new BitmapText(PixelScene.pixelFont);
-					add(depth);
-					
-					classIcon = new Image(Icons.get(info.heroClass));
-					add(classIcon);
-					level = new BitmapText(PixelScene.pixelFont);
-					add(level);
-				} else {
-					hero.copy(new Image(info.heroClass.spritesheet(), 0, 15*info.armorTier, 12, 15));
-					
-					classIcon.copy(Icons.get(info.heroClass));
+					name.text(heroCount + " Players");
 				}
 
-				long diff = Game.realTime - info.lastPlayed;
-				if (diff > 99L * 30 * 24 * 60 * 60_000){
-					lastPlayed.text(" "); //show no text for >99 months ago
-				} else if (diff < 60_000){
-					lastPlayed.text(Messages.get(StartScene.class, "one_minute_ago"));
-				} else if (diff < 2 * 60 * 60_000){
-					lastPlayed.text(Messages.get(StartScene.class, "minutes_ago", diff / 60_000));
-				} else if (diff < 2 * 24 * 60 * 60_000){
-					lastPlayed.text(Messages.get(StartScene.class, "hours_ago", diff / (60 * 60_000)));
-				} else if (diff < 2L * 30 * 24 * 60 * 60_000){
-					lastPlayed.text(Messages.get(StartScene.class, "days_ago", diff / (24 * 60 * 60_000)));
-				} else {
-					lastPlayed.text(Messages.get(StartScene.class, "months_ago", diff / (30L * 24 * 60 * 60_000)));
+				for (int i = 0; i < heroCount; i++) {
+					HeroClass cls  = info.heroClasses.get(i);
+					int       tier = info.armorTiers.get(i);
+					Image sprite = new Image(cls.spritesheet(), 0, 15 * tier, 12, 15);
+					add(sprite);
+					heroImages.add(sprite);
+
+					Image icon = new Image(Icons.get(cls));
+					add(icon);
+					classIcons.add(icon);
+
+					BitmapText lvl = new BitmapText(PixelScene.pixelFont);
+					if (i < info.heroLevels.size()) lvl.text(Integer.toString(info.heroLevels.get(i)));
+					lvl.measure();
+					add(lvl);
+					levelTexts.add(lvl);
 				}
-				
+
+				steps = new Image(Icons.get(Icons.STAIRS));
+				add(steps);
+				depth = new BitmapText(PixelScene.pixelFont);
+				add(depth);
+
+				long diff = Game.realTime - info.lastPlayed;
+				if      (diff > 99L * 30 * 24 * 60 * 60_000) lastPlayed.text(" ");
+				else if (diff < 60_000)                        lastPlayed.text(Messages.get(StartScene.class, "one_minute_ago"));
+				else if (diff < 2 * 60 * 60_000)              lastPlayed.text(Messages.get(StartScene.class, "minutes_ago", diff / 60_000));
+				else if (diff < 2 * 24 * 60 * 60_000)         lastPlayed.text(Messages.get(StartScene.class, "hours_ago",   diff / (60 * 60_000)));
+				else if (diff < 2L * 30 * 24 * 60 * 60_000)  lastPlayed.text(Messages.get(StartScene.class, "days_ago",    diff / (24 * 60 * 60_000)));
+				else                                           lastPlayed.text(Messages.get(StartScene.class, "months_ago", diff / (30L * 24 * 60 * 60_000)));
+
 				depth.text(Integer.toString(info.depth));
 				depth.measure();
-				
-				level.text(Integer.toString(info.level));
-				level.measure();
-				
-				if (info.challenges > 0){
+
+				boolean challenged = info.challenges > 0;
+				name.resetColor();       lastPlayed.resetColor();  depth.resetColor();
+				for (BitmapText t : levelTexts) t.resetColor();
+				if (challenged) {
 					name.hardlight(Window.TITLE_COLOR);
 					lastPlayed.hardlight(Window.TITLE_COLOR);
 					depth.hardlight(Window.TITLE_COLOR);
-					level.hardlight(Window.TITLE_COLOR);
-				} else {
-					name.resetColor();
-					lastPlayed.resetColor();
-					depth.resetColor();
-					level.resetColor();
+					for (BitmapText t : levelTexts) t.hardlight(Window.TITLE_COLOR);
 				}
 
-				if (info.daily){
-					if (info.dailyReplay){
-						steps.hardlight(1f, 0.5f, 2f);
-					} else {
-						steps.hardlight(0.5f, 1f, 2f);
-					}
-				} else if (!info.customSeed.isEmpty()){
-					steps.hardlight(1f, 1.5f, 0.67f);
-				}
-				
+				if      (info.daily && info.dailyReplay) steps.hardlight(1f, 0.5f, 2f);
+				else if (info.daily)                     steps.hardlight(0.5f, 1f, 2f);
+				else if (!info.customSeed.isEmpty())     steps.hardlight(1f, 1.5f, 0.67f);
 			}
-			
+
 			layout();
 		}
-		
+
 		@Override
 		protected void layout() {
 			super.layout();
-			
-			bg.x = x;
-			bg.y = y;
-			bg.size( width, height );
-			
-			if (hero != null){
-				hero.x = x+8;
-				hero.y = y + (height - hero.height())/2f;
-				align(hero);
-				
-				name.setPos(
-						hero.x + hero.width() + 6,
-						y + (height - name.height() - lastPlayed.height() - 2)/2f
-				);
-				align(name);
+			bg.x = x;  bg.y = y;
+			bg.size(width, height);
 
-				lastPlayed.setPos(
-						hero.x + hero.width() + 6,
-						name.bottom()+2
-				);
-				
-				classIcon.x = x + width - 24 + (16 - classIcon.width())/2f;
-				classIcon.y = y + (height - classIcon.height())/2f;
-				align(classIcon);
-				
-				level.x = classIcon.x + (classIcon.width() - level.width()) / 2f;
-				level.y = classIcon.y + (classIcon.height() - level.height()) / 2f + 1;
-				align(level);
-				
-				steps.x = x + width - 40 + (16 - steps.width())/2f;
-				steps.y = y + (height - steps.height())/2f;
+			if (!heroImages.isEmpty()) {
+				// grid dimensions: 1→1×1, 2→2×1, 3-4→2×2
+				int cols = heroCount == 1 ? 1 : 2;
+				int rows = (heroCount + cols - 1) / cols;
+				float spriteScale = heroCount == 1 ? 1f : (heroCount == 2 ? 0.75f : 0.6f);
+				float sw = 12 * spriteScale;
+				float sh = 15 * spriteScale;
+				float leftZoneW = cols * sw + (cols - 1);
+				float leftZoneH = rows * sh + (rows - 1);
+				float leftX = x + 4;
+				float leftY = y + (height - leftZoneH) / 2f;
+
+				for (int i = 0; i < heroImages.size(); i++) {
+					Image img = heroImages.get(i);
+					img.scale.set(spriteScale);
+					img.x = leftX + (i % cols) * (sw + 1);
+					img.y = leftY + (i / cols) * (sh + 1);
+					align(img);
+				}
+
+				// right zone: steps icon then class-icon grid
+				float iconScale = heroCount == 1 ? 1f : (heroCount == 2 ? 0.75f : 0.6f);
+				float iw = 16 * iconScale;
+				float ih = 16 * iconScale;
+				int   icols = heroCount == 1 ? 1 : 2;
+				int   irows = (heroCount + icols - 1) / icols;
+				float izoneW = icols * iw + (icols - 1);
+				float izoneH = irows * ih + (irows - 1);
+				float izoneX = x + width - 4 - izoneW;
+				float izoneY = y + (height - izoneH) / 2f;
+
+				for (int i = 0; i < classIcons.size(); i++) {
+					Image icon = classIcons.get(i);
+					icon.scale.set(iconScale);
+					float ix = izoneX + (i % icols) * (iw + 1);
+					float iy = izoneY + (i / icols) * (ih + 1);
+					icon.x = ix;  icon.y = iy;
+					align(icon);
+
+					BitmapText lvl = levelTexts.get(i);
+					lvl.x = ix + (iw - lvl.width()) / 2f;
+					lvl.y = iy + (ih - lvl.height()) / 2f + 1;
+					align(lvl);
+				}
+
+				steps.x = izoneX - 18 + (16 - steps.width()) / 2f;
+				steps.y = y + (height - steps.height()) / 2f;
 				align(steps);
-				
 				depth.x = steps.x + (steps.width() - depth.width()) / 2f;
 				depth.y = steps.y + (steps.height() - depth.height()) / 2f + 1;
 				align(depth);
-				
+
+				float nameX = leftX + leftZoneW + 4;
+				float nameRight = steps.x - 2;
+				name.setPos(nameX, y + (height - name.height() - lastPlayed.height() - 2) / 2f);
+				align(name);
+				lastPlayed.setPos(nameX, name.bottom() + 2);
+
 			} else {
-				name.setPos(
-						x + (width - name.width())/2f,
-						y + (height - name.height())/2f
-				);
+				name.setPos(x + (width - name.width()) / 2f, y + (height - name.height()) / 2f);
 				align(name);
 			}
-			
-			
 		}
-		
+
 		@Override
 		protected void onClick() {
 			if (newGame) {
@@ -346,7 +346,7 @@ public class StartScene extends PixelScene {
 				GamesInProgress.curSlot = slot;
 				ShatteredPixelDungeon.scene().add(new WndPlayerCount());
 			} else {
-				ShatteredPixelDungeon.scene().add( new WndGameInProgress(slot));
+				ShatteredPixelDungeon.scene().add(new WndGameInProgress(slot));
 			}
 		}
 	}

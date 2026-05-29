@@ -668,6 +668,17 @@ public class Dungeon {
 			bundle.put( MOBS_TO_CHAMPION, mobsToChampion );
 			bundle.put( HERO, hero );
 			bundle.put( "heroes", heroes ); // serialize all heroes; HERO kept for Hero.preview() compat
+			String[] heroClassNames = new String[heroes.size()];
+			int[] heroArmorTiers = new int[heroes.size()];
+			int[] heroLevels = new int[heroes.size()];
+			for (int i = 0; i < heroes.size(); i++) {
+				heroClassNames[i] = heroes.get(i).heroClass.name();
+				heroArmorTiers[i] = heroes.get(i).tier();
+				heroLevels[i] = heroes.get(i).lvl;
+			}
+			bundle.put( "heroClassNames", heroClassNames );
+			bundle.put( "heroArmorTiers", heroArmorTiers );
+			bundle.put( "heroLevels", heroLevels );
 			bundle.put( DEPTH, depth );
 			bundle.put( BRANCH, branch );
 
@@ -921,6 +932,27 @@ public class Dungeon {
 
 		Hero.preview( info, bundle.getBundle( HERO ) );
 		Statistics.preview( info, bundle );
+
+		info.heroClasses = new ArrayList<>();
+		info.armorTiers = new ArrayList<>();
+		info.heroLevels = new ArrayList<>();
+		if (bundle.contains("heroClassNames")) {
+			String[] names  = bundle.getStringArray("heroClassNames");
+			int[]    tiers  = bundle.getIntArray("heroArmorTiers");
+			int[]    levels = bundle.contains("heroLevels") ? bundle.getIntArray("heroLevels") : new int[names.length];
+			for (int i = 0; i < names.length; i++) {
+				try {
+					info.heroClasses.add(HeroClass.valueOf(names[i]));
+					info.armorTiers.add(tiers[i]);
+					info.heroLevels.add(i < levels.length ? levels[i] : info.level);
+				} catch (IllegalArgumentException ignored) {}
+			}
+		}
+		if (info.heroClasses.isEmpty()) {
+			info.heroClasses.add(info.heroClass);
+			info.armorTiers.add(info.armorTier);
+			info.heroLevels.add(info.level);
+		}
 	}
 	
 	public static void fail( Object cause ) {
