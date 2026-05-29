@@ -210,25 +210,29 @@ public class Tengu extends Mob {
 
 	@Override
 	public void die( Object cause ) {
-		
-		if (Dungeon.hero.subClass == HeroSubClass.NONE) {
+
+		boolean anyNeedsSubclass = false;
+		for (Hero h : Dungeon.heroes) {
+			if (h.subClass == HeroSubClass.NONE) { anyNeedsSubclass = true; break; }
+		}
+		if (anyNeedsSubclass) {
 			Dungeon.level.drop( new TengusMask(), pos ).sprite.drop();
 		}
-		
+
 		GameScene.bossSlain();
 		super.die( cause );
-		
+
 		Badges.validateBossSlain();
 		if (Statistics.qualifiedForBossChallengeBadge){
 			Badges.validateBossChallengeCompleted();
 		}
 		Statistics.bossScores[1] += 2000;
-		
+
 		LloydsBeacon beacon = Dungeon.hero.belongings.getItem(LloydsBeacon.class);
 		if (beacon != null) {
 			beacon.upgrade();
 		}
-		
+
 		yell( Messages.get(this, "defeated") );
 	}
 	
