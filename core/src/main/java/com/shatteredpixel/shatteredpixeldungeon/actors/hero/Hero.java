@@ -350,11 +350,14 @@ public class Hero extends Char {
 
 		STR = bundle.getInt( STRENGTH );
 
-		belongings.restoreFromBundle( bundle );
-
+		// Restore placeholders BEFORE belongings so Bag.grab's replacePlaceholder calls land correctly.
+		// Also point Dungeon.quickslot at this hero's QuickSlot so replacePlaceholder targets the right instance.
+		Dungeon.quickslot = this.quickslot;
 		if (bundle.contains( QUICKSLOT )) {
 			quickslot.restorePlaceholders( bundle.getBundle( QUICKSLOT ) );
 		}
+
+		belongings.restoreFromBundle( bundle );
 	}
 	
 	public static void preview( GamesInProgress.Info info, Bundle bundle ) {
