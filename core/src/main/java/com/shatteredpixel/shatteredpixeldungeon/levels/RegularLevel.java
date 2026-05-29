@@ -204,16 +204,20 @@ public abstract class RegularLevel extends Level {
 	
 	@Override
 	public int mobLimit() {
+		int playerCount = (Dungeon.heroes != null && !Dungeon.heroes.isEmpty())
+				? Dungeon.heroes.size()
+				: 1;
+
 		if (Dungeon.depth <= 1){
 			if (!Statistics.amuletObtained) return 0;
-			else                            return 10;
+			else                            return 10 * playerCount;
 		}
 
 		int mobs = 3 + Dungeon.depth % 5 + Random.Int(3);
 		if (feeling == Feeling.LARGE){
 			mobs = (int)Math.ceil(mobs * 1.33f);
 		}
-		return mobs;
+		return mobs * playerCount;
 	}
 	
 	@Override
