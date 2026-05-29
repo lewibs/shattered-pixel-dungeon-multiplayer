@@ -339,8 +339,9 @@ Dungeon.heroesNeedInitialPlacement: boolean
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
 | `heroInitialPlacement.newGame` | New multiplayer game, first `switchLevel` call, `heroesNeedInitialPlacement==true` | `heroes[1..N]` placed in passable NEIGHBOURS8 cells adjacent to `hero[0].pos`; flag cleared to false | happy path | Only code path that repositions non-primary heroes in `switchLevel` |
-| `heroInitialPlacement.load` | `InterlevelScene.restore()` → `switchLevel`, `heroesNeedInitialPlacement==false` | hero positions unchanged; each hero restores at their bundled `pos` | happy path | Core fix — the former TEMP block overwrote saved positions on every load |
-| `heroInitialPlacement.floorChange` | DESCEND/ASCEND mid-game → `switchLevel`, `heroesNeedInitialPlacement==false` | non-primary hero positions unchanged in `switchLevel`; each hero manages their own transition | happy path | Each hero's per-floor position is handled by their own `act()` / movement logic |
+| `heroInitialPlacement.load` | `InterlevelScene.restore()` → `switchLevel`, `heroesNeedInitialPlacement==false` | hero positions unchanged; each hero restores at their bundled `pos` | happy path | Flag never set in `restore()`; saved positions preserved |
+| `heroInitialPlacement.descend` | `InterlevelScene.descend()` mid-game, `heroes.size() > 1` → sets flag true → `switchLevel` | `heroes[1..N]` placed in passable NEIGHBOURS8 cells adjacent to entrance on new floor; flag cleared | happy path | Flag set in `descend()` at line 670–672, before `switchLevel` |
+| `heroInitialPlacement.ascend` | `InterlevelScene.ascend()`, `heroes.size() > 1` → sets flag true → `switchLevel` | `heroes[1..N]` placed in passable NEIGHBOURS8 cells adjacent to entrance on new floor; flag cleared | happy path | Flag set in `ascend()` at line 717–719, before `switchLevel` |
 | `heroInitialPlacement.passabilityFallback` | Adjacent cell is impassable or occupied | first valid cell from `PathFinder.NEIGHBOURS8` chosen; falls back to `pos` (same cell as hero[0]) if none found | edge case | Prevents secondary heroes spawning inside walls |
 | `heroInitialPlacement.singlePlayer` | `heroes.size() == 1` | `heroesNeedInitialPlacement` never set true; `switchLevel` placement block never entered | happy path | Single-player games are completely unaffected |
 
@@ -354,6 +355,18 @@ public static boolean heroesNeedInitialPlacement = false;
 if (heroes.size() > 1) {
     heroesNeedInitialPlacement = true;
 }
+
+// InterlevelScene.java — descend() — added just before Dungeon.switchLevel call (mid-game path only)
+if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+    Dungeon.heroesNeedInitialPlacement = true;
+}
+Dungeon.switchLevel( level, destTransition.cell() );
+
+// InterlevelScene.java — ascend() — added just before Dungeon.switchLevel call
+if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+    Dungeon.heroesNeedInitialPlacement = true;
+}
+Dungeon.switchLevel( level, destTransition.cell() );
 
 // Dungeon.switchLevel(level, pos) — replaces the former unconditional TEMP block
 if (heroesNeedInitialPlacement) {
@@ -509,7 +522,7 @@ The implemented approach supports N Hero instances while keeping all 1,800+ exis
 
 7. **Hero class selection** — Before `Dungeon.init()` runs, the multiplayer hero selection UI (see `docs/multiplayer-hero-selection-ui.md`) populates `GamesInProgress.selectedClasses` with one `HeroClass` per player. `Dungeon.init()` iterates this list and calls `spawnHero()` for each entry. If the list is null or empty it falls back to `GamesInProgress.selectedClass` for single-player compatibility.
 
-8. **Initial placement gate (`heroesNeedInitialPlacement`)** — `Dungeon.init()` sets `heroesNeedInitialPlacement = true` after spawning all heroes when `heroes.size() > 1`. `Dungeon.switchLevel()` checks this flag on the first level transition: if true, it places `heroes[1..N]` adjacent to `hero[0]` using `PathFinder.NEIGHBOURS8` (with passability validation) and immediately clears the flag to false. On all subsequent transitions — including every load via `InterlevelScene.restore()` — the flag is false and no repositioning occurs, so heroes restore at their exact saved positions. The flag is never serialized; it always defaults to false on load.
+8. **Initial placement gate (`heroesNeedInitialPlacement`)** — `Dungeon.heroesNeedInitialPlacement` is set to `true` in two places: by `Dungeon.init()` after spawning all heroes when `heroes.size() > 1` (new game start), and by `InterlevelScene.descend()` and `InterlevelScene.ascend()` just before calling `Dungeon.switchLevel()` when `heroes.size() > 1` (every stair transition mid-game). `Dungeon.switchLevel()` checks this flag: if true, it places `heroes[1..N]` adjacent to `hero[0]` using `PathFinder.NEIGHBOURS8` (with passability validation) and immediately clears the flag to false. The load path (`InterlevelScene.restore()`) never sets the flag, so heroes restore at their exact saved positions. The flag is never serialized; it always defaults to false on load. Single-player games are completely unaffected (`heroes.size() == 1` → flag never set).
 
 9. **Party stair gate** — `Level.activateTransition()` checks Chebyshev distance (≤ 1) between every non-stair hero and the stair hero before allowing a floor transition. If any hero is more than 1 tile away, the method returns `false` and emits a `GLog.w` warning ("All players must be adjacent to use the stairs!"). The check only runs when `heroes.size() > 1`; single-player games are completely unaffected. Applies to all transition types. See the `partyStairGate` flow above.
 

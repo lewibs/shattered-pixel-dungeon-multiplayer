@@ -667,6 +667,9 @@ public class InterlevelScene extends PixelScene {
 
 			LevelTransition destTransition = level.getTransition(curTransition.destType);
 			curTransition = null;
+			if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+				Dungeon.heroesNeedInitialPlacement = true;
+			}
 			Dungeon.switchLevel( level, destTransition.cell() );
 		}
 
@@ -711,9 +714,12 @@ public class InterlevelScene extends PixelScene {
 
 		LevelTransition destTransition = level.getTransition(curTransition.destType);
 		curTransition = null;
+		if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+			Dungeon.heroesNeedInitialPlacement = true;
+		}
 		Dungeon.switchLevel( level, destTransition.cell() );
 	}
-	
+
 	private void returnTo() throws IOException {
 		Mob.holdAllies( Dungeon.level );
 		Dungeon.saveAll();
