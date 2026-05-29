@@ -573,6 +573,7 @@ public abstract class Level implements Bundlable {
 				if (other == hero) continue;
 				if (!other.isAlive()) continue; // dead heroes have stale positions; ignore them
 				if (other.buff(Chasm.Falling.class) != null) continue; // falling heroes are already ahead; skip them
+				if (other.buff(Chasm.WaitingToFall.class) != null) continue; // hero queued to fall; skip them
 				if (distance(hero.pos, other.pos) > 1) {
 					GLog.w(Messages.get(Level.class, "need_party_adjacent"));
 					return false;

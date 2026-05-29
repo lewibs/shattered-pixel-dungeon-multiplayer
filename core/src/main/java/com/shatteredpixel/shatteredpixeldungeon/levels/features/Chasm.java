@@ -44,6 +44,7 @@ import com.shatteredpixel.shatteredpixeldungeon.sprites.MobSprite;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndOptions;
 import com.watabou.noosa.Game;
+import com.watabou.utils.Bundle;
 import com.watabou.noosa.Image;
 import com.watabou.noosa.audio.Sample;
 import com.watabou.utils.Callback;
@@ -97,27 +98,47 @@ public class Chasm implements Hero.Doom {
 	}
 	
 	public static void heroFall( int pos ) {
-		
-		jumpConfirmed = false;
-				
-		Sample.INSTANCE.play( Assets.Sounds.FALLING );
 
-		Level.beforeTransition();
+		jumpConfirmed = false;
+
+		Sample.INSTANCE.play( Assets.Sounds.FALLING );
 
 		if (Dungeon.hero.isAlive()) {
 			Dungeon.hero.interrupt();
-			InterlevelScene.mode = InterlevelScene.Mode.FALL;
-			if (Dungeon.level instanceof RegularLevel &&
-						((RegularLevel)Dungeon.level).room( pos ) instanceof WeakFloorRoom){
-				InterlevelScene.fallIntoPit = true;
-				Notes.remove(Notes.Landmark.DISTANT_WELL);
-			} else {
-				InterlevelScene.fallIntoPit = false;
+
+			// In multiplayer, wait until other alive heroes on this floor have left
+			if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+				for (Hero h : Dungeon.heroes) {
+					if (h == Dungeon.hero) continue;
+					if (!h.isAlive()) continue;
+					if (h.depth != Dungeon.depth) continue;
+					// At least one other alive hero is still on this floor; queue the fall
+					boolean fallIntoPit = Dungeon.level instanceof RegularLevel &&
+							((RegularLevel) Dungeon.level).room(pos) instanceof WeakFloorRoom;
+					if (fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
+					WaitingToFall w = Buff.affect(Dungeon.hero, WaitingToFall.class);
+					w.fallIntoPit = fallIntoPit;
+					return;
+				}
 			}
-			Game.switchScene( InterlevelScene.class );
+
+			doFall( pos );
 		} else {
 			Dungeon.hero.sprite.visible = false;
 		}
+	}
+
+	static void doFall( int pos ) {
+		Level.beforeTransition();
+		InterlevelScene.mode = InterlevelScene.Mode.FALL;
+		if (Dungeon.level instanceof RegularLevel &&
+				((RegularLevel) Dungeon.level).room(pos) instanceof WeakFloorRoom) {
+			InterlevelScene.fallIntoPit = true;
+			Notes.remove(Notes.Landmark.DISTANT_WELL);
+		} else {
+			InterlevelScene.fallIntoPit = false;
+		}
+		Game.switchScene( InterlevelScene.class );
 	}
 
 	@Override
@@ -183,6 +204,40 @@ public class Chasm implements Hero.Doom {
 			heroLand();
 			detach();
 			return true;
+		}
+	}
+
+	// Attached to a hero who fell into a pit while other party members are still on the floor.
+	// The actual level transition is deferred: when the rest of the party descends stairs,
+	// InterlevelScene.descend() detects this buff and places the hero at the pit landing cell
+	// with a Chasm.Falling buff instead of near the stairs entrance.
+	public static class WaitingToFall extends Buff {
+
+		public boolean fallIntoPit = false;
+
+		{
+			actPriority = VFX_PRIO;
+		}
+
+		@Override
+		public boolean act() {
+			// Just keep the buff alive; InterlevelScene.descend() handles the transition.
+			spend(TICK);
+			return true;
+		}
+
+		private static final String FALL_INTO_PIT = "fallIntoPit";
+
+		@Override
+		public void storeInBundle( Bundle bundle ) {
+			super.storeInBundle(bundle);
+			bundle.put(FALL_INTO_PIT, fallIntoPit);
+		}
+
+		@Override
+		public void restoreFromBundle( Bundle bundle ) {
+			super.restoreFromBundle(bundle);
+			fallIntoPit = bundle.getBoolean(FALL_INTO_PIT);
 		}
 	}
 
