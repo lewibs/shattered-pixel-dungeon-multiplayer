@@ -430,6 +430,77 @@ if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
 
 ---
 
+### Flow: `singleHeroDeathHandling`
+- Test files: N/A
+- Core files:
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/actors/hero/Hero.java`
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/actors/Char.java`
+
+#### Types
+
+```txt
+// Hero.die() — inserted after super.die(cause), before reallyDie(cause)
+int livingOthers = 0;  // count of alive heroes other than the dying one
+
+// Hero.activate() — called to transfer active-hero state to next hero
+// Sets Dungeon.hero, Dungeon.quickslot, InventoryPane.lastBag, pans camera
+```
+
+#### Paths
+
+| path | input | output | path-type | notes |
+| --- | --- | --- | --- | --- |
+| `singleHeroDeathHandling.nonLastHero` | `Hero.die()` called, other heroes are alive | dead hero removed from `Dungeon.heroes`; `Dungeon.heroes.get(0).activate()` called; return without item drops or game over | happy path | Core new multiplayer behavior |
+| `singleHeroDeathHandling.lastHero` | `Hero.die()` called, no other heroes alive | `reallyDie(cause)` called; items drop, save deleted, game-over screen | happy path | Identical to pre-multiplayer single-player behavior |
+| `singleHeroDeathHandling.singlePlayer` | `Dungeon.heroes.size() == 1` | `livingOthers == 0`; falls through to `reallyDie()` | happy path | Single-player completely unchanged |
+| `singleHeroDeathHandling.ankhRevive` | Ankh in inventory | hero revived, returns early before the guard is reached | happy path | Ankh block runs before `super.die()` — guard is never executed |
+| `guardDungeonFail.lastHero` | `Char.java` kill path, no other alive heroes | `Dungeon.fail(this)` called; ranking submitted | happy path | Unchanged from pre-multiplayer behavior |
+| `guardDungeonFail.notLastHero` | `Char.java` kill path, other heroes still alive | `Dungeon.fail()` skipped; game continues | happy path | Prevents premature ranking submission when a non-last hero is killed |
+
+#### Pseudocode
+
+```
+// Hero.java — Hero.die() — after Actor.fixTime() and super.die(cause):
+
+int livingOthers = 0;
+if (Dungeon.heroes != null) {
+    for (Hero h : Dungeon.heroes) {
+        if (h != this && h.isAlive()) livingOthers++;
+    }
+}
+
+if (livingOthers > 0) {
+    // Other heroes alive — remove this hero silently, no game over, no item drops
+    Dungeon.heroes.remove(this);
+    // Switch active hero to next living one (index 0 after removal)
+    Hero next = Dungeon.heroes.get(0);
+    next.activate(); // sets Dungeon.hero, Dungeon.quickslot, pans camera
+    return;
+}
+// Fall through to reallyDie() — this was the last hero
+reallyDie(cause);
+
+// Hero.java — Hero.activate():
+Dungeon.hero     = this;
+Dungeon.quickslot = this.quickslot;
+InventoryPane.lastBag = this.belongings.backpack;
+if (sprite != null) Camera.main.panTo(sprite.center(), 5f);
+QuickSlotButton.refresh();
+InventoryPane.refresh();
+
+// Char.java — around line 580 — Dungeon.fail() guard:
+boolean lastHero = true;
+if (Dungeon.heroes != null) {
+    for (Hero h : Dungeon.heroes) {
+        if (h != Dungeon.hero && h.isAlive()) { lastHero = false; break; }
+    }
+}
+if (lastHero) Dungeon.fail( this );
+GLog.n( Messages.capitalize(Messages.get(Char.class, "kill", name())) );
+```
+
+---
+
 ### Flow: `actorRegistration`
 - Core files:
   - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/actors/Actor.java`
@@ -525,6 +596,8 @@ The implemented approach supports N Hero instances while keeping all 1,800+ exis
 8. **Initial placement gate (`heroesNeedInitialPlacement`)** — `Dungeon.heroesNeedInitialPlacement` is set to `true` in two places: by `Dungeon.init()` after spawning all heroes when `heroes.size() > 1` (new game start), and by `InterlevelScene.descend()` and `InterlevelScene.ascend()` just before calling `Dungeon.switchLevel()` when `heroes.size() > 1` (every stair transition mid-game). `Dungeon.switchLevel()` checks this flag: if true, it places `heroes[1..N]` adjacent to `hero[0]` using `PathFinder.NEIGHBOURS8` (with passability validation) and immediately clears the flag to false. The load path (`InterlevelScene.restore()`) never sets the flag, so heroes restore at their exact saved positions. The flag is never serialized; it always defaults to false on load. Single-player games are completely unaffected (`heroes.size() == 1` → flag never set).
 
 9. **Party stair gate** — `Level.activateTransition()` checks Chebyshev distance (≤ 1) between every non-stair hero and the stair hero before allowing a floor transition. If any hero is more than 1 tile away, the method returns `false` and emits a `GLog.w` warning ("All players must be adjacent to use the stairs!"). The check only runs when `heroes.size() > 1`; single-player games are completely unaffected. Applies to all transition types. See the `partyStairGate` flow above.
+
+10. **Single-hero death handling** — When `Hero.die()` is called and other heroes are still alive, the dead hero is silently removed from `Dungeon.heroes` and `Dungeon.heroes.get(0).activate()` is called to transfer the active-hero singleton to the next surviving hero. No item drops occur and no game-over screen is shown. The game only ends (via `reallyDie()`) when the last living hero dies. `Char.java`'s `Dungeon.fail()` call is guarded by a `lastHero` check so rankings are only submitted on the last hero death. The Ankh resurrection path is completely unaffected — it returns before the guard is reached. Single-player is unchanged: with one hero in `Dungeon.heroes`, `livingOthers == 0` and `reallyDie()` always executes. See the `singleHeroDeathHandling` flow above.
 
 ### What remains unchanged
 
