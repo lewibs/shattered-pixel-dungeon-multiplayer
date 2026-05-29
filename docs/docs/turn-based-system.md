@@ -320,6 +320,62 @@ hero = heroes.get(0);  // singleton always points to player 0 initially
 
 ---
 
+### Flow: `heroInitialPlacement`
+- Core files:
+  - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/Dungeon.java`
+
+#### Types
+
+```txt
+Dungeon.heroesNeedInitialPlacement: boolean
+  -- static field, defaults to false.
+  -- Set true by Dungeon.init() when heroes.size() > 1 (new multiplayer game only).
+  -- Consumed and cleared by Dungeon.switchLevel() on the first level transition.
+  -- Never serialized; always resets to false on load, so the load path is unaffected.
+```
+
+#### Paths
+
+| path | input | output | path-type | notes |
+| --- | --- | --- | --- | --- |
+| `heroInitialPlacement.newGame` | New multiplayer game, first `switchLevel` call, `heroesNeedInitialPlacement==true` | `heroes[1..N]` placed in passable NEIGHBOURS8 cells adjacent to `hero[0].pos`; flag cleared to false | happy path | Only code path that repositions non-primary heroes in `switchLevel` |
+| `heroInitialPlacement.load` | `InterlevelScene.restore()` → `switchLevel`, `heroesNeedInitialPlacement==false` | hero positions unchanged; each hero restores at their bundled `pos` | happy path | Core fix — the former TEMP block overwrote saved positions on every load |
+| `heroInitialPlacement.floorChange` | DESCEND/ASCEND mid-game → `switchLevel`, `heroesNeedInitialPlacement==false` | non-primary hero positions unchanged in `switchLevel`; each hero manages their own transition | happy path | Each hero's per-floor position is handled by their own `act()` / movement logic |
+| `heroInitialPlacement.passabilityFallback` | Adjacent cell is impassable or occupied | first valid cell from `PathFinder.NEIGHBOURS8` chosen; falls back to `pos` (same cell as hero[0]) if none found | edge case | Prevents secondary heroes spawning inside walls |
+| `heroInitialPlacement.singlePlayer` | `heroes.size() == 1` | `heroesNeedInitialPlacement` never set true; `switchLevel` placement block never entered | happy path | Single-player games are completely unaffected |
+
+#### Pseudocode
+
+```
+// Dungeon.java — field declaration
+public static boolean heroesNeedInitialPlacement = false;
+
+// Dungeon.init() — after spawnHero loop
+if (heroes.size() > 1) {
+    heroesNeedInitialPlacement = true;
+}
+
+// Dungeon.switchLevel(level, pos) — replaces the former unconditional TEMP block
+if (heroesNeedInitialPlacement) {
+    heroesNeedInitialPlacement = false;
+    for (int i = 1; i < heroes.size(); i++) {
+        int placed = -1;
+        for (int offset : PathFinder.NEIGHBOURS8) {
+            int candidate = pos + offset;
+            if (candidate >= 0 && candidate < level.length()
+                    && level.passable[candidate]
+                    && Actor.findChar(candidate) == null) {
+                placed = candidate;
+                break;
+            }
+        }
+        heroes.get(i).pos = (placed != -1) ? placed : pos;
+    }
+}
+```
+
+---
+
 ### Flow: `actorRegistration`
 - Core files:
   - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/actors/Actor.java`
@@ -411,6 +467,8 @@ The implemented approach supports N Hero instances while keeping all 1,800+ exis
 6. **Save / load** — `Dungeon.heroes` is serialized under bundle key `"heroes"`. Old saves that lack this key are handled by wrapping the legacy `"hero"` object in a new list.
 
 7. **Hero class selection** — Before `Dungeon.init()` runs, the multiplayer hero selection UI (see `docs/multiplayer-hero-selection-ui.md`) populates `GamesInProgress.selectedClasses` with one `HeroClass` per player. `Dungeon.init()` iterates this list and calls `spawnHero()` for each entry. If the list is null or empty it falls back to `GamesInProgress.selectedClass` for single-player compatibility.
+
+8. **Initial placement gate (`heroesNeedInitialPlacement`)** — `Dungeon.init()` sets `heroesNeedInitialPlacement = true` after spawning all heroes when `heroes.size() > 1`. `Dungeon.switchLevel()` checks this flag on the first level transition: if true, it places `heroes[1..N]` adjacent to `hero[0]` using `PathFinder.NEIGHBOURS8` (with passability validation) and immediately clears the flag to false. On all subsequent transitions — including every load via `InterlevelScene.restore()` — the flag is false and no repositioning occurs, so heroes restore at their exact saved positions. The flag is never serialized; it always defaults to false on load.
 
 ### What remains unchanged
 

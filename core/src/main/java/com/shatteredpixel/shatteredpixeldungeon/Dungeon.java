@@ -216,6 +216,8 @@ public class Dungeon {
 	public static long seed;
 	public static long lastPlayed;
 
+	public static boolean heroesNeedInitialPlacement = false;
+
 	//we initialize the seed separately so that things like interlevelscene can access it early
 	public static void initSeed(){
 		if (daily) {
@@ -295,6 +297,10 @@ public class Dungeon {
 		} else {
 			// Fallback: single-player using legacy selectedClass
 			spawnHero(GamesInProgress.selectedClass);
+		}
+
+		if (heroes.size() > 1) {
+			heroesNeedInitialPlacement = true;
 		}
 	}
 
@@ -502,14 +508,25 @@ public class Dungeon {
 		}
 		
 		PathFinder.setMapSize(level.width(), level.height());
-		
+
 		Dungeon.level = level;
 		hero.pos = pos;
 
-		// TEMP: place extra heroes adjacent to hero1 for multiplayer testing
-		// Actor.init() below handles registration — just set positions here
-		for (int i = 1; i < heroes.size(); i++) {
-			heroes.get(i).pos = pos + i;
+		if (heroesNeedInitialPlacement) {
+			heroesNeedInitialPlacement = false;
+			for (int i = 1; i < heroes.size(); i++) {
+				int placed = -1;
+				for (int offset : PathFinder.NEIGHBOURS8) {
+					int candidate = pos + offset;
+					if (candidate >= 0 && candidate < level.length()
+							&& level.passable[candidate]
+							&& Actor.findChar(candidate) == null) {
+						placed = candidate;
+						break;
+					}
+				}
+				heroes.get(i).pos = (placed != -1) ? placed : pos;
+			}
 		}
 
 		if (hero.buff(AscensionChallenge.class) != null){
