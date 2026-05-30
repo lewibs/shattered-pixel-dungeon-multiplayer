@@ -1719,12 +1719,21 @@ public class GameScene extends PixelScene {
 	private static ArrayList<Object> getObjectsAtCell( int cell ){
 		ArrayList<Object> objects = new ArrayList<>();
 
-		if (cell == Dungeon.hero.pos) {
+		// Check all party heroes at this cell (not just the active one)
+		if (Dungeon.heroes != null) {
+			for (Hero h : Dungeon.heroes) {
+				if (h.isAlive() && h.pos == cell) {
+					objects.add(h);
+				}
+			}
+		} else if (cell == Dungeon.hero.pos) {
 			objects.add(Dungeon.hero);
+		}
 
-		} else if (Dungeon.level.heroFOV[cell]) {
-			Mob mob = (Mob) Actor.findChar(cell);
-			if (mob != null) objects.add(mob);
+		if (objects.isEmpty() && Dungeon.level.heroFOV[cell]) {
+			Char ch = Actor.findChar(cell);
+			// Only add mobs — heroes are already handled above
+			if (ch instanceof Mob) objects.add(ch);
 		}
 
 		Heap heap = Dungeon.level.heaps.get(cell);
@@ -1752,8 +1761,12 @@ public class GameScene extends PixelScene {
 	}
 
 	public static void examineObject(Object o){
-		if (o == Dungeon.hero){
+		if (o instanceof Hero){
+			// In multiplayer, temporarily swap Dungeon.hero so WndHero shows the right hero
+			Hero previous = Dungeon.hero;
+			Dungeon.hero = (Hero) o;
 			GameScene.show( new WndHero() );
+			Dungeon.hero = previous;
 		} else if ( o instanceof Mob && ((Mob) o).isActive() ){
 			GameScene.show(new WndInfoMob((Mob) o));
 			if (o instanceof Snake && !Document.ADVENTURERS_GUIDE.isPageRead(Document.GUIDE_SURPRISE_ATKS)){
