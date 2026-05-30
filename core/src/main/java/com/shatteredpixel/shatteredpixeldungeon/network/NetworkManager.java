@@ -104,6 +104,7 @@ public class NetworkManager {
         public static final byte CLASS_REJECTED = 12;
         public static final byte CLASS_UNCLAIMED = 13;
         public static final byte ITEM_IDENTIFIED = 14;
+        public static final byte NAME_ANNOUNCE    = 15; // client → host immediately on connect
     }
 
     // HeroAction type constants for serialization
@@ -159,9 +160,13 @@ public class NetworkManager {
 
             lanMode = true;
             isHost = false;
-            // Will store the assigned playerIndex and receive names via PLAYER_JOINED packets
 
-            GLog.p("Connected to host at %s:%d", ip, port);
+            // Immediately announce our name to the host so it can include it in PLAYER_JOINED
+            clientOut.writeByte(PacketType.NAME_ANNOUNCE);
+            clientOut.writeUTF(playerName);
+            clientOut.flush();
+
+            GLog.p("Connected to host at %s:%d as \"%s\"", ip, port, playerName);
         } catch (IOException e) {
             GLog.n("Failed to connect to host: %s", e.getMessage());
             lanMode = false;
@@ -467,23 +472,34 @@ public class NetworkManager {
                 outs.add(out);
 
                 connectedPlayerCount++;
+                int newPlayerIndex = connectedPlayerCount - 1;
 
-                GLog.p("Client connected, total players: %d", connectedPlayerCount);
+                // Read the client's name announcement (sent immediately on connect)
+                String clientName = "Player " + (newPlayerIndex + 1); // fallback
+                try {
+                    clientSocket.setSoTimeout(2000); // short timeout for name read
+                    byte nameType = in.readByte();
+                    if (nameType == PacketType.NAME_ANNOUNCE) {
+                        String announced = in.readUTF().trim();
+                        if (!announced.isEmpty()) clientName = announced;
+                    }
+                } catch (IOException e) {
+                    GLog.w("Could not read client name, using fallback");
+                } finally {
+                    clientSocket.setSoTimeout(SOCKET_TIMEOUT_MS); // restore normal timeout
+                }
+                playerNames[newPlayerIndex] = clientName;
 
-                // Send PLAYER_JOINED packet to new client
-                out.writeByte(PacketType.PLAYER_JOINED);
-                out.writeInt(connectedPlayerCount - 1); // playerIndex (0-based)
-                out.writeInt(connectedPlayerCount);
-                out.writeUTF(playerName); // send the new player's name
-                out.flush();
+                GLog.p("Client \"%s\" connected, total players: %d", clientName, connectedPlayerCount);
 
-                // Broadcast updated player count to all clients
-                for (DataOutputStream clientOut : outs) {
-                    clientOut.writeByte(PacketType.PLAYER_JOINED);
-                    clientOut.writeInt(connectedPlayerCount - 1);
-                    clientOut.writeInt(connectedPlayerCount);
-                    clientOut.writeUTF(playerName); // send the new player's name
-                    clientOut.flush();
+                // Tell the new client their assigned index and name, then broadcast to all
+                for (int i = 0; i < outs.size(); i++) {
+                    DataOutputStream dest = outs.get(i);
+                    dest.writeByte(PacketType.PLAYER_JOINED);
+                    dest.writeInt(newPlayerIndex);
+                    dest.writeInt(connectedPlayerCount);
+                    dest.writeUTF(clientName);
+                    dest.flush();
                 }
 
                 // Notify host lobby scene that a player has joined
