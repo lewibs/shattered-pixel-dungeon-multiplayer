@@ -123,10 +123,12 @@ import com.shatteredpixel.shatteredpixeldungeon.windows.WndInfoTrap;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndKeyBindings;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndMessage;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndOptions;
+import com.shatteredpixel.shatteredpixeldungeon.windows.WndPeerDisconnected;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndPlayerCount;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndResurrect;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndUpgrade;
 import com.watabou.gltextures.TextureCache;
+import com.watabou.utils.Signal;
 import com.watabou.glwrap.Blending;
 import com.watabou.input.ControllerHandler;
 import com.watabou.input.KeyBindings;
@@ -226,8 +228,35 @@ public class GameScene extends PixelScene {
 		Dungeon.level.playLevelMusic();
 
 		SPDSettings.lastClass(Dungeon.hero.heroClass.ordinal());
-		
+
 		super.create();
+
+		// Register disconnect signal listener for LAN multiplayer
+		if (NetworkManager.lanMode) {
+			NetworkManager.peerDisconnectSignal.add(new Signal.Listener<NetworkManager.PeerDisconnected>() {
+				@Override
+				public boolean onSignal(NetworkManager.PeerDisconnected event) {
+					ShatteredPixelDungeon.runOnRenderThread(() -> {
+						// Pause actor thread
+						Actor.keepActorThreadAlive = false;
+
+						// Auto-save if host
+						if (NetworkManager.isHostMode()) {
+							try {
+								Dungeon.saveAll();
+							} catch (IOException e) {
+								GLog.n("Failed to auto-save: %s", e.getMessage());
+							}
+						}
+
+						// Show disconnect dialog
+						addToFront(new WndPeerDisconnected(event.hero));
+					});
+					return true;
+				}
+			});
+		}
+
 		Camera.main.zoom( GameMath.gate(minZoom, defaultZoom + SPDSettings.zoom(), maxZoom));
 		Camera.main.edgeScroll.set(1);
 
@@ -770,7 +799,7 @@ public class GameScene extends PixelScene {
 	}
 	
 	public void destroy() {
-		
+
 		//tell the actor thread to finish, then wait for it to complete any actions it may be doing.
 		if (!waitForActorThread( 4500, true )){
 			Throwable t = new Throwable();
@@ -779,11 +808,14 @@ public class GameScene extends PixelScene {
 		}
 
 		Emitter.freezeEmitters = false;
-		
+
+		// Clean up disconnect signal listener
+		NetworkManager.peerDisconnectSignal.removeAll();
+
 		scene = null;
 		Badges.saveGlobal();
 		Journal.saveGlobal();
-		
+
 		super.destroy();
 	}
 	
@@ -1945,7 +1977,7 @@ public class GameScene extends PixelScene {
 			long localHash = computeHash(turn);
 			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.sendHash(localHash, turn);
 			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.HashPacket peerPacket =
-				com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.receiveHash();
+				com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.receiveHash(Dungeon.hero);
 
 			if (localHash != peerPacket.hash) {
 				handleDesync(localHash, peerPacket.hash, turn);

@@ -6,6 +6,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
+import com.watabou.utils.Signal;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -54,6 +55,17 @@ public class NetworkManager {
 
     // UDP discovery port
     public static final int UDP_DISCOVERY_PORT = 7778;
+
+    // Disconnect event signal
+    public static class PeerDisconnected {
+        public Hero hero;
+
+        public PeerDisconnected(Hero hero) {
+            this.hero = hero;
+        }
+    }
+
+    public static Signal<PeerDisconnected> peerDisconnectSignal = new Signal<>();
 
     // Getter for host status
     public static boolean isHostMode() {
@@ -155,6 +167,42 @@ public class NetworkManager {
     }
 
     /**
+     * Opens a new ServerSocket on port 7777 and resumes UDP discovery broadcast.
+     * Called when "Open Rejoin Room" is tapped - allows disconnected hero slot to be claimed by a new player.
+     */
+    public static void openRejoinRoom() throws IOException {
+        try {
+            // Clear previous host state
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
+            peerSockets.clear();
+            ins.clear();
+            outs.clear();
+
+            // Re-open ServerSocket
+            serverSocket = new ServerSocket(7777);
+            lanMode = true;
+            isHost = true;
+            gameStarted = false;
+
+            // Start accepting clients in background
+            new Thread(() -> acceptClientsLoop(), "network-accept-loop").start();
+
+            // Resume UDP discovery broadcast
+            String roomName = "Rejoin Game";
+            int currentPlayers = Dungeon.heroes != null ? Dungeon.heroes.size() : 1;
+            startDiscoveryBroadcast(roomName, currentPlayers);
+
+            GLog.p("Rejoin room opened on port 7777");
+        } catch (IOException e) {
+            GLog.n("Failed to open rejoin room: %s", e.getMessage());
+            lanMode = false;
+            throw e;
+        }
+    }
+
+    /**
      * Sends an action to all connected peers.
      * Serializes the HeroAction into an ACTION packet and writes to all output streams.
      */
@@ -197,8 +245,9 @@ public class NetworkManager {
         if (!lanMode || remoteHero == null) return;
 
         new Thread(() -> {
+            DataInputStream in = null;
             try {
-                DataInputStream in = isHost ? ins.get(0) : clientIn; // Simplified for now
+                in = isHost ? ins.get(0) : clientIn; // Simplified for now
 
                 while (lanMode && remoteHero != null) {
                     try {
@@ -219,17 +268,23 @@ public class NetworkManager {
                                 Actor.class.notifyAll();
                             }
                         }
-                    } catch (SocketTimeoutException e) {
-                        GLog.w("Peer disconnected (timeout)");
-                        // Signal peer disconnection
-                        lanMode = false;
+                    } catch (IOException e) {
+                        if (!Thread.currentThread().isInterrupted()) {
+                            GLog.w("Peer disconnected: %s", e.getClass().getSimpleName());
+                            // Dispatch disconnect signal
+                            peerDisconnectSignal.dispatch(new PeerDisconnected(remoteHero));
+                            // Wake actor thread
+                            synchronized (Actor.class) {
+                                Actor.class.notifyAll();
+                            }
+                        }
                         break;
                     }
                 }
-            } catch (InterruptedIOException e) {
-                Thread.currentThread().interrupt();
-            } catch (IOException e) {
-                GLog.w("Error receiving action: %s", e.getMessage());
+            } catch (Exception e) {
+                if (e instanceof InterruptedIOException) {
+                    Thread.currentThread().interrupt();
+                }
             }
         }, "net-reader-action").start();
     }
@@ -266,7 +321,7 @@ public class NetworkManager {
      * Receives a hash packet from the peer.
      * Blocking call with timeout set on the socket.
      */
-    public static HashPacket receiveHash() throws IOException {
+    public static HashPacket receiveHash(Hero associatedHero) throws IOException {
         if (!lanMode) return null;
 
         try {
@@ -278,8 +333,18 @@ public class NetworkManager {
             int turn = in.readInt();
             long hash = in.readLong();
             return new HashPacket(turn, hash);
-        } catch (SocketTimeoutException e) {
-            GLog.w("Hash receive timeout - peer may have disconnected");
+        } catch (IOException e) {
+            if (!Thread.currentThread().isInterrupted()) {
+                GLog.w("Hash receive failed: %s - peer may have disconnected", e.getClass().getSimpleName());
+                // Dispatch disconnect signal
+                if (associatedHero != null) {
+                    peerDisconnectSignal.dispatch(new PeerDisconnected(associatedHero));
+                    // Wake actor thread
+                    synchronized (Actor.class) {
+                        Actor.class.notifyAll();
+                    }
+                }
+            }
             throw e;
         }
     }
