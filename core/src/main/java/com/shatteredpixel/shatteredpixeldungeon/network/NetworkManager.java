@@ -5,7 +5,10 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
+import com.shatteredpixel.shatteredpixeldungeon.items.Item;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
+import com.watabou.noosa.Game;
+import com.watabou.utils.Reflection;
 import com.watabou.utils.Signal;
 
 import java.io.DataInputStream;
@@ -80,6 +83,11 @@ public class NetworkManager {
     }
     public static OnPlayerJoined onPlayerJoined = null;
 
+    // Callback invoked when an item is identified on a peer device
+    public static Runnable onItemIdentified = null; // set by game loop
+    // Store last received class name for the callback to read
+    public static String lastIdentifiedClass = null;
+
     // Packet type constants
     public static class PacketType {
         public static final byte ACTION = 1;
@@ -95,6 +103,7 @@ public class NetworkManager {
         public static final byte CLASS_CLAIMED = 11;
         public static final byte CLASS_REJECTED = 12;
         public static final byte CLASS_UNCLAIMED = 13;
+        public static final byte ITEM_IDENTIFIED = 14;
     }
 
     // HeroAction type constants for serialization
@@ -256,21 +265,34 @@ public class NetworkManager {
                 while (lanMode && remoteHero != null) {
                     try {
                         byte type = in.readByte();
-                        if (type != PacketType.ACTION) continue;
 
-                        int heroId = in.readInt();
-                        byte actionType = in.readByte();
-                        int targetPos = in.readInt();
+                        if (type == PacketType.ACTION) {
+                            int heroId = in.readInt();
+                            byte actionType = in.readByte();
+                            int targetPos = in.readInt();
 
-                        // Decode and set the action
-                        HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
-                        if (decodedAction != null) {
-                            remoteHero.curAction = decodedAction;
+                            // Decode and set the action
+                            HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
+                            if (decodedAction != null) {
+                                remoteHero.curAction = decodedAction;
 
-                            // Notify actor thread that new action is available
-                            synchronized (Actor.class) {
-                                Actor.class.notifyAll();
+                                // Notify actor thread that new action is available
+                                synchronized (Actor.class) {
+                                    Actor.class.notifyAll();
+                                }
                             }
+                        } else if (type == PacketType.ITEM_IDENTIFIED) {
+                            String className = in.readUTF();
+                            // Apply on render thread
+                            Game.runOnRenderThread(() -> {
+                                try {
+                                    Class<?> cls = Class.forName(className);
+                                    Item item = (Item) Reflection.newInstance(cls);
+                                    if (item != null) item.identify(false);
+                                } catch (Exception e) {
+                                    GLog.w("Could not apply remote identification: %s", e.getMessage());
+                                }
+                            });
                         }
                     } catch (IOException e) {
                         if (!Thread.currentThread().isInterrupted()) {
@@ -318,6 +340,29 @@ public class NetworkManager {
             }
         } catch (IOException e) {
             GLog.n("Failed to send hash: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Sends an item identification packet to broadcast that an item has been identified.
+     * The class name is sent so peers can instantiate and identify the same item.
+     */
+    public static void sendItemIdentified(String itemClassName) {
+        if (!lanMode) return;
+        try {
+            if (isHost) {
+                for (DataOutputStream out : outs) {
+                    out.writeByte(PacketType.ITEM_IDENTIFIED);
+                    out.writeUTF(itemClassName);
+                    out.flush();
+                }
+            } else if (clientOut != null) {
+                clientOut.writeByte(PacketType.ITEM_IDENTIFIED);
+                clientOut.writeUTF(itemClassName);
+                clientOut.flush();
+            }
+        } catch (IOException e) {
+            GLog.w("Failed to send item identification: %s", e.getMessage());
         }
     }
 
