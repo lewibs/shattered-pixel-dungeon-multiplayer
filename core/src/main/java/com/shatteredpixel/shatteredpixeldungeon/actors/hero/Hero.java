@@ -923,8 +923,10 @@ public class Hero extends Char {
 		FollowHeroBuff follow = buff(FollowHeroBuff.class);
 		if (follow != null) {
 			Hero followTarget = follow.getTargetHero();
-			if (followTarget == null || !followTarget.isAlive() || visibleEnemies.size() > 0) {
-				// Target gone or enemy spotted — cancel follow and give control back
+			if (followTarget == null || !followTarget.isAlive()
+					|| followTarget.ready          // target reached destination or is idle
+					|| visibleEnemies.size() > 0) {// follower spotted an enemy
+				// Target stopped or is gone / we're in combat — give control back
 				follow.detach();
 			} else {
 				int targetPos = followTarget.pos;
