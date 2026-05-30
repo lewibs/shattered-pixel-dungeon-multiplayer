@@ -21,6 +21,7 @@
 
 package com.shatteredpixel.shatteredpixeldungeon.windows;
 
+import com.shatteredpixel.shatteredpixeldungeon.Chrome;
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.GamesInProgress;
 import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
@@ -31,6 +32,7 @@ import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RedButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RenderedTextBlock;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
+import com.watabou.noosa.TextInput;
 
 import java.io.IOException;
 
@@ -46,9 +48,13 @@ public class WndLANMenu extends Window {
 	private static final int BTN_HEIGHT = 20;
 	private static final int GAP        = 2;
 	private static final int TITLE_HEIGHT = 16;
+	private static final int INPUT_HEIGHT = 20;
 
 	// Error label shown when hostGame() fails (lanMenu.hostFail path)
 	private RenderedTextBlock errorLabel;
+
+	// Text input field for player name
+	private TextInput nameInput;
 
 	// Resume slot (non-zero if opened from a LAN save slot)
 	private int resumeSlot = 0;
@@ -71,6 +77,19 @@ public class WndLANMenu extends Window {
 		add(title);
 
 		float pos = TITLE_HEIGHT;
+
+		// Name input field
+		int textSize = (int)PixelScene.uiCamera.zoom * 9;
+		nameInput = new TextInput(Chrome.get(Chrome.Type.TOAST_WHITE), false, textSize) {
+			@Override
+			public void enterPressed() {
+				// Trigger host action on enter
+				onHostClicked();
+			}
+		};
+		nameInput.setRect(0, pos, WIDTH, INPUT_HEIGHT);
+		add(nameInput);
+		pos += INPUT_HEIGHT + GAP;
 
 		// "Host Room" button — lanMenu.host path
 		RedButton btnHost = new RedButton("Host Room") {
@@ -114,6 +133,11 @@ public class WndLANMenu extends Window {
 	 */
 	protected void onHostClicked() {
 		try {
+			// Read the player name from the input field
+			String inputName = nameInput.getText().trim();
+			String name = inputName.isEmpty() ? "Player" : inputName;
+			NetworkManager.playerName = name;
+
 			// If resuming, load the game first
 			if (resumeSlot > 0) {
 				Dungeon.loadGame(resumeSlot);
@@ -133,6 +157,11 @@ public class WndLANMenu extends Window {
 	 * Hides this dialog and transitions to LanRoomListScene (lanMenu.join path).
 	 */
 	protected void onJoinClicked() {
+		// Read the player name from the input field
+		String inputName = nameInput.getText().trim();
+		String name = inputName.isEmpty() ? "Player" : inputName;
+		NetworkManager.playerName = name;
+
 		hide();
 		ShatteredPixelDungeon.switchScene(LanRoomListScene.class);
 	}

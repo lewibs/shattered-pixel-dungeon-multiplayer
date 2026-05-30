@@ -36,6 +36,7 @@ public class NetworkManager {
     public static boolean lanMode = false;
     public static int localPlayerIndex = 0;
     public static boolean gameStarted = false;
+    public static String playerName = "Player";  // session-only, not persisted
 
     // Instance fields
     private static ServerSocket serverSocket = null;
@@ -44,6 +45,7 @@ public class NetworkManager {
     private static List<DataOutputStream> outs = new ArrayList<>();
     private static boolean isHost = false;
     private static int connectedPlayerCount = 0;
+    private static String[] playerNames = new String[4];  // stores player names by index
 
     // Single socket for client mode
     private static Socket clientSocket = null;
@@ -121,6 +123,7 @@ public class NetworkManager {
             isHost = true;
             localPlayerIndex = 0;
             connectedPlayerCount = 1; // Host counts as player 0
+            playerNames[0] = playerName; // store the host's name at index 0
 
             // Start accepting clients in a background thread
             new Thread(() -> acceptClientsLoop(), "network-accept-loop").start();
@@ -147,6 +150,7 @@ public class NetworkManager {
 
             lanMode = true;
             isHost = false;
+            // Will store the assigned playerIndex and receive names via PLAYER_JOINED packets
 
             GLog.p("Connected to host at %s:%d", ip, port);
         } catch (IOException e) {
@@ -425,6 +429,7 @@ public class NetworkManager {
                 out.writeByte(PacketType.PLAYER_JOINED);
                 out.writeInt(connectedPlayerCount - 1); // playerIndex (0-based)
                 out.writeInt(connectedPlayerCount);
+                out.writeUTF(playerName); // send the new player's name
                 out.flush();
 
                 // Broadcast updated player count to all clients
@@ -432,6 +437,7 @@ public class NetworkManager {
                     clientOut.writeByte(PacketType.PLAYER_JOINED);
                     clientOut.writeInt(connectedPlayerCount - 1);
                     clientOut.writeInt(connectedPlayerCount);
+                    clientOut.writeUTF(playerName); // send the new player's name
                     clientOut.flush();
                 }
 
@@ -466,6 +472,32 @@ public class NetworkManager {
      */
     public static DataInputStream getClientInput() {
         return clientIn;
+    }
+
+    /**
+     * Returns the array of player names by index.
+     */
+    public static String[] getPlayerNames() {
+        return playerNames;
+    }
+
+    /**
+     * Sets the player name for a given index.
+     */
+    public static void setPlayerName(int index, String name) {
+        if (index >= 0 && index < playerNames.length) {
+            playerNames[index] = name != null ? name : "Player";
+        }
+    }
+
+    /**
+     * Gets the player name for a given index.
+     */
+    public static String getPlayerName(int index) {
+        if (index >= 0 && index < playerNames.length && playerNames[index] != null) {
+            return playerNames[index];
+        }
+        return "Player";
     }
 
     /**
@@ -587,6 +619,7 @@ public class NetworkManager {
         connectedPlayerCount = 0;
         gameStarted = false;
         onPlayerJoined = null;
+        playerNames = new String[4];  // reset player names array
     }
 
     // Test seam — override sendAction for unit tests (null = use real network)

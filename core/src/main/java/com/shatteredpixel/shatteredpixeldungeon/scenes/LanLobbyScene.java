@@ -110,7 +110,12 @@ public class LanLobbyScene extends PixelScene {
 		for (int i = 0; i < SLOT_COUNT; i++) {
 			slotLabels[i] = renderTextBlock(6);
 			if (i == 0) {
-				slotLabels[i].text(NetworkManager.isHost() ? "Slot 1: Host (You)" : "Slot 1: Host", (int) contentWidth);
+				String hostName = NetworkManager.getPlayerName(0);
+				if (NetworkManager.isHost()) {
+					slotLabels[i].text("Slot 1: " + hostName + " (You)", (int) contentWidth);
+				} else {
+					slotLabels[i].text("Slot 1: " + hostName, (int) contentWidth);
+				}
 			} else {
 				slotLabels[i].text("Slot " + (i + 1) + ": Empty", (int) contentWidth);
 			}
@@ -187,9 +192,15 @@ public class LanLobbyScene extends PixelScene {
 	public void onPlayerJoined(int playerIndex, int total) {
 		// Update the slot label for this player (playerIndex is 0-based; 0 = host)
 		int slot = playerIndex; // slot 0 = host already filled
-		if (slot > 0 && slot < SLOT_COUNT) {
-			slotLabels[slot].text("Slot " + (slot + 1) + ": Player " + (slot + 1),
-					(int) slotLabels[slot].width());
+		if (slot >= 0 && slot < SLOT_COUNT) {
+			String playerName = NetworkManager.getPlayerName(playerIndex);
+			if (slot == 0 && NetworkManager.isHost()) {
+				slotLabels[slot].text("Slot " + (slot + 1) + ": " + playerName + " (You)",
+						(int) slotLabels[slot].width());
+			} else {
+				slotLabels[slot].text("Slot " + (slot + 1) + ": " + playerName,
+						(int) slotLabels[slot].width());
+			}
 			align(slotLabels[slot]);
 		}
 
@@ -270,6 +281,9 @@ public class LanLobbyScene extends PixelScene {
 					if (type == NetworkManager.PacketType.PLAYER_JOINED) {
 						int playerIndex = in.readInt();
 						int total       = in.readInt();
+						String playerName = in.readUTF(); // read the player name
+						// Store the player name in NetworkManager
+						NetworkManager.setPlayerName(playerIndex, playerName);
 						Game.runOnRenderThread(new Callback() {
 							@Override
 							public void call() {
