@@ -349,6 +349,12 @@ public class StartScene extends PixelScene {
 				name.setPos(x + (width - name.width()) / 2f, y + (height - name.height()) / 2f);
 				align(name);
 			}
+
+			// Position LAN badge in top-right corner if present
+			if (!lanBadge.text().isEmpty()) {
+				lanBadge.setPos(x + width - 4 - lanBadge.width(), y + 2);
+				align(lanBadge);
+			}
 		}
 
 		@Override
@@ -361,8 +367,9 @@ public class StartScene extends PixelScene {
 			} else if (info != null && info.isMultiplayerSave) {
 				// For LAN saves, show WndLANMenu with resume option
 				GamesInProgress.curSlot = slot;
-				ShatteredPixelDungeon.scene().add(new WndLANMenu(slot));
+				ShatteredPixelDungeon.scene().addToFront(new WndLANMenu(slot));
 			} else {
+				GamesInProgress.curSlot = slot;
 				ShatteredPixelDungeon.scene().add(new WndGameInProgress(slot));
 			}
 		}
