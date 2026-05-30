@@ -572,6 +572,7 @@ public abstract class Level implements Bundlable {
 			for (Hero other : Dungeon.heroes) {
 				if (other == hero) continue;
 				if (!other.isAlive()) continue; // dead heroes have stale positions; ignore them
+				if (other.buff(Chasm.WaitingToFall.class) != null) continue; // waiting-to-fall heroes don't block the party
 				if (distance(hero.pos, other.pos) > 1) {
 					GLog.w(Messages.get(Level.class, "need_party_adjacent"));
 					return false;
@@ -1183,8 +1184,8 @@ public abstract class Level implements Bundlable {
 			}
 			
 			if (pit[ch.pos]){
-				if (ch == Dungeon.hero) {
-					Chasm.heroFall(ch.pos);
+				if (ch instanceof Hero) {
+					Chasm.heroFall((Hero)ch, ch.pos);
 				} else if (ch instanceof Mob) {
 					Chasm.mobFall( (Mob)ch );
 				}
