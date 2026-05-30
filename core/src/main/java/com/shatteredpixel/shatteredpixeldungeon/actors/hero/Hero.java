@@ -161,6 +161,7 @@ import com.shatteredpixel.shatteredpixeldungeon.levels.traps.Trap;
 import com.shatteredpixel.shatteredpixeldungeon.mechanics.Ballistica;
 import com.shatteredpixel.shatteredpixeldungeon.mechanics.ShadowCaster;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.AlchemyScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
@@ -855,6 +856,9 @@ public class Hero extends Char {
 	
 	// Called whenever this hero becomes the active player. Updates all singletons and UI to reflect this hero.
 	public void activate() {
+		if (NetworkManager.lanMode && this != Dungeon.hero) {
+			return;
+		}
 		Dungeon.hero      = this;
 		Dungeon.quickslot = this.quickslot;
 		InventoryPane.lastBag = this.belongings.backpack;
