@@ -323,7 +323,14 @@ public class Hero extends Char {
 
 		bundle.put( HTBOOST, HTBoost );
 
+		// Point the global quickslot at this hero's quickslot so that
+		// Item.storeInBundle() can correctly detect and save each item's slot position.
+		// Without this, non-active heroes' items never see themselves as "in a quickslot"
+		// because Dungeon.quickslot points to whichever hero last called activate().
+		QuickSlot prevQuickslot = Dungeon.quickslot;
+		Dungeon.quickslot = this.quickslot;
 		belongings.storeInBundle( bundle );
+		Dungeon.quickslot = prevQuickslot;
 
 		Bundle qsBundle = new Bundle();
 		quickslot.storePlaceholders( qsBundle );
