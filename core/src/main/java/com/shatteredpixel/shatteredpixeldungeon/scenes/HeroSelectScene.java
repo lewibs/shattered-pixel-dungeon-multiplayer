@@ -356,7 +356,9 @@ public class HeroSelectScene extends PixelScene {
 			float fadeLeftScale = 47 * (leftArea - background.x)/leftArea;
 			fadeLeft.scale = new PointF(3 + Math.max(0, fadeLeftScale), background.height());
 
-			title.setPos(insets.left + (leftArea - title.width())/2f, (h-uiHeight)/2f);
+			float titleY = (h-uiHeight)/2f;
+			if (subtitle != null) titleY -= (subtitle.height() + 2) / 2f;
+			title.setPos(insets.left + (leftArea - title.width())/2f, titleY);
 			align(title);
 
 			if (subtitle != null) {
@@ -458,7 +460,9 @@ public class HeroSelectScene extends PixelScene {
 				add(blocker);
 			}
 
-			title.setPos(insets.left + (w - title.width()) / 2f, insets.top + (h - HeroBtn.HEIGHT - title.height() - 4));
+			float portraitTitleY = insets.top + (h - HeroBtn.HEIGHT - title.height() - 4);
+			if (subtitle != null) portraitTitleY -= (subtitle.height() + 2) / 2f;
+			title.setPos(insets.left + (w - title.width()) / 2f, portraitTitleY);
 
 			if (subtitle != null) {
 				subtitle.setPos(insets.left + (w - subtitle.width()) / 2f, title.bottom() + 2);
