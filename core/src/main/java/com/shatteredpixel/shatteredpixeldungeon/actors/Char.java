@@ -1282,7 +1282,8 @@ public abstract class Char extends Actor {
 
 		pos = step;
 		
-		if (this != Dungeon.hero) {
+		// Mobs use heroFOV for visibility; hero party members are always visible.
+		if (this != Dungeon.hero && !(this instanceof com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero)) {
 			sprite.visible = Dungeon.level.heroFOV[pos];
 		}
 		
