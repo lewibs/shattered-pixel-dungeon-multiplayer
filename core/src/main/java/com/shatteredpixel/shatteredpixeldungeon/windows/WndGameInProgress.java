@@ -37,7 +37,9 @@ import com.shatteredpixel.shatteredpixeldungeon.ui.RedButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RenderedTextBlock;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
 import com.shatteredpixel.shatteredpixeldungeon.utils.DungeonSeed;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.watabou.noosa.Game;
+import com.watabou.noosa.Image;
 
 import java.util.Locale;
 
@@ -50,27 +52,38 @@ public class WndGameInProgress extends Window {
 	private float pos;
 	
 	public WndGameInProgress(final int slot){
-		
+
 		final GamesInProgress.Info info = GamesInProgress.check(slot);
-		
-		String className = null;
+
+		boolean isMultiplayer = info.heroClasses != null && info.heroClasses.size() > 1;
+
+		if (isMultiplayer) {
+			buildMultiplayerView(slot, info);
+		} else {
+			buildSinglePlayerView(slot, info);
+		}
+	}
+
+	private void buildSinglePlayerView(final int slot, final GamesInProgress.Info info) {
+
+		String className;
 		if (info.subClass != HeroSubClass.NONE){
 			className = info.subClass.title();
 		} else {
 			className = info.heroClass.title();
 		}
-		
+
 		IconTitle title = new IconTitle();
 		title.icon( HeroSprite.avatar(info.heroClass, info.armorTier) );
 		title.label((Messages.get(this, "title", info.level, className)).toUpperCase(Locale.ENGLISH));
 		title.color(Window.TITLE_COLOR);
 		title.setRect( 0, 0, WIDTH, 0 );
 		add(title);
-		
+
 		if (info.challenges > 0) GAP -= 2;
-		
+
 		pos = title.bottom() + GAP;
-		
+
 		if (info.challenges > 0) {
 			RedButton btnChallenges = new RedButton( Messages.get(this, "challenges") ) {
 				@Override
@@ -82,10 +95,10 @@ public class WndGameInProgress extends Window {
 			float btnW = btnChallenges.reqWidth() + 2;
 			btnChallenges.setRect( (WIDTH - btnW)/2, pos, btnW , 18 );
 			add( btnChallenges );
-			
+
 			pos = btnChallenges.bottom() + GAP;
 		}
-		
+
 		pos += GAP;
 
 		int strBonus = info.strBonus;
@@ -95,7 +108,7 @@ public class WndGameInProgress extends Window {
 		if (info.shld > 0)  statSlot( Messages.get(this, "health"), info.hp + "+" + info.shld + "/" + info.ht );
 		else                statSlot( Messages.get(this, "health"), (info.hp) + "/" + info.ht );
 		statSlot( Messages.get(this, "exp"), info.exp + "/" + Hero.maxExp(info.level) );
-		
+
 		pos += GAP;
 		statSlot( Messages.get(this, "gold"), info.goldCollected );
 		statSlot( Messages.get(this, "depth"), info.maxDepth );
@@ -110,16 +123,73 @@ public class WndGameInProgress extends Window {
 		} else {
 			statSlot( Messages.get(this, "dungeon_seed"), DungeonSeed.convertToCode(info.seed) );
 		}
-		
+
 		pos += GAP;
-		
+		addContinueAndErase(slot, info);
+	}
+
+	private void buildMultiplayerView(final int slot, final GamesInProgress.Info info) {
+
+		// Title: "N Players"
+		IconTitle title = new IconTitle();
+		title.icon( HeroSprite.avatar(info.heroClasses.get(0), info.armorTiers.get(0)) );
+		title.label( Messages.get(this, "multiplayer_title", info.heroClasses.size()).toUpperCase(Locale.ENGLISH) );
+		title.color(Window.TITLE_COLOR);
+		title.setRect(0, 0, WIDTH, 0);
+		add(title);
+
+		pos = title.bottom() + GAP + GAP;
+
+		// One row per hero: avatar on left, "Lvl N  ClassName" on right
+		float rowH = 14f;
+		for (int i = 0; i < info.heroClasses.size(); i++) {
+			HeroClass cls = info.heroClasses.get(i);
+			int tier      = info.armorTiers.get(i);
+			int lvl       = info.heroLevels.get(i);
+
+			Image avatar = HeroSprite.avatar(cls, tier);
+			avatar.x = 2;
+			avatar.y = pos + (rowH - avatar.height()) / 2f;
+			PixelScene.align(avatar);
+			add(avatar);
+
+			RenderedTextBlock heroLabel = PixelScene.renderTextBlock(
+					Messages.get(this, "hero_row", lvl, cls.title()), 7);
+			heroLabel.setPos(avatar.x + avatar.width() + 4,
+					pos + (rowH - heroLabel.height()) / 2f);
+			PixelScene.align(heroLabel);
+			add(heroLabel);
+
+			pos += rowH + 2;
+		}
+
+		pos += GAP;
+
+		// "Multiplayer" badge
+		RenderedTextBlock badge = PixelScene.renderTextBlock(
+				Messages.get(this, "multiplayer_badge"), 6);
+		badge.hardlight(0xFFD700);
+		badge.setPos((WIDTH - badge.width()) / 2f, pos);
+		PixelScene.align(badge);
+		add(badge);
+		pos = badge.bottom() + GAP;
+
+		pos += GAP;
+		statSlot(Messages.get(this, "depth"), info.maxDepth);
+
+		pos += GAP;
+		addContinueAndErase(slot, info);
+	}
+
+	private void addContinueAndErase(final int slot, final GamesInProgress.Info info) {
+
 		RedButton cont = new RedButton(Messages.get(this, "continue")){
 			@Override
 			protected void onClick() {
 				super.onClick();
-				
+
 				GamesInProgress.curSlot = slot;
-				
+
 				Dungeon.hero = null;
 				Dungeon.daily = Dungeon.dailyReplay = false;
 				ActionIndicator.clearAction();
@@ -127,12 +197,12 @@ public class WndGameInProgress extends Window {
 				ShatteredPixelDungeon.switchScene(InterlevelScene.class);
 			}
 		};
-		
+
 		RedButton erase = new RedButton( Messages.get(this, "erase")){
 			@Override
 			protected void onClick() {
 				super.onClick();
-				
+
 				ShatteredPixelDungeon.scene().add(new WndOptions(Icons.get(Icons.WARNING),
 						Messages.get(WndGameInProgress.class, "erase_warn_title"),
 						Messages.get(WndGameInProgress.class, "erase_warn_body"),
@@ -150,14 +220,14 @@ public class WndGameInProgress extends Window {
 		};
 
 		cont.icon(Icons.get(Icons.ENTER));
-		cont.setRect(0, pos, WIDTH/2 -1, 20);
+		cont.setRect(0, pos, WIDTH/2 - 1, 20);
 		add(cont);
 
 		erase.icon(Icons.get(Icons.CLOSE));
 		erase.setRect(WIDTH/2 + 1, pos, WIDTH/2 - 1, 20);
 		add(erase);
-		
-		resize(WIDTH, (int)cont.bottom()+1);
+
+		resize(WIDTH, (int)cont.bottom() + 1);
 	}
 	
 	private void statSlot( String label, String value ) {
