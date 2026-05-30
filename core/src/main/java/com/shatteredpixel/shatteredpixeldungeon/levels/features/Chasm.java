@@ -54,6 +54,10 @@ public class Chasm implements Hero.Doom {
 
 	public static boolean jumpConfirmed = false;
 	private static int heroPos;
+
+	// Overridable in tests to intercept the scene switch without a running libGDX context.
+	// Production code leaves this null.
+	static Runnable sceneSwitchOverride = null;
 	
 	public static void heroJump( final Hero hero ) {
 		heroPos = hero.pos;
@@ -101,10 +105,10 @@ public class Chasm implements Hero.Doom {
 
 		jumpConfirmed = false;
 
-		Sample.INSTANCE.play( Assets.Sounds.FALLING );
+		if (Sample.INSTANCE != null) Sample.INSTANCE.play( Assets.Sounds.FALLING );
 
 		if (!hero.isAlive()) {
-			hero.sprite.visible = false;
+			if (hero.sprite != null) hero.sprite.visible = false;
 			return;
 		}
 
@@ -123,7 +127,8 @@ public class Chasm implements Hero.Doom {
 		InterlevelScene.mode = InterlevelScene.Mode.FALL;
 		InterlevelScene.fallIntoPit = isFallIntoPit(pos);
 		if (InterlevelScene.fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
-		Game.switchScene( InterlevelScene.class );
+		if (sceneSwitchOverride != null) sceneSwitchOverride.run();
+		else Game.switchScene( InterlevelScene.class );
 	}
 
 	// Package-private: true when at least one other alive, non-waiting hero exists (used in tests)
