@@ -238,4 +238,17 @@ public class FileUtils {
 		return baos.toByteArray();
 	}
 
+	/**
+	 * Deserializes a Bundle from a byte array.
+	 * Inverse operation of bundleToBytes().
+	 *
+	 * @param bytes the byte array containing the serialized bundle
+	 * @return the deserialized Bundle
+	 * @throws IOException if deserialization fails
+	 */
+	public static Bundle bundleFromBytes( byte[] bytes ) throws IOException {
+		java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(bytes);
+		return Bundle.read(bais);
+	}
+
 }

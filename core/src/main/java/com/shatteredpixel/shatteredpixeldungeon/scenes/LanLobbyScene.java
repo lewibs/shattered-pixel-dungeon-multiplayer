@@ -54,6 +54,9 @@ public class LanLobbyScene extends PixelScene {
 	private static final int MAX_PLAYERS = 4;
 	private static final int SLOT_COUNT  = MAX_PLAYERS;
 
+	// Resume mode: true if this lobby was opened from a LAN save slot
+	public static boolean resumeMode = false;
+
 	// UI references updated from background threads via Game.runOnRenderThread
 	private RenderedTextBlock statusLabel;
 	private RenderedTextBlock ipLabel;

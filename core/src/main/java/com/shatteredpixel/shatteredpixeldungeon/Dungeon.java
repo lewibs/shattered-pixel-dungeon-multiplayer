@@ -76,6 +76,7 @@ import com.shatteredpixel.shatteredpixeldungeon.levels.features.LevelTransition;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.secret.SecretRoom;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.special.SpecialRoom;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene;
 import com.shatteredpixel.shatteredpixeldungeon.QuickSlot;
 import com.shatteredpixel.shatteredpixeldungeon.ui.QuickSlotButton;
@@ -716,6 +717,7 @@ public class Dungeon {
 			bundle.put( "heroClassNames", heroClassNames );
 			bundle.put( "heroArmorTiers", heroArmorTiers );
 			bundle.put( "heroLevels", heroLevels );
+			bundle.put( "isMultiplayerSave", NetworkManager.lanMode && NetworkManager.isHostMode() );
 			bundle.put( DEPTH, depth );
 			bundle.put( BRANCH, branch );
 
@@ -786,7 +788,12 @@ public class Dungeon {
 	
 	public static void saveAll() throws IOException {
 		if (hero != null && (hero.isAlive() || WndResurrect.instance != null)) {
-			
+
+			// In LAN mode, only the host saves; clients skip this entirely
+			if (NetworkManager.lanMode && !NetworkManager.isHostMode()) {
+				return;
+			}
+
 			Actor.fixTime();
 			updateLevelExplored();
 			saveGame( GamesInProgress.curSlot );
@@ -800,10 +807,22 @@ public class Dungeon {
 	public static void loadGame( int save ) throws IOException {
 		loadGame( save, true );
 	}
-	
+
+	public static void loadGame( Bundle bundle ) throws IOException {
+		loadGameFromBundle( bundle, true );
+	}
+
+	public static void loadGame( Bundle bundle, boolean fullLoad ) throws IOException {
+		loadGameFromBundle( bundle, fullLoad );
+	}
+
 	public static void loadGame( int save, boolean fullLoad ) throws IOException {
-		
+
 		Bundle bundle = FileUtils.bundleFromFile( GamesInProgress.gameFile( save ) );
+		loadGameFromBundle( bundle, fullLoad );
+	}
+
+	private static void loadGameFromBundle( Bundle bundle, boolean fullLoad ) throws IOException {
 
 		initialVersion = bundle.getInt( INIT_VER );
 		version = bundle.getInt( VERSION );
@@ -990,6 +1009,8 @@ public class Dungeon {
 			info.armorTiers.add(info.armorTier);
 			info.heroLevels.add(info.level);
 		}
+
+		info.isMultiplayerSave = bundle.getBoolean("isMultiplayerSave");
 	}
 	
 	public static void fail( Object cause ) {

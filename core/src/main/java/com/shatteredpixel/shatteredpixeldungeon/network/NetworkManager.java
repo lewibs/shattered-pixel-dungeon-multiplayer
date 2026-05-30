@@ -820,4 +820,138 @@ public class NetworkManager {
             this.hash = hash;
         }
     }
+
+    /**
+     * Data holder for save lobby info packets (resume mode).
+     */
+    public static class SaveLobbyInfo {
+        public int playerCount;
+        public String[] heroNames;
+        public HeroClass[] heroClasses;
+        public int[] heroHP;
+
+        public SaveLobbyInfo(int playerCount, String[] heroNames, HeroClass[] heroClasses, int[] heroHP) {
+            this.playerCount = playerCount;
+            this.heroNames = heroNames;
+            this.heroClasses = heroClasses;
+            this.heroHP = heroHP;
+        }
+    }
+
+    // For resume mode: holds the received save lobby info
+    private static SaveLobbyInfo saveLobbyInfo = null;
+
+    /**
+     * Host only: send SAVE_LOBBY_INFO to a client (resume mode).
+     */
+    public static void sendSaveLobbyInfo(DataOutputStream out, SaveLobbyInfo info) throws IOException {
+        out.writeByte(PacketType.SAVE_LOBBY_INFO);
+        out.writeInt(info.playerCount);
+        out.writeInt(info.heroNames.length);
+        for (String name : info.heroNames) {
+            out.writeUTF(name);
+        }
+        for (HeroClass cls : info.heroClasses) {
+            out.writeUTF(cls.name());
+        }
+        for (int hp : info.heroHP) {
+            out.writeInt(hp);
+        }
+        out.flush();
+    }
+
+    /**
+     * Client only: retrieve the received SAVE_LOBBY_INFO.
+     */
+    public static SaveLobbyInfo getSaveLobbyInfo() {
+        return saveLobbyInfo;
+    }
+
+    /**
+     * Host only: broadcast RESUME_START to all clients.
+     */
+    public static void broadcastResumeStart(int playerCount) throws IOException {
+        for (DataOutputStream out : outs) {
+            out.writeByte(PacketType.RESUME_START);
+            out.writeInt(playerCount);
+            out.flush();
+        }
+    }
+
+    /**
+     * Host only: broadcast RESUME_HANDSHAKE with bundle bytes and hero assignments.
+     */
+    public static void broadcastResumeHandshake(byte[] bundleBytes, int[] heroAssignments) throws IOException {
+        for (DataOutputStream out : outs) {
+            out.writeByte(PacketType.RESUME_HANDSHAKE);
+            out.writeInt(bundleBytes.length);
+            out.write(bundleBytes);
+            out.writeInt(heroAssignments.length);
+            for (int idx : heroAssignments) {
+                out.writeInt(idx);
+            }
+            out.flush();
+        }
+    }
+
+    /**
+     * Host only: wait for HERO_CLAIM packets from all clients (non-host players).
+     * Returns an array where index i contains the claimed hero index for player i.
+     */
+    public static int[] waitForHeroClaims(int clientCount) throws IOException {
+        int[] claims = new int[clientCount];
+        for (int i = 0; i < clientCount; i++) {
+            claims[i] = -1; // -1 = not claimed yet
+        }
+
+        // Read HERO_CLAIM from each client in turn
+        for (int i = 0; i < clientCount; i++) {
+            byte packetType = ins.get(i).readByte();
+            if (packetType == PacketType.HERO_CLAIM) {
+                int heroIndex = ins.get(i).readInt();
+                claims[i] = heroIndex;
+            }
+        }
+
+        return claims;
+    }
+
+    /**
+     * Client only: wait for SAVE_LOBBY_INFO from host (resume mode).
+     * Starts a background thread that reads the packet and stores the info.
+     */
+    public static void waitForSaveLobbyInfo() {
+        new Thread(() -> {
+            try {
+                DataInputStream in = clientIn;
+                byte type = in.readByte();
+                if (type == PacketType.SAVE_LOBBY_INFO) {
+                    int playerCount = in.readInt();
+                    int nameCount = in.readInt();
+                    String[] heroNames = new String[nameCount];
+                    for (int i = 0; i < nameCount; i++) {
+                        heroNames[i] = in.readUTF();
+                    }
+                    HeroClass[] heroClasses = new HeroClass[nameCount];
+                    for (int i = 0; i < nameCount; i++) {
+                        String className = in.readUTF();
+                        heroClasses[i] = HeroClass.valueOf(className);
+                    }
+                    int[] heroHP = new int[nameCount];
+                    for (int i = 0; i < nameCount; i++) {
+                        heroHP[i] = in.readInt();
+                    }
+                    saveLobbyInfo = new SaveLobbyInfo(playerCount, heroNames, heroClasses, heroHP);
+                    GLog.p("Save lobby info received — %d heroes", playerCount);
+                    synchronized (NetworkManager.class) {
+                        NetworkManager.class.notifyAll();
+                    }
+                }
+            } catch (SocketTimeoutException e) {
+                GLog.w("SAVE_LOBBY_INFO timeout - peer disconnected");
+            } catch (IOException e) {
+                GLog.n("Error waiting for SAVE_LOBBY_INFO: %s", e.getMessage());
+            }
+        }, "net-wait-save-lobby-info").start();
+    }
 }

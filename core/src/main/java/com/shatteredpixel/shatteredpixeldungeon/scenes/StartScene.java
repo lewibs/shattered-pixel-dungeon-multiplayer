@@ -39,6 +39,7 @@ import com.shatteredpixel.shatteredpixeldungeon.ui.StyledButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
 import com.shatteredpixel.shatteredpixeldungeon.windows.IconTitle;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndGameInProgress;
+import com.shatteredpixel.shatteredpixeldungeon.windows.WndLANMenu;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndPlayerCount;
 import com.watabou.noosa.BitmapText;
 import com.watabou.noosa.Camera;
@@ -172,6 +173,7 @@ public class StartScene extends PixelScene {
 		private final ArrayList<Image> heroImages   = new ArrayList<>();
 		private RenderedTextBlock name;
 		private RenderedTextBlock lastPlayed;
+		private RenderedTextBlock lanBadge;
 
 		private Image     steps;
 		private BitmapText depth;
@@ -191,6 +193,8 @@ public class StartScene extends PixelScene {
 			add(name);
 			lastPlayed = PixelScene.renderTextBlock(6);
 			add(lastPlayed);
+			lanBadge = PixelScene.renderTextBlock(6);
+			add(lanBadge);
 		}
 
 		public void set(int slot) {
@@ -264,6 +268,14 @@ public class StartScene extends PixelScene {
 				if      (info.daily && info.dailyReplay) steps.hardlight(1f, 0.5f, 2f);
 				else if (info.daily)                     steps.hardlight(0.5f, 1f, 2f);
 				else if (!info.customSeed.isEmpty())     steps.hardlight(1f, 1.5f, 0.67f);
+
+				// Show LAN badge if this is a multiplayer save
+				if (info.isMultiplayerSave) {
+					lanBadge.text("LAN");
+					lanBadge.hardlight(0x88CCFF);
+				} else {
+					lanBadge.text("");
+				}
 			}
 
 			layout();
@@ -341,10 +353,15 @@ public class StartScene extends PixelScene {
 
 		@Override
 		protected void onClick() {
+			GamesInProgress.Info info = GamesInProgress.check(slot);
 			if (newGame) {
 				GamesInProgress.selectedClass = null;
 				GamesInProgress.curSlot = slot;
 				ShatteredPixelDungeon.scene().add(new WndPlayerCount());
+			} else if (info != null && info.isMultiplayerSave) {
+				// For LAN saves, show WndLANMenu with resume option
+				GamesInProgress.curSlot = slot;
+				ShatteredPixelDungeon.scene().add(new WndLANMenu(slot));
 			} else {
 				ShatteredPixelDungeon.scene().add(new WndGameInProgress(slot));
 			}

@@ -21,6 +21,8 @@
 
 package com.shatteredpixel.shatteredpixeldungeon.windows;
 
+import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
+import com.shatteredpixel.shatteredpixeldungeon.GamesInProgress;
 import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
 import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.LanLobbyScene;
@@ -48,8 +50,16 @@ public class WndLANMenu extends Window {
 	// Error label shown when hostGame() fails (lanMenu.hostFail path)
 	private RenderedTextBlock errorLabel;
 
+	// Resume slot (non-zero if opened from a LAN save slot)
+	private int resumeSlot = 0;
+
 	public WndLANMenu() {
+		this(0);
+	}
+
+	public WndLANMenu(int resumeSlot) {
 		super();
+		this.resumeSlot = resumeSlot;
 
 		RenderedTextBlock title = PixelScene.renderTextBlock("LAN Game", 12);
 		title.hardlight(TITLE_COLOR);
@@ -97,13 +107,21 @@ public class WndLANMenu extends Window {
 
 	/**
 	 * Called when the player taps "Host Room".
+	 * If resumeSlot > 0: load the save, then start networking in resume mode.
+	 * Otherwise: start networking fresh.
 	 * Calls NetworkManager.hostGame(7777), then transitions to LanLobbyScene.
 	 * On IOException, shows an error toast and keeps the dialog open (lanMenu.hostFail path).
 	 */
 	protected void onHostClicked() {
 		try {
+			// If resuming, load the game first
+			if (resumeSlot > 0) {
+				Dungeon.loadGame(resumeSlot);
+			}
+
 			NetworkManager.hostGame(7777);
 			hide();
+			LanLobbyScene.resumeMode = (resumeSlot > 0);
 			ShatteredPixelDungeon.switchScene(LanLobbyScene.class);
 		} catch (IOException e) {
 			showToast("Could not open room: " + e.getMessage());
