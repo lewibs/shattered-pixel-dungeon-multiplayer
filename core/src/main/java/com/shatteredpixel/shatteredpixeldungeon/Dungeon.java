@@ -514,19 +514,7 @@ public class Dungeon {
 
 		if (heroesNeedInitialPlacement) {
 			heroesNeedInitialPlacement = false;
-			for (int i = 1; i < heroes.size(); i++) {
-				int placed = -1;
-				for (int offset : PathFinder.NEIGHBOURS8) {
-					int candidate = pos + offset;
-					if (candidate >= 0 && candidate < level.length()
-							&& level.passable[candidate]
-							&& Actor.findChar(candidate) == null) {
-						placed = candidate;
-						break;
-					}
-				}
-				heroes.get(i).pos = (placed != -1) ? placed : pos;
-			}
+			placeHeroesNearEntrance(level, pos, heroes);
 		}
 
 		if (hero.buff(AscensionChallenge.class) != null){
@@ -563,6 +551,30 @@ public class Dungeon {
 			ShatteredPixelDungeon.reportException(e);
 			/*This only catches IO errors. Yes, this means things can go wrong, and they can go wrong catastrophically.
 			But when they do the user will get a nice 'report this issue' dialogue, and I can fix the bug.*/
+		}
+	}
+
+	// Package-private for testing. Places heroes[1..N] adjacent to entrancePos on the
+	// new level. Uses a local occupied set because Actor.init() has not run yet —
+	// Actor.findChar() would return null for every cell at this point.
+	static void placeHeroesNearEntrance(Level level, int entrancePos,
+	                                    ArrayList<Hero> heroes) {
+		HashSet<Integer> occupied = new HashSet<>();
+		occupied.add(entrancePos); // hero[0] is at the entrance
+		for (int i = 1; i < heroes.size(); i++) {
+			int placed = -1;
+			for (int offset : PathFinder.NEIGHBOURS8) {
+				int candidate = entrancePos + offset;
+				if (candidate >= 0 && candidate < level.length()
+						&& level.passable[candidate]
+						&& !occupied.contains(candidate)) {
+					placed = candidate;
+					break;
+				}
+			}
+			int heroPos = (placed != -1) ? placed : entrancePos;
+			heroes.get(i).pos = heroPos;
+			occupied.add(heroPos);
 		}
 	}
 
