@@ -21,15 +21,60 @@
 
 ### Implementation Order
 
-Implement in this strict order to respect dependencies:
+Run each sub-plan using `/dark-factory:execute <path>`. Execute them in the order below — check each box when done before moving to the next.
 
-1. `lan-01` and `lan-02` (independent — implement in parallel or either order)
-2. `lan-03` (needs `lan-02` for NetworkManager calls)
-3. `lan-04` (needs `lan-01`, `lan-02`, `lan-03`)
-4. `lan-05` (needs `lan-01`, `lan-02`)
-5. `lan-06` (needs `lan-02`, `lan-05`)
-6. `lan-07` (needs `lan-01`, `lan-02`, `lan-03`, `lan-04`)
-7. `lan-08` (needs `lan-02`, `lan-05`)
+> **How to execute:** Type `/dark-factory:execute docs/plans/<filename>` in Claude Code, then wait for the PR to be opened before running the next one.
+
+---
+
+## Execution Checklist
+
+- [ ] **lan-01** — `Dungeon.hero` pinning + `activate()` gate
+  ```
+  /dark-factory:execute docs/plans/lan-01-local-hero-pinning.md
+  ```
+
+- [ ] **lan-02** — NetworkManager, TCP/UDP protocol, `FileUtils.bundleToBytes`
+  ```
+  /dark-factory:execute docs/plans/lan-02-network-manager.md
+  ```
+  _(lan-01 and lan-02 are independent — can run in either order)_
+
+- [ ] **lan-03** — WndPlayerCount LAN button, lobby UI, UDP room discovery
+  ```
+  /dark-factory:execute docs/plans/lan-03-lobby-ui.md
+  ```
+  _(requires lan-02 done first)_
+
+- [ ] **lan-04** — Per-device hero select, class reservation sync, HANDSHAKE, dungeon init
+  ```
+  /dark-factory:execute docs/plans/lan-04-new-game-flow.md
+  ```
+  _(requires lan-01, lan-02, lan-03 done first)_
+
+- [ ] **lan-05** — Turn sync, queued action input, toolbar always-on
+  ```
+  /dark-factory:execute docs/plans/lan-05-turn-sync.md
+  ```
+  _(requires lan-01, lan-02 done first)_
+
+- [ ] **lan-06** — Desync detection, hash exchange, host-authoritative resync
+  ```
+  /dark-factory:execute docs/plans/lan-06-desync-detection.md
+  ```
+  _(requires lan-02, lan-05 done first)_
+
+- [ ] **lan-07** — Host-only save, LAN badge, resume handshake, WndHeroClaim
+  ```
+  /dark-factory:execute docs/plans/lan-07-save-load.md
+  ```
+  _(requires lan-01, lan-02, lan-03, lan-04 done first)_
+
+- [ ] **lan-08** — Disconnect detection, auto-save, rejoin lobby, Save and Exit
+  ```
+  /dark-factory:execute docs/plans/lan-08-disconnect.md
+  ```
+  _(requires lan-02, lan-05 done first)_
 
 ## Stage Gate Tracker
 
