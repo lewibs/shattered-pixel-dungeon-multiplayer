@@ -110,28 +110,37 @@ public class Chasm implements Hero.Doom {
 
 		hero.interrupt();
 
-		if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
-			for (Hero h : Dungeon.heroes) {
-				if (h == hero) continue;
-				if (!h.isAlive()) continue;
-				if (h.buff(WaitingToFall.class) != null) continue;
-				// Another alive, non-waiting hero is still on this floor — park and wait
-				boolean fallIntoPit = Dungeon.level instanceof RegularLevel
-						&& ((RegularLevel) Dungeon.level).room(pos) instanceof WeakFloorRoom;
-				if (fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
-				WaitingToFall w = Buff.affect(hero, WaitingToFall.class);
-				w.fallIntoPit = fallIntoPit;
-				return;
-			}
+		if (shouldWaitForParty(hero)) {
+			boolean fallIntoPit = isFallIntoPit(pos);
+			if (fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
+			WaitingToFall w = Buff.affect(hero, WaitingToFall.class);
+			w.fallIntoPit = fallIntoPit;
+			return;
 		}
 
 		// Single player, or all other alive heroes are also waiting — fall now
 		Level.beforeTransition();
 		InterlevelScene.mode = InterlevelScene.Mode.FALL;
-		InterlevelScene.fallIntoPit = Dungeon.level instanceof RegularLevel
-				&& ((RegularLevel) Dungeon.level).room(pos) instanceof WeakFloorRoom;
+		InterlevelScene.fallIntoPit = isFallIntoPit(pos);
 		if (InterlevelScene.fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
 		Game.switchScene( InterlevelScene.class );
+	}
+
+	// Package-private: true when at least one other alive, non-waiting hero exists (used in tests)
+	static boolean shouldWaitForParty( Hero hero ) {
+		if (Dungeon.heroes == null || Dungeon.heroes.size() <= 1) return false;
+		for (Hero h : Dungeon.heroes) {
+			if (h == hero) continue;
+			if (!h.isAlive()) continue;
+			if (h.buff(WaitingToFall.class) != null) continue;
+			return true;
+		}
+		return false;
+	}
+
+	private static boolean isFallIntoPit( int pos ) {
+		return Dungeon.level instanceof RegularLevel
+				&& ((RegularLevel) Dungeon.level).room(pos) instanceof WeakFloorRoom;
 	}
 
 	@Override
