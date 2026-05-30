@@ -45,6 +45,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Charm;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Combo;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Drowsy;
+import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.FollowHeroBuff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Foresight;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.GreaterHaste;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.HeroDisguise;
@@ -907,15 +908,31 @@ public class Hero extends Char {
 		checkVisibleMobs();
 		BuffIndicator.refreshHero();
 		BuffIndicator.refreshBoss();
-		
+
 		if (paralysed > 0) {
-			
+
 			curAction = null;
-			
+
 			spendAndNext( TICK );
 			return false;
 		}
-		
+
+		// followHeroMovement: auto-move toward target hero
+		FollowHeroBuff follow = buff(FollowHeroBuff.class);
+		if (curAction == null && follow != null) {
+			if (follow.targetStopped() || visibleEnemies.size() > 0) {
+				follow.detach();
+				// fall through to normal ready() path below (player regains control)
+			} else {
+				int targetPos = follow.getTargetPos();
+				if (targetPos >= 0 && targetPos != pos) {
+					curAction = new HeroAction.Move(targetPos);
+					// fall through to curAction dispatch (actMove handles pathfinding)
+				}
+				// if targetPos == pos (already there), fall through to ready()
+			}
+		}
+
 		boolean actResult;
 		if (curAction == null) {
 			
