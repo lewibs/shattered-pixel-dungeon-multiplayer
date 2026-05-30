@@ -68,6 +68,7 @@ import com.shatteredpixel.shatteredpixeldungeon.journal.Document;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Journal;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Notes;
 import com.shatteredpixel.shatteredpixeldungeon.levels.Level;
+import com.shatteredpixel.shatteredpixeldungeon.levels.features.Chasm;
 import com.shatteredpixel.shatteredpixeldungeon.levels.RegularLevel;
 import com.shatteredpixel.shatteredpixeldungeon.levels.Terrain;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.Room;
@@ -1059,7 +1060,16 @@ public class GameScene extends PixelScene {
 		Hero previous = Dungeon.hero;
 		Dungeon.hero = h;
 		HeroSprite hs = new HeroSprite();
-		hs.place( h.pos );
+
+		// Hero is mid-fall (WaitingToFall): they don't exist on this floor.
+		// Ensure pos=-1 and sprite invisible before the first render frame.
+		if (h.buff(Chasm.WaitingToFall.class) != null) {
+			h.pos = -1;
+			hs.visible = false;
+		} else {
+			hs.place( h.pos );
+		}
+
 		hs.updateArmor();
 		mobs.add( hs );
 		Dungeon.hero = previous;
