@@ -27,7 +27,7 @@ flowchart TD
   subgraph "NEEDS REVISION"
     F2["Flow 2: hostGameSetup\nHeroSelectScene is pass-and-play,\nnot per-device"]
     F4["Flow 4: dungeonInit\nDungeon.init() structure differs;\nGenerator seeding is not trivially locked"]
-    F5["Flow 5: turnSync\nHero.act() has WaitingToFall guard +\nFollowHeroBuff before curAction dispatch;\nplan steps 1-2 need updating"]
+    F5["Flow 5: turnSync\nHero.act() has WaitingToFall guard +\nFollowHeroBuff before curAction dispatch;\nFollowHeroBuff works in LAN (produces a Move action,\ntransmitted as normal); plan steps 1-2 need updating"]
     F6["Flow 6: desyncDetection\nhash formula uses Dungeon.hero.HP —\nambiguous in multi-hero context"]
     F7["Flow 7: hostSaveAndLoad\nsave already writes all heroes;\nGamesInProgress has no isMultiplayerSave flag yet"]
     F8["Flow 8: disconnectHandling\ncorrect in intent; 'continue solo'\nremoval path conflicts with Hero.die() logic"]
@@ -36,7 +36,7 @@ flowchart TD
   subgraph "MISSING from plan"
     M1["Per-hero FOV: each device\nmust observe() from its own hero;\ncurrent heroFOV is one shared array"]
     M2["Generator state sync\nGenerator.storeInBundle encodes\ndeck seeds — must be transmitted at handshake"]
-    M3["FollowHeroBuff in network context\n— applies only to pass-and-play,\nnot to LAN (hero always local on its device)"]
+    M3["FollowHeroBuff in network context\n— works in both modes; produces HeroAction.Move\nlocally, transmitted as a normal move packet"]
     M4["Actor thread architecture:\nremote hero must block Actor.process()\nloop, not just Hero.act()"]
     M5["GamesInProgress.selectedClasses\nalready populated by pass-and-play UI;\nhandshake must overwrite it correctly"]
   end
@@ -154,7 +154,7 @@ The plan uses array index notation. The field is `ArrayList<Hero> heroes`. The p
 
 **Revision needed:**
 1. The `localPlayerIndex` check must happen at step 9 (after all guards, after `activate()`, after `FollowHeroBuff` is resolved), not at the top of `act()`. The WaitingToFall and dead-hero guards must run regardless of local vs. remote.
-2. `FollowHeroBuff` is a pass-and-play mechanic — it auto-follows another hero on the same device. In LAN mode each device has only one hero, so `FollowHeroBuff` should never be attached to a remote hero. The network path should assert this does not happen rather than trying to route through it.
+2. `FollowHeroBuff` works correctly in LAN mode. It runs on the local device, produces a `HeroAction.Move` targeting the leader's position, and that action is transmitted over the network as a normal move packet. The remote device simply receives a move action and has no knowledge of the buff. No suppression needed.
 3. The blocking `NetworkManager.receiveAction()` call happens inside the actor thread (`Actor.process()` loop), which also holds the actor processing lock. This means the actor thread blocks waiting for network I/O. This is correct in principle (the loop will not advance until all heroes have acted) but must be designed to be interruptible when the thread is stopped (`keepActorThreadAlive = false` or `Thread.interrupt()`).
 
 **What the plan says (step 2):**
@@ -246,9 +246,9 @@ For a fresh game (Flow 4): `Dungeon.init()` calls `Generator.fullReset()` which 
 
 For a resumed game (Flow 7, `RESUME_HANDSHAKE`): `Generator.storeInBundle()` serializes per-category seeds and drop counts. This data must be included in the bundle transmitted via `RESUME_HANDSHAKE`, or the client will have a diverged Generator state from turn 1. The existing `Dungeon.saveGame()` already includes `Generator.storeInBundle()` in the bundle, so using the full save bundle for `RESUME_HANDSHAKE` (as the plan intends) covers this automatically.
 
-### Gap 3: `FollowHeroBuff` is Pass-and-Play Only
+### Gap 3: `FollowHeroBuff` Works in Both Modes
 
-`FollowHeroBuff` exists to let one hero automatically follow another when they are on the same device and the active player switches. In LAN mode each device controls only one hero; the "other" hero's turns run automatically via `NetworkManager.receiveAction()`. `FollowHeroBuff` should not be attached to any hero in LAN mode. The Network layer initialization (Flow 1) should include a flag or mode enum that suppresses `FollowHeroBuff` attachment in LAN sessions.
+`FollowHeroBuff` is compatible with LAN mode. When active, it generates a `HeroAction.Move` on the local device during the local hero's turn. That action is then transmitted as a normal move packet — the remote device receives it and simulates the move identically, with no knowledge that a buff produced it. No suppression or special handling is required.
 
 ### Gap 4: Actor Thread Architecture for Network Blocking
 
@@ -288,7 +288,7 @@ Option 1 is the better UX but requires `NetworkManager.localPlayerIndex` to be a
 | `disconnectHandling` | Flow 8 | NEEDS REVISION | "Continue solo" live-hero removal path does not exist; must be built |
 | Per-hero FOV / camera | Missing | NEW | `activate()` swaps camera even for remote turns; gating needed for LAN |
 | Generator sync on resume | Missing | NEW | Full save bundle in RESUME_HANDSHAKE covers this; must be explicit |
-| FollowHeroBuff suppression | Missing | NEW | Must not attach in LAN mode |
+| FollowHeroBuff in LAN | N/A | NO CHANGE NEEDED | Works in both modes — produces HeroAction.Move locally, transmitted as normal move packet |
 | Actor thread blocking | Missing | NEW | `receiveAction()` must use `setSoTimeout()` and handle `InterruptedException` |
 | `selectedClasses` handshake ordering | Missing | NEW | Client must write `selectedClasses` before entering `InterlevelScene` |
 
