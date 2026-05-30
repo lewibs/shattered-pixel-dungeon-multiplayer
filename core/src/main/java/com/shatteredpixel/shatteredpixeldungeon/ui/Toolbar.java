@@ -263,6 +263,7 @@ public class Toolbar extends Component {
 				super.createChildren();
 				potionIcon = new Image(Assets.Sprites.ITEM_ICONS);
 				potionIcon.frame(ItemSpriteSheet.Icons.film.get(ItemSpriteSheet.Icons.POTION_HASTE));
+				potionIcon.scale.set(1.3f);
 				add(potionIcon);
 			}
 
@@ -570,8 +571,12 @@ public class Toolbar extends Component {
 		if (SPDSettings.interfaceSize() > 0){
 			btnInventory.setPos(right - btnInventory.width(), y);
 			btnWait.setPos(btnInventory.left() - btnWait.width(), y);
-			btnFollow.setPos(btnWait.left() - btnFollow.width(), y);
-			btnSearch.setPos(btnFollow.left() - btnSearch.width(), y);
+			if (btnFollow.visible) {
+				btnFollow.setPos(btnWait.left() - btnFollow.width(), y);
+				btnSearch.setPos(btnFollow.left() - btnSearch.width(), y);
+			} else {
+				btnSearch.setPos(btnWait.left() - btnSearch.width(), y);
+			}
 
 			right = btnSearch.left();
 			for(int i = endingSlot; i >= startingSlot; i--) {
@@ -620,8 +625,12 @@ public class Toolbar extends Component {
 		switch(mode){
 			case SPLIT:
 				btnWait.setPos(x, y);
-				btnFollow.setPos(btnWait.right(), y);
-				btnSearch.setPos(btnFollow.right(), y);
+				if (btnFollow.visible) {
+					btnFollow.setPos(btnWait.right(), y);
+					btnSearch.setPos(btnFollow.right(), y);
+				} else {
+					btnSearch.setPos(btnWait.right(), y);
+				}
 
 				btnInventory.setPos(right - btnInventory.width(), y);
 
@@ -642,7 +651,8 @@ public class Toolbar extends Component {
 
 			//center = group but.. well.. centered, so all we need to do is pre-emptively set the right side further in.
 			case CENTER:
-				float toolbarWidth = btnWait.width() + btnFollow.width() + btnSearch.width() + btnInventory.width();
+				float toolbarWidth = btnWait.width() + btnSearch.width() + btnInventory.width();
+				if (btnFollow.visible) toolbarWidth += btnFollow.width();
 				for(Button slot : btnQuick){
 					if (slot.visible) toolbarWidth += slot.width();
 				}
@@ -651,8 +661,12 @@ public class Toolbar extends Component {
 
 			case GROUP:
 				btnWait.setPos(right - btnWait.width(), y);
-				btnFollow.setPos(btnWait.left() - btnFollow.width(), y);
-				btnSearch.setPos(btnFollow.left() - btnSearch.width(), y);
+				if (btnFollow.visible) {
+					btnFollow.setPos(btnWait.left() - btnFollow.width(), y);
+					btnSearch.setPos(btnFollow.left() - btnSearch.width(), y);
+				} else {
+					btnSearch.setPos(btnWait.left() - btnSearch.width(), y);
+				}
 				btnInventory.setPos(btnSearch.left() - btnInventory.width(), y);
 
 				btnQuick[startingSlot].setPos(btnInventory.left() - btnQuick[startingSlot].width(), y + 2);
@@ -684,6 +698,9 @@ public class Toolbar extends Component {
 		if (SPDSettings.flipToolbar()) {
 
 			btnWait.setPos( (right - btnWait.right()), y);
+			if (btnFollow.visible) {
+				btnFollow.setPos( (right - btnFollow.right()), y);
+			}
 			btnSearch.setPos( (right - btnSearch.right()), y);
 			btnInventory.setPos( (right - btnInventory.right()), y);
 
@@ -720,9 +737,16 @@ public class Toolbar extends Component {
 				}
 			}
 		}
-		
+
 		if (!Dungeon.hero.isAlive()) {
 			btnInventory.enable(true);
+		}
+
+		boolean multiPlayer = Dungeon.heroes != null && Dungeon.heroes.size() > 1;
+		if (btnFollow.visible != multiPlayer) {
+			btnFollow.visible = multiPlayer;
+			btnFollow.active = multiPlayer && lastEnabled;
+			layout();
 		}
 	}
 
