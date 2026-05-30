@@ -105,7 +105,6 @@ public class HeroSelectScene extends PixelScene {
 	private boolean lanHeroConfirmed  = false;  // local player pressed Select
 	private boolean lanReadyToStart   = false;  // host: all HERO_READY received
 	private boolean lanHandshakeReady = false;  // client: HANDSHAKE received
-	private StyledButton lanStartBtn;           // host-only "Start Game" button shown after all ready
 
 	@Override
 	public void create() {
@@ -191,6 +190,11 @@ public class HeroSelectScene extends PixelScene {
 				if (GamesInProgress.selectedClass == null) return;
 
 				if (NetworkManager.lanMode) {
+					// Host tapping "Start Game" after all players confirmed
+					if (lanReadyToStart && NetworkManager.isHost()) {
+						launchLanGame();
+						return;
+					}
 					// LAN mode: lock in local selection, send HERO_READY, wait async
 					lanHeroConfirmed = true;
 					// Lock out unconfirmed claim — the confirmed class stays in selectedClasses
@@ -484,24 +488,6 @@ public class HeroSelectScene extends PixelScene {
 			add(new WndVictoryCongrats());
 		}
 
-		// LAN host: a "Start Game" button shown only after all players have confirmed
-		if (NetworkManager.lanMode && NetworkManager.isHost()) {
-			lanStartBtn = new StyledButton(Chrome.Type.GREY_BUTTON_TR, Messages.titleCase(Messages.get(HeroSelectScene.class, "lan_start"))) {
-				@Override
-				protected void onClick() {
-					super.onClick();
-					launchLanGame();
-				}
-			};
-			lanStartBtn.icon(Icons.get(Icons.ENTER));
-			lanStartBtn.setSize(100, 21);
-			lanStartBtn.textColor(Window.TITLE_COLOR);
-			lanStartBtn.setPos((Camera.main.width - lanStartBtn.width()) / 2f,
-					Camera.main.height - insets.bottom - lanStartBtn.height() - 4);
-			lanStartBtn.visible = lanStartBtn.active = false;
-			add(lanStartBtn);
-		}
-
 		fadeIn();
 
 	}
@@ -624,8 +610,11 @@ public class HeroSelectScene extends PixelScene {
 			if (NetworkManager.isHost() && !lanReadyToStart) {
 				if (NetworkManager.isHeroReadyReceived()) {
 					lanReadyToStart = true;
-					// Show the "Start Game" button so host can launch when ready
-					if (lanStartBtn != null) lanStartBtn.visible = lanStartBtn.active = true;
+					// Reuse startBtn: change text to "Start Game" and re-enable for host
+					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "lan_start")));
+					startBtn.setSize(startBtn.reqWidth() + 8, 21);
+					startBtn.enable(true);
+					startBtn.visible = true;
 				}
 			} else if (!NetworkManager.isHost() && !lanHandshakeReady) {
 				if (NetworkManager.isHandshakeReceived()) {
