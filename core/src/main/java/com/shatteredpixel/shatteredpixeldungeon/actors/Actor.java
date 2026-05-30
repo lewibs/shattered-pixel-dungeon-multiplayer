@@ -199,6 +199,7 @@ public abstract class Actor implements Bundlable {
 		int n = Dungeon.heroes.size();
 		for (int i = 0; i < n; i++) {
 			Hero h = Dungeon.heroes.get(i);
+			if (!h.isAlive()) continue; // dead heroes have no turns
 			h.actPriority = HERO_PRIO + (n - 1 - i); // player 0 acts first
 			add(h);
 		}
