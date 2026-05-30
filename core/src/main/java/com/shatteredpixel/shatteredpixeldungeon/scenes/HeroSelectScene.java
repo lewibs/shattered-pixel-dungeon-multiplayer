@@ -201,6 +201,9 @@ public class HeroSelectScene extends PixelScene {
 					if (!GamesInProgress.selectedClasses.contains(GamesInProgress.selectedClass))
 						GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
 
+					// Disable ALL hero buttons so nobody can change after confirming
+					for (StyledButton b : heroBtns) b.active = false;
+
 					// Disable the Select button — can't change after confirming
 					startBtn.enable(false);
 					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "waiting")));
@@ -497,6 +500,25 @@ public class HeroSelectScene extends PixelScene {
 		HeroClass[] collectedClasses = NetworkManager.getCollectedClasses();
 		if (collectedClasses == null) return;
 		collectedClasses[0] = GamesInProgress.selectedClass;
+
+		// Validate no two players chose the same class
+		for (int i = 0; i < collectedClasses.length; i++) {
+			for (int j = i + 1; j < collectedClasses.length; j++) {
+				if (collectedClasses[i] != null && collectedClasses[i] == collectedClasses[j]) {
+					// Duplicate — can't start. Reset and ask players to reselect
+					lanReadyToStart = false;
+					lanHeroConfirmed = false;
+					for (StyledButton b : heroBtns) b.active = true;
+					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "start")));
+					startBtn.setSize(startBtn.reqWidth() + 8, 21);
+					startBtn.enable(false);
+					GamesInProgress.selectedClass = null;
+					GamesInProgress.selectedClasses = new ArrayList<>();
+					add(new WndMessage(Messages.get(HeroSelectScene.class, "hero_taken")));
+					return;
+				}
+			}
+		}
 		long seed = Dungeon.seed;
 		if (seed == 0) { Dungeon.initSeed(); seed = Dungeon.seed; }
 		NetworkManager.sendHandshake(seed, collectedClasses);

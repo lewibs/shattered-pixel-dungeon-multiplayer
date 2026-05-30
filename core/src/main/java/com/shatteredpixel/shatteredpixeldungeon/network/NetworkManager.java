@@ -925,32 +925,95 @@ public class NetworkManager {
         collectedClasses = new HeroClass[playerCount];
         heroReadyReceived = false;
 
-        new Thread(() -> {
-            try {
-                // Host is player 0, has already sent their class
-                heroReadyCount = 1;
-
-                // Expect (playerCount - 1) HERO_READY packets from clients
-                for (int i = 1; i < playerCount; i++) {
-                    if (i - 1 < ins.size()) {
-                        DataInputStream in = ins.get(i - 1);
+        // One reader thread per client — handles CLASS_CLAIMED/UNCLAIMED interleaved
+        // with HERO_READY so the host relays class reservations during selection
+        for (int clientIdx = 0; clientIdx < playerCount - 1; clientIdx++) {
+            final int ci = clientIdx;
+            final int playerSlot = ci + 1; // slot 0 = host, slots 1..N = clients
+            new Thread(() -> {
+                try {
+                    DataInputStream in = ins.get(ci);
+                    // Read packets until we get HERO_READY from this client
+                    while (true) {
                         byte type = in.readByte();
                         if (type == PacketType.HERO_READY) {
                             byte classOrdinal = in.readByte();
-                            collectedClasses[i] = HeroClass.values()[classOrdinal];
-                            heroReadyCount++;
+                            HeroClass cls = HeroClass.values()[classOrdinal];
+                            collectedClasses[playerSlot] = cls;
+                            // Broadcast permanent lock to all others so their UI updates
+                            broadcastClassClaimed(playerSlot, cls);
+                            if (onClassClaimedReceived != null)
+                                onClassClaimedReceived.call(playerSlot, cls);
+                            synchronized (NetworkManager.class) {
+                                heroReadyCount++;
+                                if (heroReadyCount >= playerCount) {
+                                    heroReadyReceived = true;
+                                    NetworkManager.class.notifyAll();
+                                }
+                            }
+                            break; // done with this client
+                        } else if (type == PacketType.CLASS_CLAIMED) {
+                            int pidx = in.readInt();
+                            byte ord = in.readByte();
+                            HeroClass cls = ordinalToHeroClass(ord);
+                            // Relay to all other clients
+                            for (int j = 0; j < outs.size(); j++) {
+                                if (j != ci) {
+                                    try {
+                                        outs.get(j).writeByte(PacketType.CLASS_CLAIMED);
+                                        outs.get(j).writeInt(pidx);
+                                        outs.get(j).writeByte(ord);
+                                        outs.get(j).flush();
+                                    } catch (IOException ignored) {}
+                                }
+                            }
+                            if (onClassClaimedReceived != null)
+                                onClassClaimedReceived.call(pidx, cls);
+                        } else if (type == PacketType.CLASS_UNCLAIMED) {
+                            int pidx = in.readInt();
+                            byte ord = in.readByte();
+                            HeroClass cls = ordinalToHeroClass(ord);
+                            for (int j = 0; j < outs.size(); j++) {
+                                if (j != ci) {
+                                    try {
+                                        outs.get(j).writeByte(PacketType.CLASS_UNCLAIMED);
+                                        outs.get(j).writeInt(pidx);
+                                        outs.get(j).writeByte(ord);
+                                        outs.get(j).flush();
+                                    } catch (IOException ignored) {}
+                                }
+                            }
+                            if (onClassUnclaimedReceived != null)
+                                onClassUnclaimedReceived.call(pidx, cls);
                         }
+                        // skip unknown packet types and keep reading
                     }
+                } catch (IOException e) {
+                    GLog.n("Error in hero-ready reader for slot %d: %s", playerSlot, e.getMessage());
                 }
+            }, "net-hero-ready-" + ci).start();
+        }
 
+        // Count the host's own HERO_READY immediately (host class is set by caller)
+        synchronized (NetworkManager.class) {
+            heroReadyCount = 1;
+            if (playerCount == 1) { // solo host — shouldn't happen in LAN but guard it
                 heroReadyReceived = true;
-                synchronized (NetworkManager.class) {
-                    NetworkManager.class.notifyAll();
-                }
-            } catch (IOException e) {
-                GLog.n("Error waiting for HERO_READY: %s", e.getMessage());
             }
-        }, "net-wait-hero-ready").start();
+        }
+    }
+
+    /** Broadcasts CLASS_CLAIMED for a confirmed player to all clients (host side). */
+    private static void broadcastClassClaimed(int playerIdx, HeroClass cls) {
+        byte ord = (byte) cls.ordinal();
+        for (DataOutputStream out : outs) {
+            try {
+                out.writeByte(PacketType.CLASS_CLAIMED);
+                out.writeInt(playerIdx);
+                out.writeByte(ord);
+                out.flush();
+            } catch (IOException ignored) {}
+        }
     }
 
     /**
@@ -965,8 +1028,9 @@ public class NetworkManager {
         new Thread(() -> {
             try {
                 DataInputStream in = clientIn;
-                byte type = in.readByte();
-                if (type == PacketType.HANDSHAKE) {
+                while (true) { // keep reading until HANDSHAKE arrives
+                    byte type = in.readByte();
+                    if (type == PacketType.HANDSHAKE) {
                     long seed = in.readLong();
                     int playerCount = in.readInt();
                     HeroClass[] heroClasses = new HeroClass[playerCount];
@@ -980,7 +1044,20 @@ public class NetworkManager {
                     synchronized (NetworkManager.class) {
                         NetworkManager.class.notifyAll();
                     }
-                }
+                    break; // done
+                    } else if (type == PacketType.CLASS_CLAIMED) {
+                        int pidx = in.readInt();
+                        byte ord = in.readByte();
+                        HeroClass cls = ordinalToHeroClass(ord);
+                        if (onClassClaimedReceived != null) onClassClaimedReceived.call(pidx, cls);
+                    } else if (type == PacketType.CLASS_UNCLAIMED) {
+                        int pidx = in.readInt();
+                        byte ord = in.readByte();
+                        HeroClass cls = ordinalToHeroClass(ord);
+                        if (onClassUnclaimedReceived != null) onClassUnclaimedReceived.call(pidx, cls);
+                    }
+                    // unknown packet — keep reading
+                } // end while
             } catch (SocketTimeoutException e) {
                 GLog.w("HANDSHAKE timeout - peer disconnected");
             } catch (IOException e) {
