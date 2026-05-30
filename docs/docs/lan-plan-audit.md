@@ -28,7 +28,7 @@ flowchart TD
     F2["Flow 2: hostGameSetup\nHeroSelectScene is pass-and-play,\nnot per-device"]
     F4["Flow 4: dungeonInit\nDungeon.init() structure differs;\nGenerator seeding is not trivially locked"]
     F5["Flow 5: turnSync\nHero.act() has WaitingToFall guard +\nFollowHeroBuff before curAction dispatch;\nFollowHeroBuff works in LAN (produces a Move action,\ntransmitted as normal); plan steps 1-2 need updating"]
-    F6["Flow 6: desyncDetection\nhash formula uses Dungeon.hero.HP —\nambiguous in multi-hero context"]
+    F6["Flow 6: desyncDetection\nhash formula correct — Dungeon.hero stays\npinned to local hero in LAN;\nminor fix: cast Actor.now() to int for % 10"]
     F7["Flow 7: hostSaveAndLoad\nsave already writes all heroes;\nGamesInProgress has no isMultiplayerSave flag yet"]
     F8["Flow 8: disconnectHandling\ncorrect in intent; 'continue solo'\nremoval path conflicts with Hero.die() logic"]
   end
@@ -167,7 +167,7 @@ This is correct in placement (after `curAction` is set by `handle()`), but `send
 ### Flow 6: `desyncDetection` — NEEDS REVISION
 
 - Plan section: Flow 6
-- Verdict: Hash formula is ambiguous for multi-hero state; minor fix needed.
+- Verdict: Hash formula is correct as written. One minor fix needed.
 
 **What the plan says:**
 ```java
@@ -178,16 +178,9 @@ long hash = Dungeon.seed
     ^ Arrays.hashCode(mobPositions());
 ```
 
-**Issue:** `Dungeon.hero.HP` is the currently-active hero's HP (the device's local player), not a stable aggregate. In a two-player game hero[0] hashes its own HP; hero[1] hashes its own HP. Because both heroes act on both devices (simulation is deterministic), the hash should include all heroes' HP. Revision:
-```java
-long hash = Dungeon.seed ^ Actor.now() ^ Dungeon.level.feeling.ordinal();
-for (Hero h : Dungeon.heroes) {
-    hash ^= (long) h.HP << (32 + Dungeon.heroes.indexOf(h) * 4);
-}
-hash ^= Arrays.hashCode(mobPositions());
-```
+**`Dungeon.hero.HP` is correct:** In LAN mode `Dungeon.hero` stays pinned to the local hero for the entire session (never reassigned to the remote hero). So on device A it always hashes hero[0]'s HP, and on device B it always hashes hero[1]'s HP. Each device consistently hashes its own hero — the hash is stable and meaningful.
 
-**Issue B:** `Actor.now() % 10 == 0` — `Actor.now()` returns a float. Modulo on floats is unreliable for exact equality. Use `(int)Actor.now() % 10 == 0` instead.
+**Issue:** `Actor.now() % 10 == 0` — `Actor.now()` returns a float. Modulo on floats is unreliable for exact equality. Use `(int)Actor.now() % 10 == 0` instead.
 
 ---
 
