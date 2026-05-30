@@ -165,17 +165,23 @@ public class WndGameInProgress extends Window {
 
 		pos += GAP;
 
-		// "Multiplayer" badge
-		RenderedTextBlock badge = PixelScene.renderTextBlock(
-				Messages.get(this, "multiplayer_badge"), 6);
-		badge.hardlight(0xFFD700);
-		badge.setPos((WIDTH - badge.width()) / 2f, pos);
-		PixelScene.align(badge);
-		add(badge);
-		pos = badge.bottom() + GAP;
+		// Cumulative gold across all heroes
+		statSlot( Messages.get(this, "gold"), info.goldCollected );
 
-		pos += GAP;
-		statSlot(Messages.get(this, "depth"), info.maxDepth);
+		// Average hero level
+		int totalLevels = 0;
+		for (int lvl : info.heroLevels) totalLevels += lvl;
+		int avgLevel = info.heroLevels.isEmpty() ? 1 : Math.round((float) totalLevels / info.heroLevels.size());
+		statSlot( Messages.get(this, "avg_level"), avgLevel );
+
+		statSlot( Messages.get(this, "depth"), info.maxDepth );
+
+		// Dungeon seed
+		if (!info.customSeed.isEmpty()) {
+			statSlot( Messages.get(this, "custom_seed"), "_" + info.customSeed + "_" );
+		} else {
+			statSlot( Messages.get(this, "dungeon_seed"), DungeonSeed.convertToCode(info.seed) );
+		}
 
 		pos += GAP;
 		addContinueAndErase(slot, info);
