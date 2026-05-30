@@ -234,6 +234,8 @@ public class Toolbar extends Component {
 		btnWait.icon( 176, 0, 16, 16 );
 
 		add(btnFollow = new Tool(24, 0, 20, 26) {
+			private Image potionIcon;
+
 			@Override
 			protected void onClick() {
 				if (Dungeon.hero == null || !Dungeon.hero.ready || GameScene.cancel()) {
@@ -254,8 +256,30 @@ public class Toolbar extends Component {
 			protected String hoverText() {
 				return "Follow Hero";
 			}
+
+			@Override
+			protected void createChildren() {
+				super.createChildren();
+				potionIcon = new Image(Assets.Sprites.ITEM_ICONS);
+				potionIcon.frame(ItemSpriteSheet.Icons.film.get(ItemSpriteSheet.Icons.POTION_HASTE));
+				add(potionIcon);
+			}
+
+			@Override
+			protected void layout() {
+				super.layout();
+				if (potionIcon != null) {
+					potionIcon.x = PixelScene.align(x + (width - potionIcon.width()) / 2f);
+					potionIcon.y = PixelScene.align(y + (height - potionIcon.height()) / 2f);
+				}
+			}
+
+			@Override
+			public void enable(boolean value) {
+				if (potionIcon != null) potionIcon.alpha(value ? 1f : 0.4f);
+				super.enable(value);
+			}
 		});
-		btnFollow.icon(208, 0, 16, 16);
 
 		//hidden button for rest keybind
 		add(new Button(){
