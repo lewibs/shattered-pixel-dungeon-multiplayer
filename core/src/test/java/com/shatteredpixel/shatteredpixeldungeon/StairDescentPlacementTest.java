@@ -1,7 +1,9 @@
 package com.shatteredpixel.shatteredpixeldungeon;
 
+import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.levels.Level;
+import com.shatteredpixel.shatteredpixeldungeon.levels.features.Chasm;
 import com.shatteredpixel.shatteredpixeldungeon.levels.features.LevelTransition;
 import com.watabou.utils.PathFinder;
 import org.junit.jupiter.api.AfterEach;
@@ -303,6 +305,101 @@ class StairDescentPlacementTest {
                         "Hero position must be within level bounds");
                 assertTrue(level.passable[h.pos],
                         "Hero must be on a passable cell");
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Falling heroes — must keep fall-cell position, not be placed near stairs
+    // -------------------------------------------------------------------------
+
+    @Nested
+    class FallingHeroes {
+
+        @Test
+        void waitingToFall_positionNotOverwritten() {
+            ArrayList<Hero> heroes = party(2);
+            heroes.get(0).pos = ENTRANCE;
+            heroes.get(1).pos = 2; // pre-assigned fall cell
+            Buff.affect(heroes.get(1), Chasm.WaitingToFall.class);
+
+            Dungeon.placeHeroesNearEntrance(level, ENTRANCE, heroes);
+
+            assertEquals(2, heroes.get(1).pos,
+                    "WaitingToFall hero must keep their fall-cell position");
+        }
+
+        @Test
+        void chasmFalling_positionNotOverwritten() {
+            ArrayList<Hero> heroes = party(2);
+            heroes.get(0).pos = ENTRANCE;
+            heroes.get(1).pos = 3; // pre-assigned fall cell
+            Buff.affect(heroes.get(1), Chasm.Falling.class);
+
+            Dungeon.placeHeroesNearEntrance(level, ENTRANCE, heroes);
+
+            assertEquals(3, heroes.get(1).pos,
+                    "Chasm.Falling hero must keep their fall-cell position");
+        }
+
+        @Test
+        void waitingToFall_doesNotClaimAdjacentSlot() {
+            // hero[1] is falling — should not claim a stair slot
+            // hero[2] is on stairs — should still get a unique adjacent cell
+            ArrayList<Hero> heroes = party(3);
+            heroes.get(0).pos = ENTRANCE;
+            heroes.get(1).pos = 2; // fall cell
+            Buff.affect(heroes.get(1), Chasm.WaitingToFall.class);
+
+            Dungeon.placeHeroesNearEntrance(level, ENTRANCE, heroes);
+
+            // hero[1] still at fall cell
+            assertEquals(2, heroes.get(1).pos);
+            // hero[2] is placed adjacent to entrance (not at entrance)
+            assertEquals(1, dist(ENTRANCE, heroes.get(2).pos),
+                    "Stair hero must be adjacent to entrance even when other hero is falling");
+        }
+
+        @Test
+        void mixedParty_fallingAndStairHeroes_allCorrect() {
+            // hero[0] stairs, hero[1] falling, hero[2] stairs, hero[3] falling
+            ArrayList<Hero> heroes = party(4);
+            heroes.get(0).pos = ENTRANCE;
+            heroes.get(1).pos = 2;  // fall cell
+            heroes.get(2).pos = 24; // stale — will be placed near stairs
+            heroes.get(3).pos = 3;  // fall cell
+
+            Buff.affect(heroes.get(1), Chasm.WaitingToFall.class);
+            Buff.affect(heroes.get(3), Chasm.Falling.class);
+
+            Dungeon.placeHeroesNearEntrance(level, ENTRANCE, heroes);
+
+            // Falling heroes unchanged
+            assertEquals(2,  heroes.get(1).pos, "hero[1] fall cell unchanged");
+            assertEquals(3,  heroes.get(3).pos, "hero[3] fall cell unchanged");
+            // Stair hero moved to adjacent cell
+            assertEquals(1, dist(ENTRANCE, heroes.get(2).pos),
+                    "hero[2] must be adjacent to entrance");
+            // hero[0] still at entrance
+            assertEquals(ENTRANCE, heroes.get(0).pos);
+        }
+
+        @Test
+        void allFallingExceptHero0_noStairSlotsClaimed() {
+            // All non-hero[0] heroes are falling — no stair placement runs
+            ArrayList<Hero> heroes = party(4);
+            heroes.get(0).pos = ENTRANCE;
+            for (int i = 1; i < heroes.size(); i++) {
+                heroes.get(i).pos = i; // pre-assigned fall cells
+                Buff.affect(heroes.get(i), Chasm.WaitingToFall.class);
+            }
+
+            Dungeon.placeHeroesNearEntrance(level, ENTRANCE, heroes);
+
+            // All fall cells preserved
+            for (int i = 1; i < heroes.size(); i++) {
+                assertEquals(i, heroes.get(i).pos,
+                        "hero[" + i + "] fall cell must be preserved");
             }
         }
     }

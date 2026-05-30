@@ -71,6 +71,7 @@ import com.shatteredpixel.shatteredpixeldungeon.levels.RegularLevel;
 import com.shatteredpixel.shatteredpixeldungeon.levels.SewerBossLevel;
 import com.shatteredpixel.shatteredpixeldungeon.levels.SewerLevel;
 import com.shatteredpixel.shatteredpixeldungeon.levels.VaultLevel;
+import com.shatteredpixel.shatteredpixeldungeon.levels.features.Chasm;
 import com.shatteredpixel.shatteredpixeldungeon.levels.features.LevelTransition;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.secret.SecretRoom;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.special.SpecialRoom;
@@ -554,14 +555,21 @@ public class Dungeon {
 		}
 	}
 
-	// Package-private for testing. Places heroes[1..N] adjacent to entrancePos on the
-	// new level. Uses a local occupied set because Actor.init() has not run yet —
+	// Package-private for testing. Places stair-descending heroes[1..N] adjacent to
+	// entrancePos on the new level. Heroes in a falling state (WaitingToFall or
+	// Chasm.Falling) already have their fall-cell assigned and are skipped.
+	// Uses a local occupied set because Actor.init() has not run yet —
 	// Actor.findChar() would return null for every cell at this point.
 	static void placeHeroesNearEntrance(Level level, int entrancePos,
 	                                    ArrayList<Hero> heroes) {
 		HashSet<Integer> occupied = new HashSet<>();
 		occupied.add(entrancePos); // hero[0] is at the entrance
 		for (int i = 1; i < heroes.size(); i++) {
+			Hero h = heroes.get(i);
+			// Falling heroes keep their fall-cell — don't overwrite or claim a stair slot
+			if (h.buff(Chasm.WaitingToFall.class) != null
+					|| h.buff(Chasm.Falling.class) != null) continue;
+
 			int placed = -1;
 			for (int offset : PathFinder.NEIGHBOURS8) {
 				int candidate = entrancePos + offset;
@@ -573,7 +581,7 @@ public class Dungeon {
 				}
 			}
 			int heroPos = (placed != -1) ? placed : entrancePos;
-			heroes.get(i).pos = heroPos;
+			h.pos = heroPos;
 			occupied.add(heroPos);
 		}
 	}
