@@ -32,6 +32,8 @@ import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Journal;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
+import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.shatteredpixel.shatteredpixeldungeon.ui.ActionIndicator;
 import com.shatteredpixel.shatteredpixeldungeon.ui.CheckBox;
 import com.shatteredpixel.shatteredpixeldungeon.ui.ExitButton;
@@ -71,6 +73,7 @@ import com.watabou.utils.RectF;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
@@ -103,6 +106,12 @@ public class HeroSelectScene extends PixelScene {
 		super.create();
 
 		Dungeon.hero = null;
+
+		// LAN mode: set up single-hero selection for this device
+		if (NetworkManager.lanMode) {
+			GamesInProgress.playerCount = 1;
+			GamesInProgress.currentPlayerSelecting = 0;
+		}
 
 		Badges.loadGlobal();
 		Journal.loadGlobal();
@@ -162,22 +171,99 @@ public class HeroSelectScene extends PixelScene {
 
 				if (GamesInProgress.selectedClass == null) return;
 
-				GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
-				GamesInProgress.currentPlayerSelecting++;
+				if (NetworkManager.lanMode) {
+					// LAN mode: send HERO_READY and wait for handshake
+					GamesInProgress.selectedClasses.clear();
+					GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
 
-				if (GamesInProgress.currentPlayerSelecting < GamesInProgress.playerCount) {
-					// More players to select — loop back
-					GamesInProgress.selectedClass = null;
-					ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
+					NetworkManager.sendHeroReady(GamesInProgress.selectedClass);
+
+					if (NetworkManager.isHost()) {
+						// Host: wait for all HERO_READY packets, then broadcast HANDSHAKE
+						int expectedPlayers = NetworkManager.getConnectedPlayerCount();
+						NetworkManager.waitForAllHeroReady(expectedPlayers);
+
+						// Wait for HERO_READY to be collected
+						long startTime = System.currentTimeMillis();
+						while (!NetworkManager.isHeroReadyReceived() && System.currentTimeMillis() - startTime < 30000) {
+							try {
+								Thread.sleep(100);
+							} catch (InterruptedException e) {
+								Thread.currentThread().interrupt();
+							}
+						}
+
+						if (NetworkManager.isHeroReadyReceived()) {
+							// Store host's own class at index 0
+							HeroClass[] collectedClasses = NetworkManager.getCollectedClasses();
+							collectedClasses[0] = GamesInProgress.selectedClass;
+
+							// Get seed and broadcast handshake
+							long seed = Dungeon.seed;
+							if (seed == 0) {
+								Dungeon.initSeed();
+								seed = Dungeon.seed;
+							}
+
+							NetworkManager.sendHandshake(seed, collectedClasses);
+							Dungeon.seed = seed;
+							GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(collectedClasses));
+
+							Dungeon.daily = Dungeon.dailyReplay = false;
+							ActionIndicator.clearAction();
+							InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+
+							Game.switchScene(InterlevelScene.class);
+						} else {
+							GLog.n("Failed to receive all HERO_READY packets");
+						}
+					} else {
+						// Client: wait for HANDSHAKE from host
+						NetworkManager.waitForHandshake();
+
+						// Wait for HANDSHAKE to be received
+						long startTime = System.currentTimeMillis();
+						while (!NetworkManager.isHandshakeReceived() && System.currentTimeMillis() - startTime < 30000) {
+							try {
+								Thread.sleep(100);
+							} catch (InterruptedException e) {
+								Thread.currentThread().interrupt();
+							}
+						}
+
+						if (NetworkManager.isHandshakeReceived()) {
+							NetworkManager.HandshakePayload payload = NetworkManager.getHandshakePayload();
+							Dungeon.seed = payload.seed;
+							GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(payload.heroClasses));
+
+							Dungeon.daily = Dungeon.dailyReplay = false;
+							ActionIndicator.clearAction();
+							InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+
+							Game.switchScene(InterlevelScene.class);
+						} else {
+							GLog.n("Failed to receive HANDSHAKE from host");
+						}
+					}
 				} else {
-					// All players selected — start game
-					Dungeon.hero = null;
-					Dungeon.daily = Dungeon.dailyReplay = false;
-					Dungeon.initSeed();
-					ActionIndicator.clearAction();
-					InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+					// Solo mode: pass-and-play for multiple heroes
+					GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
+					GamesInProgress.currentPlayerSelecting++;
 
-					Game.switchScene( InterlevelScene.class );
+					if (GamesInProgress.currentPlayerSelecting < GamesInProgress.playerCount) {
+						// More players to select — loop back
+						GamesInProgress.selectedClass = null;
+						ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
+					} else {
+						// All players selected — start game
+						Dungeon.hero = null;
+						Dungeon.daily = Dungeon.dailyReplay = false;
+						Dungeon.initSeed();
+						ActionIndicator.clearAction();
+						InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+
+						Game.switchScene( InterlevelScene.class );
+					}
 				}
 			}
 		};

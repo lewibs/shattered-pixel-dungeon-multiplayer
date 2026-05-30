@@ -4,6 +4,7 @@ import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 
 import java.io.DataInputStream;
@@ -497,6 +498,257 @@ public class NetworkManager {
         // This would need to be implemented based on the actual HeroAction types
         // For now, return null (remote hero will handle it)
         return null;
+    }
+
+    // Hero selection and handshake coordination
+    private static volatile boolean heroReadyReceived = false;
+    private static volatile int heroReadyCount = 0;
+    private static volatile HeroClass[] collectedClasses = null;
+    private static volatile boolean handshakeReceived = false;
+    private static volatile HandshakePayload handshakePayload = null;
+
+    /**
+     * Client: Sends HERO_READY packet with the chosen hero class.
+     */
+    public static void sendHeroReady(HeroClass heroClass) {
+        if (!lanMode) return;
+
+        try {
+            byte classOrdinal = (byte) heroClass.ordinal();
+
+            if (isHost) {
+                for (DataOutputStream out : outs) {
+                    out.writeByte(PacketType.HERO_READY);
+                    out.writeByte(classOrdinal);
+                    out.flush();
+                }
+            } else {
+                if (clientOut != null) {
+                    clientOut.writeByte(PacketType.HERO_READY);
+                    clientOut.writeByte(classOrdinal);
+                    clientOut.flush();
+                }
+            }
+            GLog.p("HERO_READY sent: %s", heroClass.name());
+        } catch (IOException e) {
+            GLog.n("Failed to send HERO_READY: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Host: Broadcasts HANDSHAKE packet with seed and class list.
+     */
+    public static void sendHandshake(long seed, HeroClass[] classes) {
+        if (!lanMode || !isHost) return;
+
+        try {
+            for (DataOutputStream out : outs) {
+                out.writeByte(PacketType.HANDSHAKE);
+                out.writeLong(seed);
+                out.writeInt(classes.length);
+                for (HeroClass cls : classes) {
+                    out.writeByte(cls.ordinal());
+                }
+                out.flush();
+            }
+            GLog.p("HANDSHAKE sent: %d players, seed %d", classes.length, seed);
+        } catch (IOException e) {
+            GLog.n("Failed to send HANDSHAKE: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Client: Sends CLASS_CLAIMED packet.
+     */
+    public static void sendClassClaimed(int playerIndex, HeroClass heroClass) {
+        if (!lanMode) return;
+
+        try {
+            byte classOrdinal = (byte) heroClass.ordinal();
+
+            if (isHost) {
+                for (DataOutputStream out : outs) {
+                    out.writeByte(PacketType.CLASS_CLAIMED);
+                    out.writeInt(playerIndex);
+                    out.writeByte(classOrdinal);
+                    out.flush();
+                }
+            } else {
+                if (clientOut != null) {
+                    clientOut.writeByte(PacketType.CLASS_CLAIMED);
+                    clientOut.writeInt(playerIndex);
+                    clientOut.writeByte(classOrdinal);
+                    clientOut.flush();
+                }
+            }
+        } catch (IOException e) {
+            GLog.n("Failed to send CLASS_CLAIMED: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Client: Sends CLASS_UNCLAIMED packet.
+     */
+    public static void sendClassUnclaimed(int playerIndex, HeroClass heroClass) {
+        if (!lanMode) return;
+
+        try {
+            byte classOrdinal = (byte) heroClass.ordinal();
+
+            if (isHost) {
+                for (DataOutputStream out : outs) {
+                    out.writeByte(PacketType.CLASS_UNCLAIMED);
+                    out.writeInt(playerIndex);
+                    out.writeByte(classOrdinal);
+                    out.flush();
+                }
+            } else {
+                if (clientOut != null) {
+                    clientOut.writeByte(PacketType.CLASS_UNCLAIMED);
+                    clientOut.writeInt(playerIndex);
+                    clientOut.writeByte(classOrdinal);
+                    clientOut.flush();
+                }
+            }
+        } catch (IOException e) {
+            GLog.n("Failed to send CLASS_UNCLAIMED: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Host: Sends CLASS_REJECTED packet to a player.
+     */
+    public static void sendClassRejected(int playerIndex) {
+        if (!lanMode || !isHost) return;
+
+        try {
+            if (playerIndex >= 0 && playerIndex < outs.size()) {
+                DataOutputStream out = outs.get(playerIndex);
+                out.writeByte(PacketType.CLASS_REJECTED);
+                out.writeInt(playerIndex);
+                out.flush();
+            }
+        } catch (IOException e) {
+            GLog.n("Failed to send CLASS_REJECTED: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Host: Starts a background thread to collect HERO_READY packets from all players.
+     * Once all are received, caller should call sendHandshake().
+     */
+    public static void waitForAllHeroReady(int playerCount) {
+        if (!lanMode || !isHost) return;
+
+        heroReadyCount = 0;
+        collectedClasses = new HeroClass[playerCount];
+        heroReadyReceived = false;
+
+        new Thread(() -> {
+            try {
+                // Host is player 0, has already sent their class
+                heroReadyCount = 1;
+
+                // Expect (playerCount - 1) HERO_READY packets from clients
+                for (int i = 1; i < playerCount; i++) {
+                    if (i - 1 < ins.size()) {
+                        DataInputStream in = ins.get(i - 1);
+                        byte type = in.readByte();
+                        if (type == PacketType.HERO_READY) {
+                            byte classOrdinal = in.readByte();
+                            collectedClasses[i] = HeroClass.values()[classOrdinal];
+                            heroReadyCount++;
+                        }
+                    }
+                }
+
+                heroReadyReceived = true;
+                synchronized (NetworkManager.class) {
+                    NetworkManager.class.notifyAll();
+                }
+            } catch (IOException e) {
+                GLog.n("Error waiting for HERO_READY: %s", e.getMessage());
+            }
+        }, "net-wait-hero-ready").start();
+    }
+
+    /**
+     * Client: Starts a background thread to wait for HANDSHAKE packet.
+     */
+    public static void waitForHandshake() {
+        if (!lanMode || isHost) return;
+
+        handshakeReceived = false;
+        handshakePayload = null;
+
+        new Thread(() -> {
+            try {
+                DataInputStream in = clientIn;
+                byte type = in.readByte();
+                if (type == PacketType.HANDSHAKE) {
+                    long seed = in.readLong();
+                    int playerCount = in.readInt();
+                    HeroClass[] heroClasses = new HeroClass[playerCount];
+                    for (int i = 0; i < playerCount; i++) {
+                        byte classOrdinal = in.readByte();
+                        heroClasses[i] = HeroClass.values()[classOrdinal];
+                    }
+                    handshakePayload = new HandshakePayload(seed, playerCount, heroClasses);
+                    handshakeReceived = true;
+                    GLog.p("Handshake received — %d players, seed %d", playerCount, seed);
+                    synchronized (NetworkManager.class) {
+                        NetworkManager.class.notifyAll();
+                    }
+                }
+            } catch (SocketTimeoutException e) {
+                GLog.w("HANDSHAKE timeout - peer disconnected");
+            } catch (IOException e) {
+                GLog.n("Error waiting for HANDSHAKE: %s", e.getMessage());
+            }
+        }, "net-wait-handshake").start();
+    }
+
+    /**
+     * Returns true if all HERO_READY packets have been received (host only).
+     */
+    public static boolean isHeroReadyReceived() {
+        return heroReadyReceived;
+    }
+
+    /**
+     * Returns the collected hero classes in order (host only).
+     */
+    public static HeroClass[] getCollectedClasses() {
+        return collectedClasses;
+    }
+
+    /**
+     * Returns true if HANDSHAKE has been received (client only).
+     */
+    public static boolean isHandshakeReceived() {
+        return handshakeReceived;
+    }
+
+    /**
+     * Returns the handshake payload (client only).
+     */
+    public static HandshakePayload getHandshakePayload() {
+        return handshakePayload;
+    }
+
+    /**
+     * Data holder for handshake packets.
+     */
+    public static class HandshakePayload {
+        public long seed;
+        public int playerCount;
+        public HeroClass[] heroClasses;
+
+        public HandshakePayload(long seed, int playerCount, HeroClass[] heroClasses) {
+            this.seed = seed;
+            this.playerCount = playerCount;
+            this.heroClasses = heroClasses;
+        }
     }
 
     /**

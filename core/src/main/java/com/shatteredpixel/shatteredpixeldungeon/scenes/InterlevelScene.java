@@ -31,6 +31,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.effects.ShadowBox;
 import com.shatteredpixel.shatteredpixeldungeon.items.Item;
 import com.shatteredpixel.shatteredpixeldungeon.items.LostBackpack;
@@ -628,6 +629,11 @@ public class InterlevelScene extends PixelScene {
 			Mob.clearHeldAllies();
 			Dungeon.init();
 			GameLog.wipe();
+
+			// LAN mode: set local hero after all heroes have been spawned
+			if (NetworkManager.lanMode) {
+				Dungeon.hero = Dungeon.heroes.get(NetworkManager.localPlayerIndex);
+			}
 
 			//When debugging, we may start a game at a later depth to quickly test something
 			// if this happens, the games quickly generates all prior levels on branch 0 first,
