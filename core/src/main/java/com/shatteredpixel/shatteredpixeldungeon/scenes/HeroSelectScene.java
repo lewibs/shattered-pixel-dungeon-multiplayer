@@ -101,6 +101,12 @@ public class HeroSelectScene extends PixelScene {
 	private static boolean heroWasRandomized = true;
 	private static boolean chalWasRandomized = false;
 
+	// LAN state — tracks async hero selection flow
+	private boolean lanHeroConfirmed  = false;  // local player pressed Select
+	private boolean lanReadyToStart   = false;  // host: all HERO_READY received
+	private boolean lanHandshakeReady = false;  // client: HANDSHAKE received
+	private StyledButton lanStartBtn;           // host-only "Start Game" button shown after all ready
+
 	@Override
 	public void create() {
 		super.create();
@@ -111,6 +117,19 @@ public class HeroSelectScene extends PixelScene {
 		if (NetworkManager.lanMode) {
 			GamesInProgress.playerCount = 1;
 			GamesInProgress.currentPlayerSelecting = 0;
+			GamesInProgress.selectedClasses = new ArrayList<>();
+			lanHeroConfirmed  = false;
+			lanReadyToStart   = false;
+			lanHandshakeReady = false;
+
+			// Receive CLASS_CLAIMED/UNCLAIMED from peers → gray/restore buttons on render thread
+			NetworkManager.onClassClaimedReceived = (playerIdx, cls) -> Game.runOnRenderThread(() -> {
+				if (cls != null && !GamesInProgress.selectedClasses.contains(cls))
+					GamesInProgress.selectedClasses.add(cls);
+			});
+			NetworkManager.onClassUnclaimedReceived = (playerIdx, cls) -> Game.runOnRenderThread(() -> {
+				if (cls != null) GamesInProgress.selectedClasses.remove(cls);
+			});
 		}
 
 		Badges.loadGlobal();
@@ -172,79 +191,29 @@ public class HeroSelectScene extends PixelScene {
 				if (GamesInProgress.selectedClass == null) return;
 
 				if (NetworkManager.lanMode) {
-					// LAN mode: send HERO_READY and wait for handshake
-					GamesInProgress.selectedClasses.clear();
-					GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
+					// LAN mode: lock in local selection, send HERO_READY, wait async
+					lanHeroConfirmed = true;
+					// Lock out unconfirmed claim — the confirmed class stays in selectedClasses
+					if (!GamesInProgress.selectedClasses.contains(GamesInProgress.selectedClass))
+						GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
 
+					// Disable the Select button — can't change after confirming
+					startBtn.enable(false);
+					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "waiting")));
+					startBtn.setSize(startBtn.reqWidth() + 8, 21);
+
+					// Send HERO_READY asynchronously — never block the render thread
 					NetworkManager.sendHeroReady(GamesInProgress.selectedClass);
 
 					if (NetworkManager.isHost()) {
-						// Host: wait for all HERO_READY packets, then broadcast HANDSHAKE
-						int expectedPlayers = NetworkManager.getConnectedPlayerCount();
-						NetworkManager.waitForAllHeroReady(expectedPlayers);
-
-						// Wait for HERO_READY to be collected
-						long startTime = System.currentTimeMillis();
-						while (!NetworkManager.isHeroReadyReceived() && System.currentTimeMillis() - startTime < 30000) {
-							try {
-								Thread.sleep(100);
-							} catch (InterruptedException e) {
-								Thread.currentThread().interrupt();
-							}
-						}
-
-						if (NetworkManager.isHeroReadyReceived()) {
-							// Store host's own class at index 0
-							HeroClass[] collectedClasses = NetworkManager.getCollectedClasses();
-							collectedClasses[0] = GamesInProgress.selectedClass;
-
-							// Get seed and broadcast handshake
-							long seed = Dungeon.seed;
-							if (seed == 0) {
-								Dungeon.initSeed();
-								seed = Dungeon.seed;
-							}
-
-							NetworkManager.sendHandshake(seed, collectedClasses);
-							Dungeon.seed = seed;
-							GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(collectedClasses));
-
-							Dungeon.daily = Dungeon.dailyReplay = false;
-							ActionIndicator.clearAction();
-							InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
-
-							Game.switchScene(InterlevelScene.class);
-						} else {
-							GLog.n("Failed to receive all HERO_READY packets");
-						}
+						// Host: start background wait for all HERO_READY; update() shows Start when done
+						int expected = NetworkManager.getConnectedPlayerCount();
+						NetworkManager.waitForAllHeroReady(expected);
 					} else {
-						// Client: wait for HANDSHAKE from host
+						// Client: start background wait for HANDSHAKE; update() fires switchScene when done
 						NetworkManager.waitForHandshake();
-
-						// Wait for HANDSHAKE to be received
-						long startTime = System.currentTimeMillis();
-						while (!NetworkManager.isHandshakeReceived() && System.currentTimeMillis() - startTime < 30000) {
-							try {
-								Thread.sleep(100);
-							} catch (InterruptedException e) {
-								Thread.currentThread().interrupt();
-							}
-						}
-
-						if (NetworkManager.isHandshakeReceived()) {
-							NetworkManager.HandshakePayload payload = NetworkManager.getHandshakePayload();
-							Dungeon.seed = payload.seed;
-							GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(payload.heroClasses));
-
-							Dungeon.daily = Dungeon.dailyReplay = false;
-							ActionIndicator.clearAction();
-							InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
-
-							Game.switchScene(InterlevelScene.class);
-						} else {
-							GLog.n("Failed to receive HANDSHAKE from host");
-						}
 					}
+					return; // update() handles the rest
 				} else {
 					// Solo mode: pass-and-play for multiple heroes
 					GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
@@ -515,8 +484,42 @@ public class HeroSelectScene extends PixelScene {
 			add(new WndVictoryCongrats());
 		}
 
+		// LAN host: a "Start Game" button shown only after all players have confirmed
+		if (NetworkManager.lanMode && NetworkManager.isHost()) {
+			lanStartBtn = new StyledButton(Chrome.Type.GREY_BUTTON_TR, Messages.titleCase(Messages.get(HeroSelectScene.class, "lan_start"))) {
+				@Override
+				protected void onClick() {
+					super.onClick();
+					launchLanGame();
+				}
+			};
+			lanStartBtn.icon(Icons.get(Icons.ENTER));
+			lanStartBtn.setSize(100, 21);
+			lanStartBtn.textColor(Window.TITLE_COLOR);
+			lanStartBtn.setPos((Camera.main.width - lanStartBtn.width()) / 2f,
+					Camera.main.height - insets.bottom - lanStartBtn.height() - 4);
+			lanStartBtn.visible = lanStartBtn.active = false;
+			add(lanStartBtn);
+		}
+
 		fadeIn();
 
+	}
+
+	/** Called on host when all HERO_READY received — broadcasts HANDSHAKE and switches scene. */
+	private void launchLanGame() {
+		HeroClass[] collectedClasses = NetworkManager.getCollectedClasses();
+		if (collectedClasses == null) return;
+		collectedClasses[0] = GamesInProgress.selectedClass;
+		long seed = Dungeon.seed;
+		if (seed == 0) { Dungeon.initSeed(); seed = Dungeon.seed; }
+		NetworkManager.sendHandshake(seed, collectedClasses);
+		Dungeon.seed = seed;
+		GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(collectedClasses));
+		Dungeon.daily = Dungeon.dailyReplay = false;
+		ActionIndicator.clearAction();
+		InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+		Game.switchScene(InterlevelScene.class);
 	}
 
 	private void updateOptionsColor(){
@@ -530,6 +533,19 @@ public class HeroSelectScene extends PixelScene {
 	}
 
 	private void setSelectedHero(HeroClass cl){
+		// In LAN mode, broadcast claim/unclaim so all devices gray out the right buttons
+		if (NetworkManager.lanMode && !lanHeroConfirmed) {
+			HeroClass prev = GamesInProgress.selectedClass;
+			if (prev != null && prev != cl) {
+				NetworkManager.sendClassUnclaimed(NetworkManager.localPlayerIndex, prev);
+				GamesInProgress.selectedClasses.remove(prev);
+			}
+			if (cl != null) {
+				NetworkManager.sendClassClaimed(NetworkManager.localPlayerIndex, cl);
+				if (!GamesInProgress.selectedClasses.contains(cl))
+					GamesInProgress.selectedClasses.add(cl);
+			}
+		}
 		GamesInProgress.selectedClass = cl;
 		GamesInProgress.randomizedClass = false;
 
@@ -602,6 +618,29 @@ public class HeroSelectScene extends PixelScene {
 	@Override
 	public void update() {
 		super.update();
+
+		// LAN async polling — runs every frame without blocking the render thread
+		if (NetworkManager.lanMode && lanHeroConfirmed) {
+			if (NetworkManager.isHost() && !lanReadyToStart) {
+				if (NetworkManager.isHeroReadyReceived()) {
+					lanReadyToStart = true;
+					// Show the "Start Game" button so host can launch when ready
+					if (lanStartBtn != null) lanStartBtn.visible = lanStartBtn.active = true;
+				}
+			} else if (!NetworkManager.isHost() && !lanHandshakeReady) {
+				if (NetworkManager.isHandshakeReceived()) {
+					lanHandshakeReady = true;
+					NetworkManager.HandshakePayload payload = NetworkManager.getHandshakePayload();
+					Dungeon.seed = payload.seed;
+					GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(payload.heroClasses));
+					Dungeon.daily = Dungeon.dailyReplay = false;
+					ActionIndicator.clearAction();
+					InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+					Game.switchScene(InterlevelScene.class);
+				}
+			}
+		}
+
 		if (SPDSettings.intro() && Rankings.INSTANCE.totalNumber > 0){
 			SPDSettings.intro(false);
 		}

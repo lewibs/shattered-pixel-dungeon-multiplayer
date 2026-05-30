@@ -84,9 +84,13 @@ public class NetworkManager {
     public static OnPlayerJoined onPlayerJoined = null;
 
     // Callback invoked when an item is identified on a peer device
-    public static Runnable onItemIdentified = null; // set by game loop
-    // Store last received class name for the callback to read
+    public static Runnable onItemIdentified = null;
     public static String lastIdentifiedClass = null;
+
+    // Callbacks for CLASS_CLAIMED/UNCLAIMED received from peers (used to update HeroSelectScene UI)
+    public interface OnClassUpdate { void call(int playerIndex, HeroClass heroClass); }
+    public static OnClassUpdate onClassClaimedReceived   = null;
+    public static OnClassUpdate onClassUnclaimedReceived = null;
 
     // Packet type constants
     public static class PacketType {
@@ -288,7 +292,6 @@ public class NetworkManager {
                             }
                         } else if (type == PacketType.ITEM_IDENTIFIED) {
                             String className = in.readUTF();
-                            // Apply on render thread
                             Game.runOnRenderThread(() -> {
                                 try {
                                     Class<?> cls = Class.forName(className);
@@ -298,6 +301,18 @@ public class NetworkManager {
                                     GLog.w("Could not apply remote identification: %s", e.getMessage());
                                 }
                             });
+                        } else if (type == PacketType.CLASS_CLAIMED) {
+                            int pidx = in.readInt();
+                            byte ord = in.readByte();
+                            HeroClass cls = ordinalToHeroClass(ord);
+                            if (onClassClaimedReceived != null)
+                                onClassClaimedReceived.call(pidx, cls);
+                        } else if (type == PacketType.CLASS_UNCLAIMED) {
+                            int pidx = in.readInt();
+                            byte ord = in.readByte();
+                            HeroClass cls = ordinalToHeroClass(ord);
+                            if (onClassUnclaimedReceived != null)
+                                onClassUnclaimedReceived.call(pidx, cls);
                         }
                     } catch (IOException e) {
                         if (!Thread.currentThread().isInterrupted()) {
@@ -642,6 +657,11 @@ public class NetworkManager {
     /**
      * Internal: Cleanup all sockets and streams.
      */
+    private static HeroClass ordinalToHeroClass(byte ord) {
+        HeroClass[] vals = HeroClass.values();
+        return (ord >= 0 && ord < vals.length) ? vals[ord] : null;
+    }
+
     private static void cleanup() {
         try {
             if (serverSocket != null && !serverSocket.isClosed()) {
