@@ -965,10 +965,20 @@ public class Hero extends Char {
 			}
 		}
 		
+		// If WaitingToFall was attached during this turn (hero just jumped into a pit),
+		// end the turn immediately — the hero no longer exists on this floor.
+		if (buff(Chasm.WaitingToFall.class) != null) {
+			pos = -1;
+			if (sprite != null) sprite.visible = false;
+			curAction = null;
+			spendAndNext( TICK );
+			return false;
+		}
+
 		if(hasTalent(Talent.BARKSKIN) && Dungeon.level.map[pos] == Terrain.FURROWED_GRASS){
 			Barkskin.conditionallyAppend(this, (lvl*pointsInTalent(Talent.BARKSKIN))/2, 1 );
 		}
-		
+
 		return actResult;
 	}
 	
