@@ -33,6 +33,8 @@ import com.watabou.noosa.Game;
 
 import java.util.ArrayList;
 
+// lan-03: WndLANMenu import added for the "LAN Game" button path
+
 public class WndPlayerCount extends Window {
 
 	private static final int WIDTH = 120;
@@ -77,6 +79,19 @@ public class WndPlayerCount extends Window {
 
 			pos += BTN_HEIGHT + GAP;
 		}
+
+		// Flow: wndPlayerCountLanButton — "LAN Game" button below the 1–4 player options
+		RedButton btnLAN = new RedButton("LAN Game") {
+			@Override
+			protected void onClick() {
+				super.onClick();
+				hide();
+				ShatteredPixelDungeon.scene().addToFront(new WndLANMenu());
+			}
+		};
+		btnLAN.setRect(0, pos, WIDTH, BTN_HEIGHT);
+		add(btnLAN);
+		pos += BTN_HEIGHT + GAP;
 
 		resize(WIDTH, (int)pos);
 	}

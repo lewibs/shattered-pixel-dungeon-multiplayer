@@ -10,10 +10,18 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 
 /**
@@ -25,6 +33,7 @@ public class NetworkManager {
     // Static flags and configuration
     public static boolean lanMode = false;
     public static int localPlayerIndex = 0;
+    public static boolean gameStarted = false;
 
     // Instance fields
     private static ServerSocket serverSocket = null;
@@ -41,6 +50,15 @@ public class NetworkManager {
 
     // Socket timeout for all read operations (30 seconds)
     private static final int SOCKET_TIMEOUT_MS = 30000;
+
+    // UDP discovery port
+    public static final int UDP_DISCOVERY_PORT = 7778;
+
+    // Callback invoked on the host when a new client connects (called on accept thread)
+    public interface OnPlayerJoined {
+        void call(int playerIndex, int totalPlayers);
+    }
+    public static OnPlayerJoined onPlayerJoined = null;
 
     // Packet type constants
     public static class PacketType {
@@ -293,12 +311,116 @@ public class NetworkManager {
                     clientOut.writeInt(connectedPlayerCount);
                     clientOut.flush();
                 }
+
+                // Notify host lobby scene that a player has joined
+                if (onPlayerJoined != null) {
+                    onPlayerJoined.call(connectedPlayerCount - 1, connectedPlayerCount);
+                }
             } catch (IOException e) {
                 if (lanMode) {
                     GLog.n("Error accepting client: %s", e.getMessage());
                 }
             }
         }
+    }
+
+    /**
+     * Returns true if this device is the LAN host.
+     */
+    public static boolean isHost() {
+        return isHost;
+    }
+
+    /**
+     * Returns the number of connected players (including host).
+     */
+    public static int getConnectedPlayerCount() {
+        return connectedPlayerCount;
+    }
+
+    /**
+     * Returns the client input stream (for client-side lobby packet reading).
+     */
+    public static DataInputStream getClientInput() {
+        return clientIn;
+    }
+
+    /**
+     * Host: Broadcasts a START packet to all connected clients and marks the game as started.
+     */
+    public static void sendStart(int playerCount, long seed) throws IOException {
+        for (DataOutputStream out : outs) {
+            out.writeByte(PacketType.START);
+            out.writeInt(playerCount);
+            out.writeLong(seed);
+            out.flush();
+        }
+        gameStarted = true;
+        GLog.p("START sent: playerCount=%d seed=%d", playerCount, seed);
+    }
+
+    /**
+     * Host: Starts broadcasting UDP discovery packets on port 7778 every 2 seconds.
+     * Stops when lanMode becomes false or gameStarted becomes true.
+     *
+     * @param roomName       human-readable room label shown in LanRoomListScene
+     * @param currentPlayers number of players currently in the lobby
+     */
+    public static void startDiscoveryBroadcast(final String roomName, final int currentPlayers) {
+        new Thread(() -> {
+            DatagramSocket udp = null;
+            try {
+                udp = new DatagramSocket();
+                udp.setBroadcast(true);
+                InetAddress broadcast = InetAddress.getByName("255.255.255.255");
+                while (lanMode && !gameStarted) {
+                    byte[] data = buildDiscoveryPacket(roomName, currentPlayers);
+                    DatagramPacket pkt = new DatagramPacket(data, data.length, broadcast, UDP_DISCOVERY_PORT);
+                    udp.send(pkt);
+                    Thread.sleep(2000);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                if (lanMode) GLog.n("UDP broadcast error: %s", e.getMessage());
+            } finally {
+                if (udp != null && !udp.isClosed()) udp.close();
+            }
+        }, "udp-broadcast").start();
+    }
+
+    /**
+     * Builds a pipe-delimited UDP discovery packet payload.
+     * Format: "SPD-MP|hostIP|tcpPort|roomName|currentPlayers|maxPlayers"
+     */
+    private static byte[] buildDiscoveryPacket(String roomName, int currentPlayers) {
+        String payload = "SPD-MP" + "|" + getLocalIP() + "|7777|" + roomName + "|"
+                + currentPlayers + "|4";
+        return payload.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Returns the first non-loopback IPv4 address of this device,
+     * or "unknown" if none is found.
+     */
+    public static String getLocalIP() {
+        try {
+            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            while (ifaces != null && ifaces.hasMoreElements()) {
+                NetworkInterface iface = ifaces.nextElement();
+                if (iface.isLoopback() || !iface.isUp()) continue;
+                Enumeration<InetAddress> addrs = iface.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    if (addr instanceof Inet4Address) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+        } catch (SocketException e) {
+            GLog.n("Error getting local IP: %s", e.getMessage());
+        }
+        return "unknown";
     }
 
     /**
@@ -340,6 +462,8 @@ public class NetworkManager {
         clientOut = null;
         isHost = false;
         connectedPlayerCount = 0;
+        gameStarted = false;
+        onPlayerJoined = null;
     }
 
     /**
