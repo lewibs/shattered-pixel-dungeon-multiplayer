@@ -1015,14 +1015,24 @@ public class Dungeon {
 		}
 		
 		level.updateFieldOfView(hero, level.heroFOV);
-		// union FOV for all other heroes so their light shows simultaneously
 		if (heroes != null) {
-			boolean[] tmpFOV = new boolean[level.heroFOV.length];
-			for (Hero h : heroes) {
-				if (h == hero) continue;
-				level.updateFieldOfView(h, tmpFOV);
-				BArray.or(level.heroFOV, tmpFOV, level.heroFOV);
-				GameScene.updateFog(h.pos, h.viewDistance + 1);
+			if (heroes.size() > 1) {
+				// Pass-and-play: only the active hero's FOV is visible.
+				// Dungeon.hero is already the active hero via Hero.activate().
+				// Still refresh fog rendering at other heroes' positions.
+				for (Hero h : heroes) {
+					if (h == hero) continue;
+					GameScene.updateFog(h.pos, h.viewDistance + 1);
+				}
+			} else {
+				// Single player — union loop (no-op: only one hero exists)
+				boolean[] tmpFOV = new boolean[level.heroFOV.length];
+				for (Hero h : heroes) {
+					if (h == hero) continue;
+					level.updateFieldOfView(h, tmpFOV);
+					BArray.or(level.heroFOV, tmpFOV, level.heroFOV);
+					GameScene.updateFog(h.pos, h.viewDistance + 1);
+				}
 			}
 		}
 
