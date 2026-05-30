@@ -329,8 +329,11 @@ hero = heroes.get(0);  // singleton always points to player 0 initially
 ```txt
 Dungeon.heroesNeedInitialPlacement: boolean
   -- static field, defaults to false.
-  -- Set true by Dungeon.init() when heroes.size() > 1 (new multiplayer game only).
-  -- Consumed and cleared by Dungeon.switchLevel() on the first level transition.
+  -- Set true in three places, all guarded by heroes.size() > 1:
+       Dungeon.init()              — new multiplayer game startup
+       InterlevelScene.descend()   — every stair descent mid-game
+       InterlevelScene.ascend()    — every stair ascent mid-game
+  -- Consumed and cleared by Dungeon.switchLevel() (delegates to placeHeroesNearEntrance()).
   -- Never serialized; always resets to false on load, so the load path is unaffected.
 ```
 
@@ -338,7 +341,7 @@ Dungeon.heroesNeedInitialPlacement: boolean
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `heroInitialPlacement.newGame` | New multiplayer game, first `switchLevel` call, `heroesNeedInitialPlacement==true` | `heroes[1..N]` placed in passable NEIGHBOURS8 cells adjacent to `hero[0].pos`; flag cleared to false | happy path | Only code path that repositions non-primary heroes in `switchLevel` |
+| `heroInitialPlacement.newGame` | New multiplayer game, first `switchLevel` call, `heroesNeedInitialPlacement==true` | `heroes[1..N]` placed in passable NEIGHBOURS8 cells adjacent to `hero[0].pos`; flag cleared to false | happy path | One of three triggers; delegates to `placeHeroesNearEntrance()` |
 | `heroInitialPlacement.load` | `InterlevelScene.restore()` → `switchLevel`, `heroesNeedInitialPlacement==false` | hero positions unchanged; each hero restores at their bundled `pos` | happy path | Flag never set in `restore()`; saved positions preserved |
 | `heroInitialPlacement.descend` | `InterlevelScene.descend()` mid-game, `heroes.size() > 1` → sets flag true → `switchLevel` | `heroes[1..N]` placed in passable NEIGHBOURS8 cells adjacent to entrance on new floor; flag cleared | happy path | Flag set in `descend()` at line 670–672, before `switchLevel` |
 | `heroInitialPlacement.ascend` | `InterlevelScene.ascend()`, `heroes.size() > 1` → sets flag true → `switchLevel` | `heroes[1..N]` placed in passable NEIGHBOURS8 cells adjacent to entrance on new floor; flag cleared | happy path | Flag set in `ascend()` at line 717–719, before `switchLevel` |
@@ -368,22 +371,36 @@ if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
 }
 Dungeon.switchLevel( level, destTransition.cell() );
 
-// Dungeon.switchLevel(level, pos) — replaces the former unconditional TEMP block
+// Dungeon.switchLevel(level, pos)
 if (heroesNeedInitialPlacement) {
     heroesNeedInitialPlacement = false;
-    for (int i = 1; i < heroes.size(); i++) {
-        int placed = -1;
-        for (int offset : PathFinder.NEIGHBOURS8) {
-            int candidate = pos + offset;
-            if (candidate >= 0 && candidate < level.length()
-                    && level.passable[candidate]
-                    && Actor.findChar(candidate) == null) {
-                placed = candidate;
-                break;
-            }
+    placeHeroesNearEntrance(level, pos, heroes);
+}
+
+// Dungeon.placeHeroesNearEntrance(level, entrancePos, heroes)
+// Uses a local HashSet<Integer> occupied instead of Actor.findChar() because
+// Actor.init() has not run yet — findChar() would return null for every cell.
+HashSet<Integer> occupied = new HashSet<>();
+occupied.add(entrancePos);  // hero[0] is already at the entrance
+for (int i = 1; i < heroes.size(); i++) {
+    Hero h = heroes.get(i);
+    // Falling heroes already have a fall-cell — skip
+    if (h.buff(Chasm.WaitingToFall.class) != null
+            || h.buff(Chasm.Falling.class) != null) continue;
+
+    int placed = -1;
+    for (int offset : PathFinder.NEIGHBOURS8) {
+        int candidate = entrancePos + offset;
+        if (candidate >= 0 && candidate < level.length()
+                && level.passable[candidate]
+                && !occupied.contains(candidate)) {
+            placed = candidate;
+            break;
         }
-        heroes.get(i).pos = (placed != -1) ? placed : pos;
     }
+    int heroPos = (placed != -1) ? placed : entrancePos;
+    h.pos = heroPos;
+    occupied.add(heroPos);
 }
 ```
 

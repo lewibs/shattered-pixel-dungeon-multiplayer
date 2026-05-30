@@ -1,7 +1,7 @@
 {
-  "docsWritten": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/turn-based-system.md"],
-  "summary": "Updated turn-based-system.md: added heroInitialPlacement flow and documented heroesNeedInitialPlacement flag in the Multi-Hero Singleton-Swap section",
-  "artifacts": {
-    "modified": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/turn-based-system.md"]
-  }
+  "skillsWritten": [
+    "skills/actor-init-timing-placement/SKILL.md",
+    "skills/falling-hero-exclusion/SKILL.md"
+  ],
+  "summary": "Extracted 2 patterns: Actor.init() timing means Actor.findChar() is unusable for pre-init placement (use local HashSet instead), and falling heroes (WaitingToFall/Chasm.Falling) must be skipped during stair-adjacent placement"
 }
