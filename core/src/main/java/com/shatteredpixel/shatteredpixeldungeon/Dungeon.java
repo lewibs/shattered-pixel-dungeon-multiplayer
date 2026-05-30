@@ -1193,7 +1193,7 @@ public class Dungeon {
 
 		if (chars) {
 			for (Char c : Actor.chars()) {
-				if (vis[c.pos]) {
+				if (c.pos >= 0 && c.pos < passable.length && vis[c.pos]) {
 					passable[c.pos] = false;
 				}
 			}

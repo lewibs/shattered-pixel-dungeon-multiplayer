@@ -864,8 +864,10 @@ public class Hero extends Char {
 
 	@Override
 	public boolean act() {
-		// Hero is falling into a pit and waiting for the party — skip turn, stay invisible
+		// Hero is falling into a pit and waiting for the party — skip turn, stay non-existent
 		if (buff(Chasm.WaitingToFall.class) != null) {
+			pos = -1;
+			if (sprite != null) sprite.visible = false;
 			curAction = null;
 			spendAndNext( TICK );
 			return false;
