@@ -847,12 +847,19 @@ public class Hero extends Char {
 	
 	// Called whenever this hero becomes the active player. Updates all singletons and UI to reflect this hero.
 	public void activate() {
-		Dungeon.hero     = this;
+		Dungeon.hero      = this;
 		Dungeon.quickslot = this.quickslot;
 		InventoryPane.lastBag = this.belongings.backpack;
-		if (sprite != null) Camera.main.panTo(sprite.center(), 5f);
-		QuickSlotButton.refresh();
-		InventoryPane.refresh();
+		// UI updates must run on the render thread — activate() is called from the actor thread
+		final Hero self = this;
+		Game.runOnRenderThread(new Callback() {
+			@Override
+			public void call() {
+				if (self.sprite != null) Camera.main.panTo(self.sprite.center(), 5f);
+				QuickSlotButton.refresh();
+				InventoryPane.refresh();
+			}
+		});
 	}
 
 	@Override
