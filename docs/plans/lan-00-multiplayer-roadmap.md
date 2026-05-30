@@ -29,48 +29,48 @@ Run each sub-plan using `/dark-factory:execute <path>`. Execute them in the orde
 
 ## Execution Checklist
 
-- [ ] **lan-01** — `Dungeon.hero` pinning + `activate()` gate
+- [x] **lan-01** — `Dungeon.hero` pinning + `activate()` gate
   ```
   /dark-factory:execute docs/plans/lan-01-local-hero-pinning.md
   ```
 
-- [ ] **lan-02** — NetworkManager, TCP/UDP protocol, `FileUtils.bundleToBytes`
+- [x] **lan-02** — NetworkManager, TCP/UDP protocol, `FileUtils.bundleToBytes`
   ```
   /dark-factory:execute docs/plans/lan-02-network-manager.md
   ```
   _(lan-01 and lan-02 are independent — can run in either order)_
 
-- [ ] **lan-03** — WndPlayerCount LAN button, lobby UI, UDP room discovery
+- [x] **lan-03** — WndPlayerCount LAN button, lobby UI, UDP room discovery
   ```
   /dark-factory:execute docs/plans/lan-03-lobby-ui.md
   ```
   _(requires lan-02 done first)_
 
-- [ ] **lan-04** — Per-device hero select, class reservation sync, HANDSHAKE, dungeon init
+- [x] **lan-04** — Per-device hero select, class reservation sync, HANDSHAKE, dungeon init
   ```
   /dark-factory:execute docs/plans/lan-04-new-game-flow.md
   ```
   _(requires lan-01, lan-02, lan-03 done first)_
 
-- [ ] **lan-05** — Turn sync, queued action input, toolbar always-on
+- [x] **lan-05** — Turn sync, queued action input, toolbar always-on
   ```
   /dark-factory:execute docs/plans/lan-05-turn-sync.md
   ```
   _(requires lan-01, lan-02 done first)_
 
-- [ ] **lan-06** — Desync detection, hash exchange, host-authoritative resync
+- [x] **lan-06** — Desync detection, hash exchange, host-authoritative resync
   ```
   /dark-factory:execute docs/plans/lan-06-desync-detection.md
   ```
   _(requires lan-02, lan-05 done first)_
 
-- [ ] **lan-07** — Host-only save, LAN badge, resume handshake, WndHeroClaim
+- [x] **lan-07** — Host-only save, LAN badge, resume handshake, WndHeroClaim
   ```
   /dark-factory:execute docs/plans/lan-07-save-load.md
   ```
   _(requires lan-01, lan-02, lan-03, lan-04 done first)_
 
-- [ ] **lan-08** — Disconnect detection, auto-save, rejoin lobby, Save and Exit
+- [x] **lan-08** — Disconnect detection, auto-save, rejoin lobby, Save and Exit
   ```
   /dark-factory:execute docs/plans/lan-08-disconnect.md
   ```
