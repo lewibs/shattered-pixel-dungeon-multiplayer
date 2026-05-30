@@ -12,7 +12,7 @@ allprojects {
 
     ext {
         appName = 'Pixel Dungeon Multiplayer'
-        appPackageName = 'com.shatteredpixel.shatteredpixeldungeon'
+        appPackageName = 'com.lewibs.pixeldungeonmultiplayer'
 
         appVersionCode = 896
         appVersionName = '3.3.8'

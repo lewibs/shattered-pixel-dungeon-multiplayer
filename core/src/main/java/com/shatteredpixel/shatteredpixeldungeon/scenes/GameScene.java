@@ -904,7 +904,17 @@ public class GameScene extends PixelScene {
 				actorThread = new Thread() {
 					@Override
 					public void run() {
-						Actor.process();
+						try {
+							Actor.process();
+						} catch (Throwable t) {
+							// Actor thread crash — report with full stack trace so it
+							// surfaces via the platform's uncaught-exception handler
+							// (DesktopLauncher dialog / Android next-launch dialog).
+							Game.reportException(t);
+							throw t instanceof RuntimeException
+									? (RuntimeException) t
+									: new RuntimeException(t);
+						}
 					}
 				};
 
