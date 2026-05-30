@@ -120,10 +120,13 @@ public class Chasm implements Hero.Doom {
 			WaitingToFall w = Buff.affect(hero, WaitingToFall.class);
 			w.fallIntoPit = fallIntoPit;
 			// Move hero off the map so they don't block any cell or appear in sight checks.
-			// pos = -1 is the "not placed" sentinel; the fall cell is assigned when the
-			// party descends. The sprite is also hidden here for immediate feedback.
 			hero.pos = -1;
 			if (hero.sprite != null) hero.sprite.visible = false;
+			// Tell the remaining players what happened and what they need to do
+			if (com.badlogic.gdx.Gdx.app != null) {
+				GLog.w( Messages.get(Chasm.class, "waiting_to_fall",
+						hero.heroClass.title()) );
+			}
 			return;
 		}
 
