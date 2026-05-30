@@ -119,7 +119,10 @@ public class Chasm implements Hero.Doom {
 			if (fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
 			WaitingToFall w = Buff.affect(hero, WaitingToFall.class);
 			w.fallIntoPit = fallIntoPit;
-			// Hero is "in the air" — hide sprite until they land on the next floor
+			// Move hero off the map so they don't block any cell or appear in sight checks.
+			// pos = -1 is the "not placed" sentinel; the fall cell is assigned when the
+			// party descends. The sprite is also hidden here for immediate feedback.
+			hero.pos = -1;
 			if (hero.sprite != null) hero.sprite.visible = false;
 			return;
 		}
@@ -216,6 +219,10 @@ public class Chasm implements Hero.Doom {
 
 		@Override
 		public boolean act() {
+			// Re-enforce the non-existent state every tick so it survives save/load.
+			Hero h = (Hero) target;
+			h.pos = -1;
+			if (h.sprite != null) h.sprite.visible = false;
 			spend(TICK);
 			return true;
 		}
