@@ -247,9 +247,16 @@ public abstract class Mob extends Char {
 			state = FLEEING;
 		}
 		
+		// Clear stale target if enemy moved off-map (e.g. WaitingToFall hero at pos=-1).
+		// chooseEnemy() already excludes pos<0 chars, but the stored reference persists.
+		if (enemy != null && enemy.pos < 0) {
+			enemy = null;
+			enemySeen = false;
+		}
+
 		enemy = chooseEnemy();
-		
-		boolean enemyInFOV = enemy != null && enemy.isAlive() && fieldOfView[enemy.pos] && enemy.invisible <= 0;
+
+		boolean enemyInFOV = enemy != null && enemy.isAlive() && enemy.pos >= 0 && fieldOfView[enemy.pos] && enemy.invisible <= 0;
 
 		//prevents action, but still updates enemy seen status
 		if (buff(Feint.AfterImage.FeintConfusion.class) != null){
@@ -297,7 +304,7 @@ public abstract class Mob extends Char {
 				return enemy;
 			}
 			for (Char ch : Actor.chars()) {
-				if (ch != this && fieldOfView[ch.pos] &&
+				if (ch != this && ch.pos >= 0 && fieldOfView[ch.pos] &&
 						ch.buff(StoneOfAggression.Aggression.class) != null) {
 					state = HUNTING;
 					return ch;
@@ -353,7 +360,7 @@ public abstract class Mob extends Char {
 					if (enemies.isEmpty()) {
 						//try to find the hero(es) third
 						for (Hero h : Dungeon.heroes) {
-							if (h.isAlive() && fieldOfView[h.pos] && h.invisible <= 0) {
+							if (h.isAlive() && h.pos >= 0 && fieldOfView[h.pos] && h.invisible <= 0) {
 								enemies.add(h);
 							}
 						}
@@ -382,7 +389,7 @@ public abstract class Mob extends Char {
 
 				//and look for the hero(es)
 				for (Hero h : Dungeon.heroes) {
-					if (h.isAlive() && fieldOfView[h.pos] && h.invisible <= 0) {
+					if (h.isAlive() && h.pos >= 0 && fieldOfView[h.pos] && h.invisible <= 0) {
 						enemies.add(h);
 					}
 				}
@@ -778,7 +785,7 @@ public abstract class Mob extends Char {
 
 	public boolean surprisedBy( Char enemy, boolean attacking ){
 		return enemy == Dungeon.hero
-				&& (enemy.invisible > 0 || !enemySeen || (fieldOfView != null && fieldOfView.length == Dungeon.level.length() && !fieldOfView[enemy.pos]))
+				&& (enemy.invisible > 0 || !enemySeen || (fieldOfView != null && fieldOfView.length == Dungeon.level.length() && (enemy.pos < 0 || !fieldOfView[enemy.pos])))
 				&& (!attacking || enemy.canSurpriseAttack());
 	}
 
@@ -1099,7 +1106,7 @@ public abstract class Mob extends Char {
 				Char closestHostile = null;
 
 				for (Char ch : Actor.chars()){
-					if (fieldOfView[ch.pos] && ch.invisible == 0 && ch.alignment != alignment && ch.alignment != Alignment.NEUTRAL){
+					if (ch.pos >= 0 && fieldOfView[ch.pos] && ch.invisible == 0 && ch.alignment != alignment && ch.alignment != Alignment.NEUTRAL){
 						float bestChance = detectionChance(ch);
 						//silent steps rogue talent, which also applies to rogue's shadow clone
 						if ((ch instanceof Hero || ch instanceof ShadowClone.ShadowAlly)
@@ -1280,7 +1287,7 @@ public abstract class Mob extends Char {
 			boolean swapped = false;
 			if (!recentlyAttackedBy.isEmpty()){
 				for (Char ch : recentlyAttackedBy){
-					if (ch != null && ch.isActive() && Actor.chars().contains(ch) && alignment != ch.alignment && fieldOfView[ch.pos] && ch.invisible == 0 && !isCharmedBy(ch)) {
+					if (ch != null && ch.isActive() && Actor.chars().contains(ch) && alignment != ch.alignment && ch.pos >= 0 && fieldOfView[ch.pos] && ch.invisible == 0 && !isCharmedBy(ch)) {
 						if (canAttack(ch) || enemy == null || Dungeon.level.distance(pos, ch.pos) < Dungeon.level.distance(pos, enemy.pos)) {
 							enemy = ch;
 							target = ch.pos;
