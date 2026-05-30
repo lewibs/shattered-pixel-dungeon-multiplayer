@@ -1956,7 +1956,7 @@ public class GameScene extends PixelScene {
 	 * Computes a hash of the current game state for desync detection.
 	 * Includes seed, hero HP, current turn, level feeling, and mob positions.
 	 */
-	private static long computeHash(int turn) {
+	public static long computeHash(int turn) {
 		java.util.Set<com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob> mobs = Dungeon.level.mobs;
 		int[] mobPos = new int[mobs.size()];
 		int i = 0;

@@ -589,38 +589,83 @@ public class NetworkManager {
         onPlayerJoined = null;
     }
 
+    // Test seam — override sendAction for unit tests (null = use real network)
+    public static java.util.function.BiConsumer<HeroAction, Integer> sendActionOverride = null;
+
+    // Test seam — override host flag for unit tests
+    public static void setIsHostForTesting(boolean host) { isHost = host; }
+
+    // Test seam — fire sendAction check without touching sockets
+    public static void sendActionIfLocal(HeroAction action, int heroId) {
+        if (!lanMode) return;
+        if (sendActionOverride != null) { sendActionOverride.accept(action, heroId); return; }
+        sendAction(action, heroId);
+    }
+
+    // Test seam — whether a remote hero's act() should block waiting for a packet
+    public static boolean shouldBlockForRemoteAction(Hero hero) {
+        return lanMode && hero != Dungeon.hero && hero.curAction == null;
+    }
+
     /**
-     * Internal: Encodes a HeroAction into a byte action type.
+     * Encodes a HeroAction into a byte action type for the wire protocol.
+     * Package-private so tests can verify round-trip symmetry.
      */
-    private static byte encodeHeroAction(HeroAction action) {
-        // This is a simplified implementation
-        // In practice, we'd check the actual HeroAction type
-        if (action == null) {
-            return ActionType.REST;
-        }
-        // Default to REST if we can't determine the type
+    static byte encodeAction(HeroAction action) {
+        if (action == null)                          return ActionType.REST;
+        if (action instanceof HeroAction.Move)       return ActionType.MOVE;
+        if (action instanceof HeroAction.Attack)     return ActionType.ATTACK;
+        if (action instanceof HeroAction.Interact)   return ActionType.INTERACT;
+        if (action instanceof HeroAction.PickUp)     return ActionType.PICKUP;
+        if (action instanceof HeroAction.OpenChest)  return ActionType.OPEN_CHEST;
+        if (action instanceof HeroAction.Unlock)     return ActionType.UNLOCK;
+        if (action instanceof HeroAction.LvlTransition) return ActionType.LVL_TRANSITION;
+        if (action instanceof HeroAction.Buy)        return ActionType.BUY;
+        if (action instanceof HeroAction.Mine)       return ActionType.MINE;
+        if (action instanceof HeroAction.Alchemy)    return ActionType.ALCHEMY;
         return ActionType.REST;
     }
 
     /**
-     * Internal: Gets the target position from a HeroAction.
+     * Extracts the target position from a HeroAction for the wire protocol.
+     * Package-private so tests can verify round-trip symmetry.
      */
-    private static int getActionTargetPos(HeroAction action) {
-        if (action == null) {
-            return 0;
+    static int getTargetPos(HeroAction action) {
+        if (action instanceof HeroAction.Attack) {
+            HeroAction.Attack a = (HeroAction.Attack) action;
+            return a.target != null ? a.target.pos : a.dst;
         }
-        // Default to 0 if we can't determine the target
-        return 0;
+        if (action instanceof HeroAction.Interact) {
+            HeroAction.Interact i = (HeroAction.Interact) action;
+            return i.ch != null ? i.ch.pos : i.dst;
+        }
+        return action != null ? action.dst : 0;
     }
 
     /**
-     * Internal: Decodes a byte action type and target position into a HeroAction.
+     * Decodes a wire protocol byte + position back into a HeroAction.
+     * For Attack/Interact the receiver looks up the Char by position at simulation time.
+     * Package-private so tests can verify round-trip symmetry.
      */
-    private static HeroAction decodeHeroAction(byte actionType, int targetPos) {
-        // This would need to be implemented based on the actual HeroAction types
-        // For now, return null (remote hero will handle it)
+    static HeroAction decodeAction(byte actionType, int targetPos) {
+        if (actionType == ActionType.MOVE)           return new HeroAction.Move(targetPos);
+        if (actionType == ActionType.ATTACK)         { HeroAction.Attack a = new HeroAction.Attack(null); a.dst = targetPos; return a; }
+        if (actionType == ActionType.INTERACT)       { HeroAction.Interact i = new HeroAction.Interact(null); i.dst = targetPos; return i; }
+        if (actionType == ActionType.PICKUP)         return new HeroAction.PickUp(targetPos);
+        if (actionType == ActionType.OPEN_CHEST)     return new HeroAction.OpenChest(targetPos);
+        if (actionType == ActionType.UNLOCK)         return new HeroAction.Unlock(targetPos);
+        if (actionType == ActionType.LVL_TRANSITION) return new HeroAction.LvlTransition(targetPos);
+        if (actionType == ActionType.BUY)            return new HeroAction.Buy(targetPos);
+        if (actionType == ActionType.MINE)           return new HeroAction.Mine(targetPos);
+        if (actionType == ActionType.ALCHEMY)        return new HeroAction.Alchemy(targetPos);
+        if (actionType == ActionType.REST)           return null;
         return null;
     }
+
+    // Keep old private names as delegators so sendAction/receiveActionAsync still compile
+    private static byte encodeHeroAction(HeroAction action) { return encodeAction(action); }
+    private static int  getActionTargetPos(HeroAction action) { return getTargetPos(action); }
+    private static HeroAction decodeHeroAction(byte t, int p) { return decodeAction(t, p); }
 
     // Hero selection and handshake coordination
     private static volatile boolean heroReadyReceived = false;

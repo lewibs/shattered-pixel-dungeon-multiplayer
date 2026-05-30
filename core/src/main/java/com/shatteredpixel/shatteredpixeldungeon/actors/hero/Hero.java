@@ -863,15 +863,17 @@ public class Hero extends Char {
 		Dungeon.quickslot = this.quickslot;
 		InventoryPane.lastBag = this.belongings.backpack;
 		// UI updates must run on the render thread — activate() is called from the actor thread
-		final Hero self = this;
-		Game.runOnRenderThread(new Callback() {
-			@Override
-			public void call() {
-				if (self.sprite != null) Camera.main.panTo(self.sprite.center(), 5f);
-				QuickSlotButton.refresh();
-				InventoryPane.refresh();
-			}
-		});
+		if (Game.instance != null) {
+			final Hero self = this;
+			Game.runOnRenderThread(new Callback() {
+				@Override
+				public void call() {
+					if (self.sprite != null) Camera.main.panTo(self.sprite.center(), 5f);
+					QuickSlotButton.refresh();
+					InventoryPane.refresh();
+				}
+			});
+		}
 	}
 
 	@Override
