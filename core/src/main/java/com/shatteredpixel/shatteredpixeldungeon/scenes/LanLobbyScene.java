@@ -65,6 +65,8 @@ public class LanLobbyScene extends PixelScene {
 
 	// Whether this scene is still active (guards against stale background-thread callbacks)
 	private volatile boolean active = true;
+	// Set to true just before switching to HeroSelectScene so destroy() doesn't disconnect
+	private boolean gameStarted = false;
 
 	@Override
 	public void create() {
@@ -144,6 +146,19 @@ public class LanLobbyScene extends PixelScene {
 			startBtn.setRect(x0, y, contentWidth, 18f);
 			startBtn.enable(false); // disabled until >= 2 players joined
 			add(startBtn);
+			y += 20f;
+
+			// Cancel button — closes socket and returns to title
+			RedButton cancelBtn = new RedButton("Cancel") {
+				@Override
+				protected void onClick() {
+					super.onClick();
+					active = false;
+					ShatteredPixelDungeon.switchScene(StartScene.class);
+				}
+			};
+			cancelBtn.setRect(x0, y, contentWidth, 18f);
+			add(cancelBtn);
 
 			// Register callback to be notified when clients connect (host path)
 			NetworkManager.onPlayerJoined = (playerIndex, total) ->
@@ -217,6 +232,7 @@ public class LanLobbyScene extends PixelScene {
 		GamesInProgress.playerCount = 1;
 		GamesInProgress.selectedClasses = new ArrayList<>();
 		GamesInProgress.currentPlayerSelecting = 0;
+		gameStarted = true;
 		ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
 	}
 
@@ -232,6 +248,7 @@ public class LanLobbyScene extends PixelScene {
 		GamesInProgress.playerCount = 1;
 		GamesInProgress.selectedClasses = new ArrayList<>();
 		GamesInProgress.currentPlayerSelecting = 0;
+		gameStarted = true;
 		ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
 	}
 
@@ -290,6 +307,10 @@ public class LanLobbyScene extends PixelScene {
 		// Stop background threads and clear callbacks
 		active = false;
 		NetworkManager.onPlayerJoined = null;
+		// If game hasn't started yet, fully close sockets so port 7777 is freed
+		if (!gameStarted) {
+			NetworkManager.disconnect();
+		}
 		super.destroy();
 	}
 }
