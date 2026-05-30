@@ -343,7 +343,8 @@ public class GameScene extends PixelScene {
 		for (Hero h : Dungeon.heroes) {
 			if (!h.isAlive()) continue;
 			HeroSprite hs = createHeroSprite( h );
-			if (h == Dungeon.heroes.get(0)) hero = hs;
+			int localIdx = Math.min(NetworkManager.localPlayerIndex, Dungeon.heroes.size() - 1);
+			if (h == Dungeon.heroes.get(localIdx)) hero = hs;
 		}
 		
 		for (Mob mob : Dungeon.level.mobs) {

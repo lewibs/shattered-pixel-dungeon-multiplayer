@@ -701,6 +701,7 @@ public class NetworkManager {
         gameStarted = false;
         onPlayerJoined = null;
         playerNames = new String[4];  // reset player names array
+        localPlayerIndex = 0;
     }
 
     // Test seam — override sendAction for unit tests (null = use real network)
@@ -798,19 +799,18 @@ public class NetworkManager {
             byte classOrdinal = (byte) heroClass.ordinal();
 
             if (isHost) {
-                for (DataOutputStream out : outs) {
-                    out.writeByte(PacketType.HERO_READY);
-                    out.writeByte(classOrdinal);
-                    out.flush();
-                }
+                // Host readiness is tracked locally in waitForAllHeroReady (heroReadyCount=1).
+                // Do NOT broadcast HERO_READY to clients — they are not expecting it and it
+                // would corrupt the waitForHandshake stream reader on the client side.
+                GLog.p("HERO_READY (host, local only): %s", heroClass.name());
             } else {
                 if (clientOut != null) {
                     clientOut.writeByte(PacketType.HERO_READY);
                     clientOut.writeByte(classOrdinal);
                     clientOut.flush();
+                    GLog.p("HERO_READY sent to host: %s", heroClass.name());
                 }
             }
-            GLog.p("HERO_READY sent: %s", heroClass.name());
         } catch (IOException e) {
             GLog.n("Failed to send HERO_READY: %s", e.getMessage());
         }
