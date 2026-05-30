@@ -32,148 +32,154 @@ import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RedButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RenderedTextBlock;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
+import com.watabou.input.PointerEvent;
+import com.watabou.noosa.Game;
 import com.watabou.noosa.TextInput;
+import com.watabou.utils.DeviceCompat;
 
 import java.io.IOException;
 
 /**
  * WndLANMenu — choice dialog shown after tapping "LAN Game" in WndPlayerCount.
- * Presents "Host Room" and "Join Room" options.
- *
- * Flow: wndLANMenu
+ * Presents a name input then "Host Room" / "Join Room" options.
+ * Buttons are disabled until a name is entered.
  */
 public class WndLANMenu extends Window {
 
-	private static final int WIDTH     = 120;
-	private static final int BTN_HEIGHT = 20;
-	private static final int GAP        = 2;
-	private static final int TITLE_HEIGHT = 16;
-	private static final int INPUT_HEIGHT = 20;
+	private static final int WIDTH        = 120;
+	private static final int BTN_HEIGHT   = 18;
+	private static final int INPUT_HEIGHT = 16;
+	private static final int MARGIN       = 2;
 
-	// Error label shown when hostGame() fails (lanMenu.hostFail path)
-	private RenderedTextBlock errorLabel;
-
-	// Text input field for player name
 	private TextInput nameInput;
+	private RedButton btnHost;
+	private RedButton btnJoin;
+	private RenderedTextBlock errorLabel;
+	private int resumeSlot;
 
-	// Resume slot (non-zero if opened from a LAN save slot)
-	private int resumeSlot = 0;
-
-	public WndLANMenu() {
-		this(0);
-	}
+	public WndLANMenu() { this(0); }
 
 	public WndLANMenu(int resumeSlot) {
 		super();
 		this.resumeSlot = resumeSlot;
 
-		RenderedTextBlock title = PixelScene.renderTextBlock("LAN Game", 12);
+		float pos = MARGIN;
+
+		// Title
+		RenderedTextBlock title = PixelScene.renderTextBlock("LAN Game", 9);
 		title.hardlight(TITLE_COLOR);
-		title.setPos(
-				(WIDTH - title.width()) / 2f,
-				(TITLE_HEIGHT - title.height()) / 2f
-		);
+		title.setPos((WIDTH - title.width()) / 2f, pos);
 		PixelScene.align(title);
 		add(title);
+		pos = title.bottom() + MARGIN * 2;
 
-		float pos = TITLE_HEIGHT;
+		// Prompt label
+		RenderedTextBlock prompt = PixelScene.renderTextBlock("Your name:", 6);
+		prompt.setPos(MARGIN, pos);
+		PixelScene.align(prompt);
+		add(prompt);
+		pos = prompt.bottom() + MARGIN;
 
-		// Name input field
-		int textSize = (int)PixelScene.uiCamera.zoom * 9;
+		// Name text input — same pattern as WndTextInput
+		int textSize = (int) PixelScene.uiCamera.zoom * 9;
 		nameInput = new TextInput(Chrome.get(Chrome.Type.TOAST_WHITE), false, textSize) {
 			@Override
+			public void onChanged() {
+				super.onChanged();
+				boolean hasName = !getText().trim().isEmpty();
+				btnHost.enable(hasName);
+				btnJoin.enable(hasName);
+			}
+
+			@Override
 			public void enterPressed() {
-				// Trigger host action on enter
-				onHostClicked();
+				if (!getText().trim().isEmpty()) onHostClicked();
 			}
 		};
-		nameInput.setRect(0, pos, WIDTH, INPUT_HEIGHT);
 		add(nameInput);
-		pos += INPUT_HEIGHT + GAP;
+		// placeholder — will be repositioned after resize()
+		nameInput.setRect(MARGIN, pos, WIDTH - MARGIN * 2, INPUT_HEIGHT);
+		pos += INPUT_HEIGHT + MARGIN * 2;
 
-		// "Host Room" button — lanMenu.host path
-		RedButton btnHost = new RedButton("Host Room") {
-			@Override
-			protected void onClick() {
-				super.onClick();
-				onHostClicked();
-			}
+		// Host button — disabled until name entered
+		btnHost = new RedButton("Host Room") {
+			@Override protected void onClick() { super.onClick(); onHostClicked(); }
 		};
-		btnHost.setRect(0, pos, WIDTH, BTN_HEIGHT);
+		btnHost.setRect(MARGIN, pos, WIDTH - MARGIN * 2, BTN_HEIGHT);
+		btnHost.enable(false);
 		add(btnHost);
-		pos += BTN_HEIGHT + GAP;
+		pos += BTN_HEIGHT + MARGIN;
 
-		// "Join Room" button — lanMenu.join path
-		RedButton btnJoin = new RedButton("Join Room") {
-			@Override
-			protected void onClick() {
-				super.onClick();
-				onJoinClicked();
-			}
+		// Join button — disabled until name entered
+		btnJoin = new RedButton("Join Room") {
+			@Override protected void onClick() { super.onClick(); onJoinClicked(); }
 		};
-		btnJoin.setRect(0, pos, WIDTH, BTN_HEIGHT);
+		btnJoin.setRect(MARGIN, pos, WIDTH - MARGIN * 2, BTN_HEIGHT);
+		btnJoin.enable(false);
 		add(btnJoin);
-		pos += BTN_HEIGHT + GAP;
+		pos += BTN_HEIGHT + MARGIN;
 
-		// Error label (hidden until an error occurs)
+		// Error label
 		errorLabel = PixelScene.renderTextBlock(6);
 		errorLabel.text("", WIDTH);
-		errorLabel.setPos(0, pos);
+		errorLabel.setPos(MARGIN, pos);
 		add(errorLabel);
 
-		resize(WIDTH, (int)(pos + errorLabel.height()));
+		// resize() BEFORE final textInput layout — window camera must be set up first
+		resize(WIDTH, (int)(pos + errorLabel.height() + MARGIN));
+
+		// Reposition text input now that the camera is ready
+		nameInput.setRect(MARGIN, nameInput.top(), nameInput.width(), INPUT_HEIGHT);
+
+		// Push window up to make room for soft keyboard
+		if (!DeviceCompat.hasHardKeyboard()) {
+			offset(0, -(int)(Game.height / (4 * camera.zoom)));
+			boundOffsetWithMargin(0);
+		}
+
+		PointerEvent.clearKeyboardThisPress = false;
 	}
 
-	/**
-	 * Called when the player taps "Host Room".
-	 * If resumeSlot > 0: load the save, then start networking in resume mode.
-	 * Otherwise: start networking fresh.
-	 * Calls NetworkManager.hostGame(7777), then transitions to LanLobbyScene.
-	 * On IOException, shows an error toast and keeps the dialog open (lanMenu.hostFail path).
-	 */
+	@Override
+	public void offset(int xOffset, int yOffset) {
+		super.offset(xOffset, yOffset);
+		if (nameInput != null) {
+			nameInput.setRect(nameInput.left(), nameInput.top(), nameInput.width(), nameInput.height());
+		}
+	}
+
 	protected void onHostClicked() {
+		String name = nameInput.getText().trim();
+		if (name.isEmpty()) return;
+		NetworkManager.playerName = name;
 		try {
-			// Read the player name from the input field
-			String inputName = nameInput.getText().trim();
-			String name = inputName.isEmpty() ? "Player" : inputName;
-			NetworkManager.playerName = name;
-
-			// If resuming, load the game first
-			if (resumeSlot > 0) {
-				Dungeon.loadGame(resumeSlot);
-			}
-
+			if (resumeSlot > 0) Dungeon.loadGame(resumeSlot);
 			NetworkManager.hostGame(7777);
 			hide();
 			LanLobbyScene.resumeMode = (resumeSlot > 0);
 			ShatteredPixelDungeon.switchScene(LanLobbyScene.class);
 		} catch (IOException e) {
-			showToast("Could not open room: " + e.getMessage());
+			showError("Could not open room: " + e.getMessage());
 		}
 	}
 
-	/**
-	 * Called when the player taps "Join Room".
-	 * Hides this dialog and transitions to LanRoomListScene (lanMenu.join path).
-	 */
 	protected void onJoinClicked() {
-		// Read the player name from the input field
-		String inputName = nameInput.getText().trim();
-		String name = inputName.isEmpty() ? "Player" : inputName;
+		String name = nameInput.getText().trim();
+		if (name.isEmpty()) return;
 		NetworkManager.playerName = name;
-
 		hide();
 		ShatteredPixelDungeon.switchScene(LanRoomListScene.class);
 	}
 
-	/**
-	 * Displays an error message inside the dialog (lanMenu.hostFail path).
-	 */
-	protected void showToast(String message) {
+	protected void showError(String message) {
 		errorLabel.text(message, WIDTH);
 		errorLabel.hardlight(0xFF4444);
 		PixelScene.align(errorLabel);
-		// Expand window height to fit error text
-		resize(WIDTH, (int)(errorLabel.top() + errorLabel.height() + GAP));
+		resize(WIDTH, (int)(errorLabel.top() + errorLabel.height() + MARGIN));
+	}
+
+	@Override
+	public void onBackPressed() {
+		// Prevent accidentally closing while typing
 	}
 }

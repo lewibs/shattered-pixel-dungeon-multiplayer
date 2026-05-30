@@ -62,6 +62,8 @@ public class LanLobbyScene extends PixelScene {
 	private RenderedTextBlock ipLabel;
 	private RenderedTextBlock[] slotLabels = new RenderedTextBlock[SLOT_COUNT];
 	private RedButton startBtn;
+	// Stored so onPlayerJoined can use the correct max-width when updating labels
+	private int labelWidth;
 
 	// Whether this scene is still active (guards against stale background-thread callbacks)
 	private volatile boolean active = true;
@@ -83,6 +85,7 @@ public class LanLobbyScene extends PixelScene {
 
 		float margin = 4f;
 		float contentWidth = Math.min(safeW - margin * 2, 200f);
+		labelWidth = (int) contentWidth;
 		float x0 = insets.left + (safeW - contentWidth) / 2f;
 		float y = insets.top + margin;
 
@@ -194,13 +197,10 @@ public class LanLobbyScene extends PixelScene {
 		int slot = playerIndex; // slot 0 = host already filled
 		if (slot >= 0 && slot < SLOT_COUNT) {
 			String playerName = NetworkManager.getPlayerName(playerIndex);
-			if (slot == 0 && NetworkManager.isHost()) {
-				slotLabels[slot].text("Slot " + (slot + 1) + ": " + playerName + " (You)",
-						(int) slotLabels[slot].width());
-			} else {
-				slotLabels[slot].text("Slot " + (slot + 1) + ": " + playerName,
-						(int) slotLabels[slot].width());
-			}
+			if (playerName == null || playerName.isEmpty()) playerName = "Player " + (slot + 1);
+			boolean isLocalSlot = (slot == NetworkManager.localPlayerIndex);
+			String label = "Slot " + (slot + 1) + ": " + playerName + (isLocalSlot ? " (You)" : "");
+			slotLabels[slot].text(label, labelWidth);
 			align(slotLabels[slot]);
 		}
 
