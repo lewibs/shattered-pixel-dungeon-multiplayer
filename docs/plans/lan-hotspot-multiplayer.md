@@ -4,6 +4,8 @@
 
 Add LAN/hotspot multiplayer so 2–4 devices can play together without any server. On the home screen, "LAN Game" appears alongside the existing player-count selector. One device hosts a room; others join by entering the host IP. The room shows connected players in real time (max 4). Once all players join, each device goes through hero selection independently. The host starts the game when everyone has selected a hero. Both/all devices run the identical simulation using a shared RNG seed — only player actions are exchanged over the network each turn. Player count is determined dynamically by how many players actually join, not pre-configured by the host.
 
+**Key design principle — local hero always in focus:** In LAN mode the camera, FOV, and UI are always pinned to the local hero. The remote hero's turns run silently in the background. `Dungeon.hero` stays fixed to the local hero for the entire session; a new `Dungeon.localHero` reference is introduced to make this explicit and to gate camera/UI updates.
+
 ## Architecture
 
 ```mermaid
@@ -24,9 +26,9 @@ sequenceDiagram
     Note over H,C1,C2: Max 4 players; host taps "Start" when ready
 
     H->>N: START { playerCount, seed }
-    C1->>C1: Hero Select (slot 1)
-    C2->>C2: Hero Select (slot 2)
-    H->>H: Hero Select (slot 0)
+    C1->>C1: Hero Select (slot 1) — single-hero select, playerCount=1
+    C2->>C2: Hero Select (slot 2) — single-hero select, playerCount=1
+    H->>H: Hero Select (slot 0) — single-hero select, playerCount=1
     C1->>N: HERO_READY { heroClass }
     C2->>N: HERO_READY { heroClass }
     H->>H: Wait for all HERO_READY
@@ -58,12 +60,13 @@ sequenceDiagram
 **Steps:**
 1. Create `NetworkManager` class in `core/src/main/java/.../network/NetworkManager.java`
 2. Fields: `ServerSocket serverSocket`, `Socket peerSocket`, `DataInputStream in`, `DataOutputStream out`, `boolean isHost`, `int localPlayerIndex`
-3. `hostGame(int port)` — opens `ServerSocket`, blocks until one client connects, sets `isHost = true`
-4. `joinGame(String ip, int port)` — opens `Socket` to host, sets `isHost = false`
-5. `sendAction(HeroAction action, int heroId)` — serialize and write to stream
-6. `receiveAction()` — blocking read, deserialize into `HeroAction`
-7. `sendHash(long hash, int turn)` / `receiveHash()` — for desync detection
-8. `disconnect()` — close all streams and sockets cleanly
+3. Add a `static boolean lanMode = false` flag (set to `true` when a LAN session starts; used throughout the codebase to gate LAN-specific behaviour)
+4. `hostGame(int port)` — opens `ServerSocket`, blocks until one client connects, sets `isHost = true`
+5. `joinGame(String ip, int port)` — opens `Socket` to host, sets `isHost = false`
+6. `sendAction(HeroAction action, int heroId)` — serialize and write to stream
+7. `receiveActionAsync(Callback onReceived)` — non-blocking: starts a background reader thread that calls the callback when a packet arrives, then calls `Actor.process()` notify to wake the actor thread (mirrors the touch-input wake pattern)
+8. `sendHash(long hash, int turn)` / `receiveHash()` — for desync detection
+9. `disconnect()` — close all streams and sockets cleanly; use `Socket.setSoTimeout()` on all reads so `SocketTimeoutException` signals disconnection cleanly rather than blocking indefinitely
 
 **Data format (simple binary protocol):**
 ```
@@ -78,6 +81,8 @@ RESUME_START:         [byte type=8] [int playerCount]
 HERO_CLAIM:           [byte type=9] [int heroIndex]
 RESUME_HANDSHAKE:     [byte type=10] [byte[] dungeonBundle] [int[] heroAssignments]
 ```
+
+**Note on `SAVE_LOBBY_INFO`:** The per-hero HP values must be read directly from `Dungeon.heroes` at transmission time — `GamesInProgress.Info` only has a single `int hp` field for `Dungeon.hero` alone and cannot supply per-hero HP.
 
 ---
 
@@ -96,7 +101,7 @@ RESUME_HANDSHAKE:     [byte type=10] [byte[] dungeonBundle] [int[] heroAssignmen
    - Shows "Waiting for players…" label and a "Start Game" button (enabled when ≥2 players connected)
 4. Each time a new client connects: assign next available `playerIndex`, send them `PLAYER_JOINED { playerIndex, currentPlayers }`, broadcast updated player list to all connected clients, update `LanLobbyScene` list
 5. Host taps "Start Game": generate `dungeonSeed`, broadcast `START { playerCount, seed }` to all clients
-6. All devices (host + clients) immediately transition to `HeroSelectScene` for their own slot
+6. All devices (host + clients) transition to `HeroSelectScene` for their own slot only — each device runs a single-hero select (`GamesInProgress.playerCount = 1`, `GamesInProgress.currentPlayerSelecting = 0`). The pass-and-play multi-hero loop does not run in LAN mode.
 7. Host waits to receive `HERO_READY { heroClass }` from each client slot; clients wait for `HANDSHAKE`
 8. Once all `HERO_READY` packets received: host broadcasts final `HANDSHAKE { seed, heroClasses[], playerCount }` and all devices initialize the dungeon (Flow 4)
 
@@ -114,7 +119,7 @@ RESUME_HANDSHAKE:     [byte type=10] [byte[] dungeonBundle] [int[] heroAssignmen
 3. Receive `PLAYER_JOINED { playerIndex, currentPlayers }` — store `localPlayerIndex`
 4. Show `LanLobbyScene` (client view): displays player slots as they fill in, "Waiting for host to start…" label (no Start button)
 5. Lobby updates as host sends further `PLAYER_JOINED` broadcasts (other clients joining)
-6. On receive `START { playerCount, seed }`: store seed + player count, transition to `HeroSelectScene` for own slot
+6. On receive `START { playerCount, seed }`: store seed + player count, transition to `HeroSelectScene` for own slot only (single-hero select, same as host)
 7. Hero select completes → send `HERO_READY { heroClass }` to host
 8. Wait for `HANDSHAKE { seed, heroClasses[], playerCount }` from host → proceed to dungeon init (Flow 4)
 
@@ -127,11 +132,12 @@ RESUME_HANDSHAKE:     [byte type=10] [byte[] dungeonBundle] [int[] heroAssignmen
 **Exit:** Both devices show the dungeon, turn 0
 
 **Steps:**
-1. Host calls `Dungeon.newGame()` as normal — this sets `Dungeon.seed` and calls `Random.pushGenerator(seed)`
-2. Client calls `Dungeon.newGame()` with the received seed — **same call, same seed → identical level gen**
-3. `GamesInProgress.selectedClasses` is set on both devices (from handshake)
-4. `Dungeon.heroes[0]` = host hero, `Dungeon.heroes[1]` = client hero on both devices
-5. Both render the dungeon; each device shows only its own hero's FOV initially
+1. Set `Dungeon.seed` to the received seed value on both devices
+2. Populate `GamesInProgress.selectedClasses` with the full hero class list from the handshake on both devices — this must happen **before** `InterlevelScene` transitions, as `Dungeon.init()` reads `selectedClasses` to spawn all heroes
+3. Call `Dungeon.init()` — this calls `Generator.fullReset()` then `Random.pushGenerator(seed + 1)` (note: the generator uses `seed + 1`, not `seed` directly — both devices must use this same offset)
+4. Set `Dungeon.localHero = Dungeon.heroes.get(NetworkManager.localPlayerIndex)` immediately after heroes are spawned
+5. Set `Dungeon.hero = Dungeon.localHero` — pin the singleton to the local hero for the session
+6. Both render the dungeon; each device shows only its own local hero's FOV
 
 **RNG note:** `Random.java` uses `java.util.Random` seeded via `pushGenerator(long seed)` with deterministic MX3 scramble — identical seed produces identical sequence on both devices.
 
@@ -144,34 +150,43 @@ RESUME_HANDSHAKE:     [byte type=10] [byte[] dungeonBundle] [int[] heroAssignmen
 **Exit:** Turn resolved, both devices show same state
 
 **Steps:**
-1. In `Hero.act()`, check `this == Dungeon.heroes[NetworkManager.localPlayerIndex]`
-   - If **local hero**: wait for player input as normal (existing `ready()` / `curAction` pattern)
-   - If **remote hero**: call `NetworkManager.receiveAction()` blocking read, set `curAction` from received packet
-2. When local hero gets input: call `NetworkManager.sendAction(curAction, heroId)` before `spendAndNext()`
-3. Both heroes now have their `curAction` set — simulation proceeds identically on both devices
-4. Mob AI, item effects, level transitions all run from the same deterministic RNG → same result
+1. In `Hero.act()`, after all existing guards (isAlive, WaitingToFall, activate, heroFOV, observe, checkVisibleMobs, paralysed, FollowHeroBuff), check `NetworkManager.lanMode`:
+   - If **local hero** (`this == Dungeon.localHero`): wait for player input as normal (existing `ready()` / `curAction` pattern). When input arrives, call `NetworkManager.sendAction(curAction, heroId)` before dispatching.
+   - If **remote hero**: `act()` returns `false` (same as a hero waiting for input). A background network-reader thread calls `NetworkManager.receiveActionAsync()`, sets `curAction` on the remote hero, then calls `notify()` on the actor thread to wake it — mirroring exactly how touch input wakes the actor thread for local heroes.
+2. Both heroes now have their `curAction` set — simulation proceeds identically on both devices
+3. Mob AI, item effects, level transitions all run from the same deterministic RNG → same result
 
-**Turn ordering:** Heroes act in actor queue order (already handled by priority system). Remote hero's `act()` simply blocks until the network action arrives — same as local hero blocking on touch input.
+**`activate()` gate:** `Hero.activate()` currently reassigns `Dungeon.hero`, pans the camera, and refreshes the UI. In LAN mode this must be gated: only update camera/UI if `this == Dungeon.localHero`. Remote hero turns must not hijack the local player's view.
+
+**`Level.heroFOV` gate:** `heroFOV` is a single shared `boolean[]`. When `Dungeon.observe()` runs during a remote hero's turn it must not overwrite the local hero's visibility. Solution: `Dungeon.observe()` (and `updateFieldOfView`) should only update `heroFOV` when `this == Dungeon.localHero`; remote hero FOV updates write to a separate throwaway array.
+
+**`FollowHeroBuff` in LAN:** Works identically to pass-and-play. The buff generates a `HeroAction.Move` locally during the local hero's turn; that action is transmitted as a normal move packet. The remote device receives a move action and has no knowledge of the buff. No special handling needed.
+
+**Turn ordering:** Heroes act in actor queue order (already handled by priority system). Remote hero's `act()` returns `false` and sleeps the actor thread until the network packet arrives — identical to how local hero waits for touch input.
 
 ---
 
 ### Flow 6: `desyncDetection`
 **What:** Every 10 turns, exchange a hash of key game state. If hashes differ, pause and resync.
 
-**Entry:** `Actor.now() % 10 == 0` after turn resolution  
+**Entry:** `(int)Actor.now() % 10 == 0` after turn resolution  
 **Exit:** Hashes match (continue) or mismatch (trigger recovery)
 
 **Hash inputs** (fast, deterministic):
 ```java
 long hash = Dungeon.seed
-    ^ (long)Dungeon.hero.HP << 32
-    ^ Actor.now()
+    ^ (long)Dungeon.hero.HP << 32   // Dungeon.hero is pinned to local hero — stable
+    ^ (long)(int)Actor.now()         // cast to int before use; Actor.now() is a float
     ^ Dungeon.level.feeling.ordinal()
     ^ Arrays.hashCode(mobPositions());  // sorted mob cell array
 ```
 
+**Note:** `Dungeon.hero` is pinned to the local hero for the session, so `Dungeon.hero.HP` consistently reflects the local hero's HP on each device — no aggregation needed.
+
+**Note:** `Actor.now()` returns a `float` — use `(int)Actor.now() % 10 == 0` for the trigger condition, not `Actor.now() % 10 == 0`.
+
 **Steps:**
-1. After turn resolution, if `turn % 10 == 0`: compute hash, send `HASH` packet
+1. After turn resolution, if `(int)Actor.now() % 10 == 0`: compute hash, send `HASH` packet
 2. Receive peer's hash (with timeout)
 3. If match: continue
 4. If mismatch: show "Resyncing..." overlay, host serializes full `Dungeon` bundle, sends to client
@@ -189,28 +204,30 @@ long hash = Dungeon.seed
 **Exit (load):** All players have claimed a hero; game resumes from saved state
 
 #### Saving
-1. On `GameScene.pause()` / quit: if `isHost`, call existing `Dungeon.saveAll()` as normal
+1. On `GameScene.pause()` / quit: if `isHost`, call existing `Dungeon.saveAll()` as normal — the existing save format already serializes all heroes under the `"heroes"` key in the bundle
 2. If client: skip save entirely — no local save file is written
-3. Mark save slot with `GamesInProgress.isMultiplayerSave = true` so the title screen can distinguish it from single-player saves
+3. Add `GamesInProgress.isMultiplayerSave = true` flag so the title screen can distinguish LAN saves from single-player saves; persist it in `GamesInProgress.Info`
 
 #### Continuing a saved LAN game
 4. Saved LAN slots appear in the existing save-slot list with a "LAN" badge; tapping one shows `WndLANMenu` ("Host Room" / "Join Room") instead of launching directly
 5. **Host path:**
-   a. Load save via `Dungeon.loadGame()` — full state is in memory on host only
+   a. Load save via `Dungeon.loadGame()` — full state is in memory on host only (existing multi-hero restore already handles the `"heroes"` collection)
    b. Open `ServerSocket` on port 7777; enter `LanLobbyScene` (same UI as new game — shows IP, player slots, Start button)
-   c. Each client that connects receives `SAVE_LOBBY_INFO { playerCount, heroNames[], heroClasses[], heroHP[] }` — enough to display the available heroes without transferring full state
+   c. Each client that connects receives `SAVE_LOBBY_INFO { playerCount, heroNames[], heroClasses[], heroHP[] }` — HP values read directly from `Dungeon.heroes` at transmission time (not from `GamesInProgress.Info`, which only has a single `int hp` for `Dungeon.hero`)
    d. Host taps "Start" once enough players are connected (≥2, ≤ saved hero count)
    e. Broadcast `RESUME_START { playerCount }` — clients transition to hero-claim screen
    f. Collect `HERO_CLAIM { heroIndex }` from each client; host claims whichever index is left (or picks first)
-   g. Broadcast final `RESUME_HANDSHAKE { fullDungeonBundle, heroAssignments[] }` — clients deserialize and replace local state
-   h. All devices show the dungeon from the saved position; each controls their claimed hero
+   g. Serialize the full dungeon bundle to bytes — requires a new `public static byte[] FileUtils.bundleToBytes(Bundle bundle)` wrapper, since the existing `bundleToStream` is `private static` and not accessible outside the class
+   h. Broadcast `RESUME_HANDSHAKE { fullDungeonBundle, heroAssignments[] }` — clients deserialize and replace local state
+   i. Set `Dungeon.localHero = Dungeon.heroes.get(assignedIndex)` on each device; pin `Dungeon.hero = Dungeon.localHero`
+   j. All devices show the dungeon from the saved position; each controls their claimed hero
 
 6. **Client path:**
    a. Show `WndJoinGame` IP entry dialog; connect to host
    b. Receive `SAVE_LOBBY_INFO` — enter `LanLobbyScene` (waiting view, same as new game)
-   c. On `RESUME_START`: transition to `WndHeroClaim` — shows each saved hero (name, class, HP, depth) as a selectable card, one per player slot; client picks one
+   c. On `RESUME_START`: transition to `WndHeroClaim` — shows each saved hero (name, class, HP, depth) as a selectable card; client picks one
    d. Send `HERO_CLAIM { heroIndex }` to host; wait for `RESUME_HANDSHAKE`
-   e. Deserialize received dungeon bundle; game starts at saved position controlling claimed hero
+   e. Deserialize received dungeon bundle; set `Dungeon.localHero` and pin `Dungeon.hero`; game starts at saved position controlling claimed hero
 
 **Conflict rule:** First `HERO_CLAIM` received by host wins that index; duplicates are rejected and client is prompted to pick another. Host always gets last pick implicitly after all clients have claimed.
 
@@ -219,14 +236,17 @@ long hash = Dungeon.seed
 ### Flow 8: `disconnectHandling`
 **What:** Handle one player disconnecting mid-game gracefully.
 
-**Entry:** Socket read/write throws `IOException`  
+**Entry:** Socket read/write throws `IOException` or `SocketTimeoutException`  
 **Exit:** Game pauses and offers options
 
 **Steps:**
-1. Wrap all `NetworkManager` reads in try/catch; on `IOException` fire `Signal.PEER_DISCONNECTED`
-2. `GameScene` listens for signal: pause actor thread, show `WndPeerDisconnected` dialog
-3. Options: "Wait for reconnect" (keep socket open, poll) or "Continue solo" (remove remote hero from `Dungeon.heroes`, revert to single-player turn loop) or "Quit to title"
-4. "Wait for reconnect": host re-opens `ServerSocket`, client re-enters join flow, resync via Flow 6
+1. All `NetworkManager` reads use `Socket.setSoTimeout()` — `SocketTimeoutException` is treated as a disconnect signal rather than blocking the actor thread indefinitely
+2. On disconnect: fire `Signal.PEER_DISCONNECTED`
+3. `GameScene` listens for signal: pause actor thread, show `WndPeerDisconnected` dialog
+4. Options: "Wait for reconnect" (keep socket open, poll) or "Continue solo" (remove remote hero from actor queue and `Dungeon.heroes`, revert to single-player turn loop) or "Quit to title"
+5. "Wait for reconnect": host re-opens `ServerSocket`, client re-enters join flow, resync via Flow 6
+
+**Note on "Continue solo":** Removing a live hero mid-game has no existing code path — `Hero.die()` handles dead-hero removal but not live disconnected hero removal. A new `Hero.removeFromGame()` method is needed that removes the hero from `Actor.all`, `Dungeon.heroes`, and cleans up sprites without triggering the death flow.
 
 ---
 
@@ -234,7 +254,7 @@ long hash = Dungeon.seed
 
 | File | Change |
 |------|--------|
-| `core/.../network/NetworkManager.java` | New — TCP socket wrapper, supports up to 4 peers |
+| `core/.../network/NetworkManager.java` | New — TCP socket wrapper, `lanMode` flag, async receive pattern |
 | `core/.../network/ActionPacket.java` | New — serializable action DTO |
 | `core/.../scenes/TitleScene.java` | Add "LAN Game" button alongside player-count selector |
 | `core/.../scenes/LanLobbyScene.java` | New — lobby screen (host: IP + player list + Start button; client: waiting view) |
@@ -242,9 +262,11 @@ long hash = Dungeon.seed
 | `core/.../windows/WndJoinGame.java` | New — IP address entry dialog |
 | `core/.../windows/WndHeroClaim.java` | New — hero-picker for resuming a saved LAN game (shows saved hero cards) |
 | `core/.../windows/WndPeerDisconnected.java` | New — disconnect options dialog |
-| `core/.../actors/hero/Hero.java` | `act()` — remote action path |
-| `core/.../Dungeon.java` | Accept external seed on init |
-| `core/.../GamesInProgress.java` | Add `isMultiplayerSave` flag |
+| `core/.../actors/hero/Hero.java` | `act()` — remote action path; `activate()` — gate camera/UI to local hero only |
+| `core/.../levels/Level.java` | `updateFieldOfView` — skip heroFOV update for remote heroes |
+| `core/.../Dungeon.java` | Add `localHero` field; pin `Dungeon.hero = localHero` on init; accept external seed |
+| `core/.../GamesInProgress.java` | Add `isMultiplayerSave` flag to `Info` |
+| `SPD-classes/.../utils/FileUtils.java` | Add `public static byte[] bundleToBytes(Bundle bundle)` wrapper |
 | `android/AndroidManifest.xml` | Add `INTERNET` + `ACCESS_WIFI_STATE` permissions |
 
 ## Dependencies
