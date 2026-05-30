@@ -55,6 +55,11 @@ public class NetworkManager {
     // UDP discovery port
     public static final int UDP_DISCOVERY_PORT = 7778;
 
+    // Getter for host status
+    public static boolean isHostMode() {
+        return isHost;
+    }
+
     // Callback invoked on the host when a new client connects (called on accept thread)
     public interface OnPlayerJoined {
         void call(int playerIndex, int totalPlayers);
@@ -275,6 +280,58 @@ public class NetworkManager {
             return new HashPacket(turn, hash);
         } catch (SocketTimeoutException e) {
             GLog.w("Hash receive timeout - peer may have disconnected");
+            throw e;
+        }
+    }
+
+    /**
+     * Sends a resync bundle (serialized dungeon state) to the peer.
+     * Called by host when a desync is detected.
+     */
+    public static void sendResyncBundle(byte[] bytes) throws IOException {
+        if (!lanMode) return;
+
+        try {
+            if (isHost) {
+                for (DataOutputStream out : outs) {
+                    out.writeByte(PacketType.RESUME_HANDSHAKE);
+                    out.writeInt(bytes.length);
+                    out.write(bytes);
+                    out.flush();
+                }
+            } else {
+                if (clientOut != null) {
+                    clientOut.writeByte(PacketType.RESUME_HANDSHAKE);
+                    clientOut.writeInt(bytes.length);
+                    clientOut.write(bytes);
+                    clientOut.flush();
+                }
+            }
+        } catch (IOException e) {
+            GLog.n("Failed to send resync bundle: %s", e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * Receives a resync bundle from the peer.
+     * Blocking call that waits for the full bundle.
+     */
+    public static byte[] receiveResyncBundle() throws IOException {
+        if (!lanMode) return null;
+
+        try {
+            DataInputStream in = isHost ? ins.get(0) : clientIn;
+            byte type = in.readByte();
+            if (type != PacketType.RESUME_HANDSHAKE) {
+                throw new IOException("Expected RESUME_HANDSHAKE packet, got " + type);
+            }
+            int len = in.readInt();
+            byte[] bytes = new byte[len];
+            in.readFully(bytes);
+            return bytes;
+        } catch (SocketTimeoutException e) {
+            GLog.w("Resync bundle receive timeout - peer may have disconnected");
             throw e;
         }
     }
