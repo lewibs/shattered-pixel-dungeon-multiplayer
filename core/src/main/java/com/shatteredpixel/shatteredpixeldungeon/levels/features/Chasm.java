@@ -161,10 +161,8 @@ public class Chasm implements Hero.Doom {
 		GLog.n( Messages.get(Chasm.class, "ondeath") );
 	}
 
-	public static void heroLand() {
-		
-		Hero hero = Dungeon.hero;
-		
+	public static void heroLand( Hero hero ) {
+
 		ElixirOfFeatherFall.FeatherBuff b = hero.buff(ElixirOfFeatherFall.FeatherBuff.class);
 		
 		if (b != null){
@@ -201,7 +199,7 @@ public class Chasm implements Hero.Doom {
 
 		@Override
 		public boolean act() {
-			heroLand();
+			heroLand((Hero) target);
 			detach();
 			return true;
 		}
