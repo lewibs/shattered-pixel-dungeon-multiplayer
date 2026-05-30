@@ -917,19 +917,27 @@ public class Hero extends Char {
 			return false;
 		}
 
-		// followHeroMovement: auto-move toward target hero
+		// Follow mode: mirrors DirectableAlly.Wandering.act() — call getCloser(target.pos)
+		// fresh every turn so the destination is always the target's CURRENT cell.
+		// No curAction == null gate; we own this turn entirely while follow is active.
 		FollowHeroBuff follow = buff(FollowHeroBuff.class);
-		if (curAction == null && follow != null) {
-			if (follow.targetStopped() || visibleEnemies.size() > 0) {
+		if (follow != null) {
+			Hero followTarget = follow.getTargetHero();
+			if (followTarget == null || !followTarget.isAlive() || visibleEnemies.size() > 0) {
+				// Target gone or enemy spotted — cancel follow and give control back
 				follow.detach();
-				// fall through to normal ready() path below (player regains control)
 			} else {
-				int targetPos = follow.getTargetPos();
-				if (targetPos >= 0 && targetPos != pos) {
-					curAction = new HeroAction.Move(targetPos);
-					// fall through to curAction dispatch (actMove handles pathfinding)
+				int targetPos = followTarget.pos;
+				curAction = null; // clear any stale action
+				if (pos != targetPos && !Dungeon.level.adjacent(pos, targetPos)) {
+					// Not yet adjacent — move one step (getCloser handles sprite + time)
+					if (getCloser(targetPos)) {
+						return true;
+					}
 				}
-				// if targetPos == pos (already there), fall through to ready()
+				// Adjacent, at target, or pathfinding blocked — idle one tick
+				spendAndNext(TICK);
+				return false;
 			}
 		}
 

@@ -25,56 +25,42 @@ import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.watabou.utils.Bundle;
 
+/**
+ * Marks a hero as following another hero. Each turn the follower's act()
+ * calls getCloser(target.pos) directly — the same mechanism the DriedRose
+ * ghost uses in DirectableAlly.Wandering.act().
+ */
 public class FollowHeroBuff extends Buff {
 
 	private int targetHeroId = -1;
-	private int lastKnownTargetPos = -1; // -1 = uninitialized
 
 	public void setTargetHeroId(int id) {
 		targetHeroId = id;
 	}
 
 	public Hero getTargetHero() {
-		if (targetHeroId < 0 || targetHeroId >= Dungeon.heroes.size()) {
+		if (Dungeon.heroes == null || targetHeroId < 0 || targetHeroId >= Dungeon.heroes.size()) {
 			return null;
 		}
 		return Dungeon.heroes.get(targetHeroId);
 	}
 
-	public int getTargetPos() {
-		Hero h = getTargetHero();
-		return h != null && h.isAlive() ? h.pos : -1;
-	}
-
-	public boolean targetStopped() {
-		Hero h = getTargetHero();
-		if (h == null || !h.isAlive()) {
-			return true;
-		}
-		return lastKnownTargetPos != -1 && h.pos == lastKnownTargetPos;
-	}
-
 	@Override
 	public boolean act() {
+		// Passive — Hero.act() drives the movement each turn.
 		spend(TICK);
-		Hero h = getTargetHero();
-		if (h != null && h.isAlive()) {
-			lastKnownTargetPos = h.pos;
-		}
-		return true; // buff persists until detached
+		return true;
 	}
 
 	@Override
 	public void storeInBundle(Bundle bundle) {
 		super.storeInBundle(bundle);
 		bundle.put("targetHeroId", targetHeroId);
-		bundle.put("lastKnownTargetPos", lastKnownTargetPos);
 	}
 
 	@Override
 	public void restoreFromBundle(Bundle bundle) {
 		super.restoreFromBundle(bundle);
 		targetHeroId = bundle.getInt("targetHeroId");
-		lastKnownTargetPos = bundle.getInt("lastKnownTargetPos");
 	}
 }
