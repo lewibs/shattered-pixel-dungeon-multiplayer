@@ -1975,6 +1975,14 @@ public class GameScene extends PixelScene {
 	}
 
 	/**
+	 * Turn number of the last completed hash exchange.
+	 * Prevents checkHashAndResync() from firing multiple times in the same turn —
+	 * update() runs at ~60 fps so without this guard it would send 60+ HASH packets
+	 * per turn boundary and queue 60+ receiveHash() calls.
+	 */
+	private static int lastHashTurn = -1;
+
+	/**
 	 * Checks if a hash exchange should occur (every 10 turns) and initiates it.
 	 * Called after each turn completes.
 	 */
@@ -1983,6 +1991,8 @@ public class GameScene extends PixelScene {
 
 		int turn = (int)com.shatteredpixel.shatteredpixeldungeon.actors.Actor.now();
 		if (turn % 10 != 0) return;
+		if (turn == lastHashTurn) return; // already exchanged hashes for this turn boundary
+		lastHashTurn = turn;
 
 		try {
 			long localHash = computeHash(turn);

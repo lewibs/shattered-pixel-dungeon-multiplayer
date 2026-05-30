@@ -275,6 +275,8 @@ public class LanLobbyScene extends PixelScene {
 			DataInputStream in = NetworkManager.getClientInput();
 			if (in == null) return;
 
+			boolean myIndexFound = false; // only identify our own slot once
+
 			while (active && NetworkManager.lanMode) {
 				try {
 					byte type = in.readByte();
@@ -284,6 +286,11 @@ public class LanLobbyScene extends PixelScene {
 						String playerName = in.readUTF(); // read the player name
 						// Store the player name in NetworkManager
 						NetworkManager.setPlayerName(playerIndex, playerName);
+						// The first PLAYER_JOINED whose name matches ours is our own slot
+						if (!myIndexFound && playerName.equals(NetworkManager.playerName)) {
+							NetworkManager.localPlayerIndex = playerIndex;
+							myIndexFound = true;
+						}
 						Game.runOnRenderThread(new Callback() {
 							@Override
 							public void call() {

@@ -28,6 +28,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * NetworkManager handles all TCP socket communication for LAN multiplayer.
@@ -262,14 +264,25 @@ public class NetworkManager {
     /**
      * Starts a background thread to receive actions from a remote hero.
      * Reads ACTION packets and updates the hero's curAction, then notifies the Actor thread.
+     *
+     * Only one reader thread is ever active at a time (enforced by actionReaderRunning).
+     * Re-entrant calls while the thread is running are no-ops.
      */
     public static void receiveActionAsync(Hero remoteHero) {
         if (!lanMode || remoteHero == null) return;
 
+        // Singleton guard: only one stream-reader thread may run at a time.
+        // Hero.act() calls this every turn when curAction == null; without the guard
+        // each call would spawn another persistent reader thread that competes to read
+        // bytes from the same DataInputStream, corrupting the packet stream.
+        synchronized (NetworkManager.class) {
+            if (actionReaderRunning) return;
+            actionReaderRunning = true;
+        }
+
         new Thread(() -> {
-            DataInputStream in = null;
             try {
-                in = isHost ? ins.get(0) : clientIn; // Simplified for now
+                DataInputStream in = isHost ? ins.get(0) : clientIn;
 
                 while (lanMode && remoteHero != null) {
                     try {
@@ -290,6 +303,14 @@ public class NetworkManager {
                                     Actor.class.notifyAll();
                                 }
                             }
+                        } else if (type == PacketType.HASH) {
+                            // HASH packets arrive interleaved with ACTION packets.
+                            // Read the full payload and route to hashQueue so receiveHash()
+                            // can consume it without ever touching this stream directly.
+                            // This ensures exactly one thread reads from the DataInputStream.
+                            int turn = in.readInt();
+                            long hash = in.readLong();
+                            hashQueue.offer(new HashPacket(turn, hash));
                         } else if (type == PacketType.ITEM_IDENTIFIED) {
                             String className = in.readUTF();
                             Game.runOnRenderThread(() -> {
@@ -313,6 +334,14 @@ public class NetworkManager {
                             HeroClass cls = ordinalToHeroClass(ord);
                             if (onClassUnclaimedReceived != null)
                                 onClassUnclaimedReceived.call(pidx, cls);
+                        } else if (type == PacketType.RESUME_HANDSHAKE) {
+                            // Resync bundle sent by host when a desync is detected.
+                            // Route through resyncQueue so receiveResyncBundle() never reads
+                            // the stream directly — maintaining the single-reader invariant.
+                            int len = in.readInt();
+                            byte[] bytes = new byte[len];
+                            in.readFully(bytes);
+                            resyncQueue.offer(bytes);
                         }
                     } catch (IOException e) {
                         if (!Thread.currentThread().isInterrupted()) {
@@ -331,6 +360,10 @@ public class NetworkManager {
                 if (e instanceof InterruptedIOException) {
                     Thread.currentThread().interrupt();
                 }
+            } finally {
+                // Release the singleton guard so a reconnect or level transition
+                // can start a new reader thread when needed.
+                actionReaderRunning = false;
             }
         }, "net-reader-action").start();
     }
@@ -388,33 +421,34 @@ public class NetworkManager {
 
     /**
      * Receives a hash packet from the peer.
-     * Blocking call with timeout set on the socket.
+     *
+     * The packet is NOT read directly from the stream here — doing so would race with the
+     * net-reader-action thread which is the sole owner of the stream during gameplay.
+     * Instead, receiveActionAsync() routes HASH packets into hashQueue, and this method
+     * drains one entry from that queue with a timeout.
+     *
+     * Returns null (and logs a warning) if no hash arrives within SOCKET_TIMEOUT_MS.
      */
     public static HashPacket receiveHash(Hero associatedHero) throws IOException {
         if (!lanMode) return null;
 
         try {
-            DataInputStream in = isHost ? ins.get(0) : clientIn;
-            byte type = in.readByte();
-            if (type != PacketType.HASH) {
-                throw new IOException("Expected HASH packet, got " + type);
-            }
-            int turn = in.readInt();
-            long hash = in.readLong();
-            return new HashPacket(turn, hash);
-        } catch (IOException e) {
-            if (!Thread.currentThread().isInterrupted()) {
-                GLog.w("Hash receive failed: %s - peer may have disconnected", e.getClass().getSimpleName());
-                // Dispatch disconnect signal
+            HashPacket packet = hashQueue.poll(SOCKET_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            if (packet == null) {
+                // Timeout — treat as disconnect
+                GLog.w("Hash receive timeout - peer may have disconnected");
                 if (associatedHero != null) {
                     peerDisconnectSignal.dispatch(new PeerDisconnected(associatedHero));
-                    // Wake actor thread
                     synchronized (Actor.class) {
                         Actor.class.notifyAll();
                     }
                 }
+                throw new SocketTimeoutException("Hash queue timeout");
             }
-            throw e;
+            return packet;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("receiveHash interrupted", e);
         }
     }
 
@@ -449,24 +483,27 @@ public class NetworkManager {
 
     /**
      * Receives a resync bundle from the peer.
-     * Blocking call that waits for the full bundle.
+     *
+     * The bundle bytes are NOT read directly from the stream here — doing so would race
+     * with the net-reader-action thread which is the sole owner of the stream during gameplay.
+     * Instead, receiveActionAsync() routes RESUME_HANDSHAKE payloads into resyncQueue,
+     * and this method drains one entry with a timeout.
+     *
+     * Returns the raw bundle bytes, or throws IOException on timeout.
      */
     public static byte[] receiveResyncBundle() throws IOException {
         if (!lanMode) return null;
 
         try {
-            DataInputStream in = isHost ? ins.get(0) : clientIn;
-            byte type = in.readByte();
-            if (type != PacketType.RESUME_HANDSHAKE) {
-                throw new IOException("Expected RESUME_HANDSHAKE packet, got " + type);
+            byte[] bytes = resyncQueue.poll(SOCKET_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            if (bytes == null) {
+                GLog.w("Resync bundle receive timeout - peer may have disconnected");
+                throw new SocketTimeoutException("Resync queue timeout");
             }
-            int len = in.readInt();
-            byte[] bytes = new byte[len];
-            in.readFully(bytes);
             return bytes;
-        } catch (SocketTimeoutException e) {
-            GLog.w("Resync bundle receive timeout - peer may have disconnected");
-            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("receiveResyncBundle interrupted", e);
         }
     }
 
@@ -702,6 +739,8 @@ public class NetworkManager {
         onPlayerJoined = null;
         playerNames = new String[4];  // reset player names array
         localPlayerIndex = 0;
+        hashQueue.clear();
+        resyncQueue.clear();
     }
 
     // Test seam — override sendAction for unit tests (null = use real network)
@@ -721,6 +760,11 @@ public class NetworkManager {
     public static boolean shouldBlockForRemoteAction(Hero hero) {
         return lanMode && hero != Dungeon.hero && hero.curAction == null;
     }
+
+    // Test seams for actionReaderRunning guard
+    public static boolean isActionReaderRunning() { return actionReaderRunning; }
+    public static void setActionReaderRunningForTesting(boolean running) { actionReaderRunning = running; }
+    public static void resetActionReaderForTesting() { actionReaderRunning = false; }
 
     /**
      * Encodes a HeroAction into a byte action type for the wire protocol.
@@ -788,6 +832,28 @@ public class NetworkManager {
     private static volatile HeroClass[] collectedClasses = null;
     private static volatile boolean handshakeReceived = false;
     private static volatile HandshakePayload handshakePayload = null;
+
+    /**
+     * Queue that bridges the single stream-reader thread and receiveHash().
+     * receiveActionAsync() enqueues HASH packets here instead of letting receiveHash()
+     * read them directly from the stream — this ensures only one thread ever reads
+     * from the underlying DataInputStream.
+     */
+    private static final LinkedBlockingQueue<HashPacket> hashQueue = new LinkedBlockingQueue<>();
+
+    /**
+     * Queue that bridges the single stream-reader thread and receiveResyncBundle().
+     * receiveActionAsync() enqueues RESUME_HANDSHAKE payloads here so that
+     * receiveResyncBundle() never touches the DataInputStream directly — it
+     * drains one entry from this queue instead.
+     */
+    private static final LinkedBlockingQueue<byte[]> resyncQueue = new LinkedBlockingQueue<>();
+
+    /**
+     * Guard flag: prevents more than one net-reader-action thread from starting.
+     * The reader thread loops continuously and must not be duplicated.
+     */
+    private static volatile boolean actionReaderRunning = false;
 
     /**
      * Client: Sends HERO_READY packet with the chosen hero class.
