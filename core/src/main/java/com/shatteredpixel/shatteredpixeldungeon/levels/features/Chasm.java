@@ -119,6 +119,8 @@ public class Chasm implements Hero.Doom {
 			if (fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
 			WaitingToFall w = Buff.affect(hero, WaitingToFall.class);
 			w.fallIntoPit = fallIntoPit;
+			// Hero is "in the air" — hide sprite until they land on the next floor
+			if (hero.sprite != null) hero.sprite.visible = false;
 			return;
 		}
 

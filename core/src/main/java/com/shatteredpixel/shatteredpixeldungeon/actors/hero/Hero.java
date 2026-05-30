@@ -864,6 +864,12 @@ public class Hero extends Char {
 
 	@Override
 	public boolean act() {
+		// Hero is falling into a pit and waiting for the party — skip turn, stay invisible
+		if (buff(Chasm.WaitingToFall.class) != null) {
+			curAction = null;
+			spendAndNext( TICK );
+			return false;
+		}
 		activate();
 
 		//calls to dungeon.observe will also update hero's local FOV.

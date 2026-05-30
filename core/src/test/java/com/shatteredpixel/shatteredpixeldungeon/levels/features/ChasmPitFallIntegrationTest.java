@@ -183,6 +183,42 @@ class ChasmPitFallIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
+    // Scenario 5b: Hero.act() with WaitingToFall — turn skipped, no dialog loop
+    // -------------------------------------------------------------------------
+
+    @Test
+    void waitingToFallHero_actSkipsTurn() {
+        // Attach WaitingToFall to heroA
+        Buff.affect(heroA, Chasm.WaitingToFall.class);
+
+        // Record time before act()
+        float timeBefore = heroA.cooldown();
+
+        // act() should spend TICK and return false — no dialog, no input wait
+        boolean result = heroA.act();
+
+        assertFalse(result, "act() must return false when hero is WaitingToFall");
+        assertTrue(heroA.cooldown() > timeBefore,
+                "Hero must have spent time (advanced cooldown) so other actors can run");
+        assertNull(heroA.curAction,
+                "curAction must be null — hero is not waiting for player input");
+    }
+
+    @Test
+    void waitingToFallHero_actNeverCallsActivate() {
+        // Attach WaitingToFall to heroA. If activate() were called it would try to
+        // pan the camera and refresh the inventory — we verify it isn't by checking
+        // that Dungeon.hero is NOT changed (activate() sets Dungeon.hero = this).
+        Dungeon.hero = heroB; // hero[0] is heroB, not heroA
+        Buff.affect(heroA, Chasm.WaitingToFall.class);
+
+        heroA.act();
+
+        assertSame(heroB, Dungeon.hero,
+                "act() must not call activate() — Dungeon.hero must remain unchanged");
+    }
+
+    // -------------------------------------------------------------------------
     // Scenario 6: two heroes, other already WaitingToFall — immediate switch
     // -------------------------------------------------------------------------
 
