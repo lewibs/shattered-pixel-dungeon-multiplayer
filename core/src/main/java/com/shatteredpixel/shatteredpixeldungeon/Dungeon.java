@@ -1042,6 +1042,8 @@ public class Dungeon {
 				// Still refresh fog rendering at other heroes' positions.
 				for (Hero h : heroes) {
 					if (h == hero) continue;
+					// Skip heroes that are mid-fall (their pos may be invalid / off-map)
+					if (h.buff(Chasm.WaitingToFall.class) != null) continue;
 					GameScene.updateFog(h.pos, h.viewDistance + 1);
 				}
 			} else {

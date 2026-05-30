@@ -205,6 +205,28 @@ class ChasmPitFallIntegrationTest {
     }
 
     @Test
+    void waitingToFallHero_damageIgnored() {
+        // Attach WaitingToFall — hero is "not on this floor"
+        Buff.affect(heroA, Chasm.WaitingToFall.class);
+        int hpBefore = heroA.HP;
+
+        // Attempt to damage the hero (any source)
+        heroA.damage(10, this);
+
+        assertEquals(hpBefore, heroA.HP,
+                "WaitingToFall hero must be immune to all damage — they are not on this floor");
+    }
+
+    @Test
+    void normalHero_damageApplied() {
+        // Sanity check: no WaitingToFall → damage works normally
+        int hpBefore = heroA.HP;
+        heroA.damage(5, this);
+        assertTrue(heroA.HP < hpBefore,
+                "Hero without WaitingToFall must take damage normally");
+    }
+
+    @Test
     void waitingToFallHero_actNeverCallsActivate() {
         // Attach WaitingToFall to heroA. If activate() were called it would try to
         // pan the camera and refresh the inventory — we verify it isn't by checking

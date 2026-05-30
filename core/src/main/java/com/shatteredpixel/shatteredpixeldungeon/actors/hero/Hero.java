@@ -1620,6 +1620,9 @@ public class Hero extends Char {
 
 	@Override
 	public void damage( int dmg, Object src ) {
+		// Hero is mid-fall — they are not on this floor and cannot be hurt
+		if (buff(Chasm.WaitingToFall.class) != null) return;
+
 		if (buff(TimekeepersHourglass.timeStasis.class) != null
 				|| buff(TimeStasis.class) != null) {
 			return;
