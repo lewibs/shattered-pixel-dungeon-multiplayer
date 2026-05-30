@@ -969,11 +969,27 @@ public class Hero extends Char {
 			actResult = false;
 			
 		} else {
-			
+
 			resting = false;
-			
+
 			ready = false;
-			
+
+			// LAN turn sync: send local hero's action, receive remote hero's action
+			if (NetworkManager.lanMode) {
+				if (this == Dungeon.hero) {
+					// Local hero: send action before dispatch
+					if (curAction != null) {
+						NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
+					}
+				} else {
+					// Remote hero: start async receiver if no action yet
+					if (curAction == null) {
+						NetworkManager.receiveActionAsync(this);
+						return false;
+					}
+				}
+			}
+
 			if (curAction instanceof HeroAction.Move) {
 				actResult = actMove( (HeroAction.Move)curAction );
 				

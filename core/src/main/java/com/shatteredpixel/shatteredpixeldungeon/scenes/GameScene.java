@@ -75,6 +75,7 @@ import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.Room;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.secret.SecretRoom;
 import com.shatteredpixel.shatteredpixeldungeon.levels.traps.Trap;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.plants.Plant;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.CharSprite;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.DiscardedItemSprite;
@@ -925,7 +926,7 @@ public class GameScene extends PixelScene {
 
 		}
 
-		cellSelector.enable(Dungeon.hero.ready);
+		cellSelector.enable(NetworkManager.lanMode ? Dungeon.hero.isAlive() : Dungeon.hero.ready);
 
 		if (!toDestroy.isEmpty()) {
 			for (Gizmo g : toDestroy) {
@@ -1581,7 +1582,7 @@ public class GameScene extends PixelScene {
 			cellSelector.listener.onSelect(null);
 		}
 		cellSelector.listener = listener;
-		cellSelector.enabled = Dungeon.hero.ready;
+		cellSelector.enabled = NetworkManager.lanMode ? Dungeon.hero.isAlive() : Dungeon.hero.ready;
 		if (scene != null) {
 			scene.prompt(listener.prompt());
 		}

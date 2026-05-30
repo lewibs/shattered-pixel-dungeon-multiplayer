@@ -36,6 +36,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
 import com.shatteredpixel.shatteredpixeldungeon.items.Item;
 import com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
@@ -705,10 +706,14 @@ public class Toolbar extends Component {
 	@Override
 	public void update() {
 		super.update();
-		
-		if (lastEnabled != (Dungeon.hero.ready && Dungeon.hero.isAlive())) {
-			lastEnabled = (Dungeon.hero.ready && Dungeon.hero.isAlive());
-			
+
+		if (lastEnabled != (NetworkManager.lanMode
+				? Dungeon.hero.isAlive()
+				: Dungeon.hero.ready && Dungeon.hero.isAlive())) {
+			lastEnabled = NetworkManager.lanMode
+					? Dungeon.hero.isAlive()
+					: Dungeon.hero.ready && Dungeon.hero.isAlive();
+
 			for (Gizmo tool : members.toArray(new Gizmo[0])) {
 				if (tool instanceof Tool) {
 					((Tool)tool).enable( lastEnabled );
