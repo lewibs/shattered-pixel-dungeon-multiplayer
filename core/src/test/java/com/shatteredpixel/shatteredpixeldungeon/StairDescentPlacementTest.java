@@ -308,7 +308,68 @@ class StairDescentPlacementTest {
     }
 
     // -------------------------------------------------------------------------
-    // Regression — proves the original bug (all heroes at same cell)
+    // Original far-apart behavior — what happened before heroesNeedInitialPlacement
+    // was set on each stair descent (commit ad0ac2749 fixed this)
+    // -------------------------------------------------------------------------
+
+    @Nested
+    class OriginalFarApartBehavior {
+
+        @Test
+        void withoutPlacement_heroesKeepStalePositions() {
+            // Before ad0ac2749, heroesNeedInitialPlacement was never set on stair
+            // descent. Heroes kept their positions from the OLD floor. Those same
+            // cell indices on the NEW floor map to completely different locations —
+            // often far from the stairs and sometimes off-passable terrain.
+            ArrayList<Hero> heroes = party(2);
+            heroes.get(0).pos = ENTRANCE;
+            heroes.get(1).pos = 24; // far corner of the 5x5 grid — stale "old floor" pos
+
+            // NOT calling placeHeroesNearEntrance — simulates the old broken path
+            // hero[1] keeps its stale position, far from the entrance
+
+            int distanceApart = dist(heroes.get(0).pos, heroes.get(1).pos);
+            assertTrue(distanceApart > 1,
+                    "Without placement, heroes retain stale old-floor positions " +
+                    "and are far apart (distance=" + distanceApart + ")");
+        }
+
+        @Test
+        void withPlacement_heroesAreNearEntrance() {
+            // After ad0ac2749 + the stacking fix: heroes land on distinct adjacent cells
+            ArrayList<Hero> heroes = party(2);
+            heroes.get(0).pos = ENTRANCE;
+            heroes.get(1).pos = 24; // starts at stale far position
+
+            Dungeon.placeHeroesNearEntrance(level, ENTRANCE, heroes);
+
+            // Now hero[1] is adjacent to the entrance, not at the stale position
+            assertEquals(1, dist(ENTRANCE, heroes.get(1).pos),
+                    "After placement, hero[1] must be adjacent to entrance regardless of prior position");
+            assertNotEquals(24, heroes.get(1).pos,
+                    "Stale position must have been overwritten");
+        }
+
+        @Test
+        void withPlacement_threeHeroesAllNearEntrance() {
+            // Simulates the full party scenario: each hero starts at a stale
+            // far-corner position and ends up adjacent to the entrance
+            ArrayList<Hero> heroes = party(3);
+            heroes.get(0).pos = ENTRANCE;
+            heroes.get(1).pos = 0;  // top-left corner — stale
+            heroes.get(2).pos = 24; // bottom-right corner — stale
+
+            Dungeon.placeHeroesNearEntrance(level, ENTRANCE, heroes);
+
+            for (int i = 1; i < heroes.size(); i++) {
+                assertEquals(1, dist(ENTRANCE, heroes.get(i).pos),
+                        "hero[" + i + "] must be adjacent to entrance after placement");
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Regression — proves the stacking bug (all heroes at same cell)
     // -------------------------------------------------------------------------
 
     @Nested
