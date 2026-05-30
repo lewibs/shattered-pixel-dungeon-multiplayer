@@ -88,9 +88,13 @@ public class LanRoomListScene extends PixelScene {
 		int w = Camera.main.width;
 		int h = Camera.main.height;
 
-		contentWidth = Math.min(w - MARGIN * 2, CONTENT_WIDTH_MAX);
-		contentX = (w - contentWidth) / 2f;
-		float y = MARGIN;
+		com.watabou.utils.RectF insets = getCommonInsets();
+		float safeW = w - insets.left - insets.right;
+		float safeH = h - insets.top  - insets.bottom;
+
+		contentWidth = Math.min(safeW - MARGIN * 2, CONTENT_WIDTH_MAX);
+		contentX = insets.left + (safeW - contentWidth) / 2f;
+		float y = insets.top + MARGIN;
 
 		// Title
 		RenderedTextBlock title = renderTextBlock("Join LAN Game", 12);
@@ -114,7 +118,7 @@ public class LanRoomListScene extends PixelScene {
 		// Error label (hidden until an error occurs)
 		errorLabel = renderTextBlock(6);
 		errorLabel.text("", (int) contentWidth);
-		errorLabel.setPos(contentX, h - MARGIN - 20f - ROW_HEIGHT);
+		errorLabel.setPos(contentX, insets.top + safeH - MARGIN - 20f - ROW_HEIGHT);
 		errorLabel.hardlight(0xFF4444);
 		add(errorLabel);
 
@@ -127,7 +131,7 @@ public class LanRoomListScene extends PixelScene {
 				ShatteredPixelDungeon.switchScene(com.shatteredpixel.shatteredpixeldungeon.scenes.StartScene.class);
 			}
 		};
-		btnBack.setRect(contentX, h - MARGIN - ROW_HEIGHT, contentWidth / 2f, ROW_HEIGHT);
+		btnBack.setRect(contentX, insets.top + safeH - MARGIN - ROW_HEIGHT, contentWidth / 2f, ROW_HEIGHT);
 		add(btnBack);
 
 		// Start the UDP listener thread on port 7778

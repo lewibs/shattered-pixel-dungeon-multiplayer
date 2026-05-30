@@ -75,10 +75,14 @@ public class LanLobbyScene extends PixelScene {
 		int w = Camera.main.width;
 		int h = Camera.main.height;
 
+		com.watabou.utils.RectF insets = getCommonInsets();
+		float safeW = w - insets.left - insets.right;
+		float safeH = h - insets.top  - insets.bottom;
+
 		float margin = 4f;
-		float contentWidth = Math.min(w - margin * 2, 200f);
-		float x0 = (w - contentWidth) / 2f;
-		float y = margin;
+		float contentWidth = Math.min(safeW - margin * 2, 200f);
+		float x0 = insets.left + (safeW - contentWidth) / 2f;
+		float y = insets.top + margin;
 
 		// Title
 		RenderedTextBlock title = renderTextBlock("LAN Lobby", 12);
