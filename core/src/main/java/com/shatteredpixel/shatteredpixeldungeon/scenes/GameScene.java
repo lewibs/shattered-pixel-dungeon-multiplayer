@@ -918,6 +918,21 @@ public class GameScene extends PixelScene {
 			}
 		}
 
+		// LAN: the actor thread waits for a remote hero's action packet. If the packet
+		// arrived before the thread reached wait() the notification was lost (race).
+		// Poll every frame: if any remote hero already has a pending action, wake the
+		// thread so it can process it. This is safe — a spurious notify is harmless.
+		if (Actor.processing() && NetworkManager.lanMode
+				&& actorThread != null && actorThread.isAlive()
+				&& Dungeon.heroes != null) {
+			for (Hero h : Dungeon.heroes) {
+				if (h != Dungeon.hero && h.curAction != null) {
+					notifyActorThread();
+					break;
+				}
+			}
+		}
+
 		if (!Actor.processing() && Dungeon.hero.isAlive()) {
 			if (actorThread == null || !actorThread.isAlive()) {
 				
