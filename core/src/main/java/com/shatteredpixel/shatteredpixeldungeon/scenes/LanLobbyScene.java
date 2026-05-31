@@ -25,6 +25,7 @@ import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.GamesInProgress;
 import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
 import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
+import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RedButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RenderedTextBlock;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
@@ -193,14 +194,13 @@ public class LanLobbyScene extends PixelScene {
 	 * Flow: lanLobbySceneHost / lanLobbySceneClient
 	 */
 	public void onPlayerJoined(int playerIndex, int total) {
-		// Update the slot label for this player (playerIndex is 0-based; 0 = host)
-		int slot = playerIndex; // slot 0 = host already filled
-		if (slot >= 0 && slot < SLOT_COUNT) {
-			String playerName = NetworkManager.getPlayerName(playerIndex);
-			if (playerName == null || playerName.isEmpty()) playerName = "Player " + (slot + 1);
-			boolean isLocalSlot = (slot == NetworkManager.localPlayerIndex);
-			String label = "Slot " + (slot + 1) + ": " + playerName + (isLocalSlot ? " (You)" : "");
-			slotLabels[slot].text(label, labelWidth);
+		// Refresh ALL slots up to total — the roster was fully populated by the packet,
+		// including slot 0 (host) which may have been null when create() ran.
+		for (int slot = 0; slot < total && slot < SLOT_COUNT; slot++) {
+			String name = NetworkManager.getPlayerName(slot);
+			if (name == null || name.isEmpty()) name = "Player " + (slot + 1);
+			boolean isLocal = (slot == NetworkManager.localPlayerIndex);
+			slotLabels[slot].text("Slot " + (slot + 1) + ": " + name + (isLocal ? " (You)" : ""), labelWidth);
 			align(slotLabels[slot]);
 		}
 
@@ -223,6 +223,7 @@ public class LanLobbyScene extends PixelScene {
 
 		long seed = new Random().nextLong();
 		int playerCount = NetworkManager.getConnectedPlayerCount();
+		GLog.p("LAN lobby: host tapping Start, playerCount=%d", playerCount);
 		try {
 			NetworkManager.sendStart(playerCount, seed);
 		} catch (IOException e) {
@@ -273,23 +274,26 @@ public class LanLobbyScene extends PixelScene {
 	private void startClientListenerThread() {
 		new Thread(() -> {
 			DataInputStream in = NetworkManager.getClientInput();
-			if (in == null) return;
+			if (in == null) {
+				GLog.w("LAN lobby: clientIn is null, listener not started");
+				return;
+			}
+			GLog.p("LAN lobby: client listener started");
 
-			boolean myIndexFound = false; // only identify our own slot once
+			boolean myIndexFound = false;
 
 			while (active && NetworkManager.lanMode) {
 				try {
 					byte type = in.readByte();
+					GLog.p("LAN lobby: received packet type=%d", type);
 					if (type == NetworkManager.PacketType.PLAYER_JOINED) {
 						int playerIndex = in.readInt();
 						int total       = in.readInt();
-						// Read the full roster of all current player names
 						int nameCount = in.readInt();
 						for (int k = 0; k < nameCount; k++) {
 							String name = in.readUTF();
 							NetworkManager.setPlayerName(k, name);
 						}
-						// Identify our own slot: the newly added slot whose name matches ours
 						if (!myIndexFound) {
 							String newName = NetworkManager.getPlayerName(playerIndex);
 							if (newName != null && newName.equals(NetworkManager.playerName)) {
@@ -306,26 +310,33 @@ public class LanLobbyScene extends PixelScene {
 					} else if (type == NetworkManager.PacketType.START) {
 						int playerCount = in.readInt();
 						long seed       = in.readLong();
+						GLog.p("LAN lobby: START received, active=%b", active);
 						Game.runOnRenderThread(new Callback() {
 							@Override
 							public void call() {
+								GLog.p("LAN lobby: onStartReceived on render thread, active=%b", active);
 								if (active) onStartReceived(playerCount, seed);
 							}
 						});
-						break; // done listening once START is received
+						break;
+					} else {
+						GLog.w("LAN lobby: unknown packet type=%d, aborting listener", type);
+						break;
 					}
 				} catch (IOException e) {
+					GLog.n("LAN lobby: IOException in listener: %s", e.getMessage());
 					if (active) {
 						Game.runOnRenderThread(new Callback() {
 							@Override
 							public void call() {
-								if (active) statusLabel.text("Host disconnected", 200);
+								if (active) statusLabel.text("Host disconnected: " + e.getMessage(), 200);
 							}
 						});
 					}
 					break;
 				}
 			}
+			GLog.p("LAN lobby: client listener exited (active=%b lanMode=%b)", active, NetworkManager.lanMode);
 		}, "lan-lobby-client-listener").start();
 	}
 
