@@ -326,6 +326,10 @@ public class NetworkManager {
                             if (onClassUnclaimedReceived != null)
                                 onClassUnclaimedReceived.call(pidx, cls);
                         }
+                    } catch (SocketTimeoutException e) {
+                        // Read timed out — peer is still connected, just hasn't moved yet.
+                        // Continue reading; only a real IOException means disconnect.
+                        if (!lanMode || Thread.currentThread().isInterrupted()) break;
                     } catch (IOException e) {
                         if (!Thread.currentThread().isInterrupted()) {
                             GLog.w("Peer disconnected: %s", e.getClass().getSimpleName());
@@ -632,6 +636,18 @@ public class NetworkManager {
     public static boolean isActionReaderRunning() { return actionReaderRunning; }
     public static void setActionReaderRunningForTesting(boolean running) { actionReaderRunning = running; }
     public static void resetActionReaderForTesting() { actionReaderRunning = false; }
+
+    // Test seams — inject real socket streams so integration tests can use real TCP
+    public static void injectHostStreamsForTesting(DataInputStream in, DataOutputStream out) {
+        ins = new java.util.ArrayList<>();
+        if (in  != null) ins.add(in);
+        outs = new java.util.ArrayList<>();
+        if (out != null) outs.add(out);
+    }
+    public static void injectClientStreamsForTesting(DataInputStream in, DataOutputStream out) {
+        clientIn  = in;
+        clientOut = out;
+    }
 
     // Test seam — reset hero-ready coordination state between tests
     public static void resetHeroReadyStateForTesting() {
