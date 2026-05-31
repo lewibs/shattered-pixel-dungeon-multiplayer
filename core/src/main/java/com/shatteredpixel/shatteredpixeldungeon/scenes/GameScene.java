@@ -907,6 +907,17 @@ public class GameScene extends PixelScene {
 			waterOfs = water.offsetY(); //re-assign to account for auto adjust
 		}
 
+		// In multiplayer, Dungeon.hero may be a dead hero while other heroes are still
+		// alive. Rotate the singleton to the first living hero so the game continues.
+		if (!Actor.processing() && !Dungeon.hero.isAlive() && Dungeon.heroes != null) {
+			for (Hero h : Dungeon.heroes) {
+				if (h.isAlive()) {
+					Dungeon.hero = h;
+					break;
+				}
+			}
+		}
+
 		if (!Actor.processing() && Dungeon.hero.isAlive()) {
 			if (actorThread == null || !actorThread.isAlive()) {
 				
