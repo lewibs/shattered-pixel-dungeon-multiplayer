@@ -42,3 +42,20 @@
 
 # Affected Docs Checklist (single-hero-death-handling)
 - [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/turn-based-system.md — touches singleHeroDeathGuard, guardDungeonFail (new flows + singleton-swap section update)
+
+# Flows Checklist (follow-hero-button)
+- [x] followButtonClick — created (Toolbar.java + FollowHeroBuff.java)
+- [x] followHeroMovement — created (Hero.java + FollowHeroBuff.java)
+- [x] toolbarFollowLayout — modified (Toolbar.java)
+
+# Affected Docs Checklist (follow-hero-button)
+- [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/toolbar-ui.md — updated: btnFollow, followInformer, 3 new flows added
+
+# Flows Checklist (hash-exchange-stream-race)
+- [x] receiveActionAsync — modified (singleton guard + HASH/RESUME_HANDSHAKE queue routing)
+- [x] receiveHash — modified (queue drain instead of direct stream read)
+- [x] receiveResyncBundle — modified (queue drain instead of direct stream read)
+- [x] cleanup — modified (hashQueue.clear() + resyncQueue.clear() added)
+
+# Affected Docs Checklist (hash-exchange-stream-race)
+- [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/network-manager.md — updated: single-reader invariant documented, 3 new flows added, cleanup pseudocode updated

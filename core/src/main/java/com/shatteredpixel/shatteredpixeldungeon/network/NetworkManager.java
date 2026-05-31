@@ -28,7 +28,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -303,14 +302,6 @@ public class NetworkManager {
                                     Actor.class.notifyAll();
                                 }
                             }
-                        } else if (type == PacketType.HASH) {
-                            // HASH packets arrive interleaved with ACTION packets.
-                            // Read the full payload and route to hashQueue so receiveHash()
-                            // can consume it without ever touching this stream directly.
-                            // This ensures exactly one thread reads from the DataInputStream.
-                            int turn = in.readInt();
-                            long hash = in.readLong();
-                            hashQueue.offer(new HashPacket(turn, hash));
                         } else if (type == PacketType.ITEM_IDENTIFIED) {
                             String className = in.readUTF();
                             Game.runOnRenderThread(() -> {
@@ -334,14 +325,6 @@ public class NetworkManager {
                             HeroClass cls = ordinalToHeroClass(ord);
                             if (onClassUnclaimedReceived != null)
                                 onClassUnclaimedReceived.call(pidx, cls);
-                        } else if (type == PacketType.RESUME_HANDSHAKE) {
-                            // Resync bundle sent by host when a desync is detected.
-                            // Route through resyncQueue so receiveResyncBundle() never reads
-                            // the stream directly — maintaining the single-reader invariant.
-                            int len = in.readInt();
-                            byte[] bytes = new byte[len];
-                            in.readFully(bytes);
-                            resyncQueue.offer(bytes);
                         }
                     } catch (IOException e) {
                         if (!Thread.currentThread().isInterrupted()) {
@@ -369,34 +352,6 @@ public class NetworkManager {
     }
 
     /**
-     * Sends a hash value for turn synchronization.
-     * Called periodically (every 10 turns) to ensure game state consistency.
-     */
-    public static void sendHash(long hash, int turn) {
-        if (!lanMode) return;
-
-        try {
-            if (isHost) {
-                for (DataOutputStream out : outs) {
-                    out.writeByte(PacketType.HASH);
-                    out.writeInt(turn);
-                    out.writeLong(hash);
-                    out.flush();
-                }
-            } else {
-                if (clientOut != null) {
-                    clientOut.writeByte(PacketType.HASH);
-                    clientOut.writeInt(turn);
-                    clientOut.writeLong(hash);
-                    clientOut.flush();
-                }
-            }
-        } catch (IOException e) {
-            GLog.n("Failed to send hash: %s", e.getMessage());
-        }
-    }
-
-    /**
      * Sends an item identification packet to broadcast that an item has been identified.
      * The class name is sent so peers can instantiate and identify the same item.
      */
@@ -416,94 +371,6 @@ public class NetworkManager {
             }
         } catch (IOException e) {
             GLog.w("Failed to send item identification: %s", e.getMessage());
-        }
-    }
-
-    /**
-     * Receives a hash packet from the peer.
-     *
-     * The packet is NOT read directly from the stream here — doing so would race with the
-     * net-reader-action thread which is the sole owner of the stream during gameplay.
-     * Instead, receiveActionAsync() routes HASH packets into hashQueue, and this method
-     * drains one entry from that queue with a timeout.
-     *
-     * Returns null (and logs a warning) if no hash arrives within SOCKET_TIMEOUT_MS.
-     */
-    public static HashPacket receiveHash(Hero associatedHero) throws IOException {
-        if (!lanMode) return null;
-
-        try {
-            HashPacket packet = hashQueue.poll(SOCKET_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            if (packet == null) {
-                // Timeout — treat as disconnect
-                GLog.w("Hash receive timeout - peer may have disconnected");
-                if (associatedHero != null) {
-                    peerDisconnectSignal.dispatch(new PeerDisconnected(associatedHero));
-                    synchronized (Actor.class) {
-                        Actor.class.notifyAll();
-                    }
-                }
-                throw new SocketTimeoutException("Hash queue timeout");
-            }
-            return packet;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("receiveHash interrupted", e);
-        }
-    }
-
-    /**
-     * Sends a resync bundle (serialized dungeon state) to the peer.
-     * Called by host when a desync is detected.
-     */
-    public static void sendResyncBundle(byte[] bytes) throws IOException {
-        if (!lanMode) return;
-
-        try {
-            if (isHost) {
-                for (DataOutputStream out : outs) {
-                    out.writeByte(PacketType.RESUME_HANDSHAKE);
-                    out.writeInt(bytes.length);
-                    out.write(bytes);
-                    out.flush();
-                }
-            } else {
-                if (clientOut != null) {
-                    clientOut.writeByte(PacketType.RESUME_HANDSHAKE);
-                    clientOut.writeInt(bytes.length);
-                    clientOut.write(bytes);
-                    clientOut.flush();
-                }
-            }
-        } catch (IOException e) {
-            GLog.n("Failed to send resync bundle: %s", e.getMessage());
-            throw e;
-        }
-    }
-
-    /**
-     * Receives a resync bundle from the peer.
-     *
-     * The bundle bytes are NOT read directly from the stream here — doing so would race
-     * with the net-reader-action thread which is the sole owner of the stream during gameplay.
-     * Instead, receiveActionAsync() routes RESUME_HANDSHAKE payloads into resyncQueue,
-     * and this method drains one entry with a timeout.
-     *
-     * Returns the raw bundle bytes, or throws IOException on timeout.
-     */
-    public static byte[] receiveResyncBundle() throws IOException {
-        if (!lanMode) return null;
-
-        try {
-            byte[] bytes = resyncQueue.poll(SOCKET_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            if (bytes == null) {
-                GLog.w("Resync bundle receive timeout - peer may have disconnected");
-                throw new SocketTimeoutException("Resync queue timeout");
-            }
-            return bytes;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("receiveResyncBundle interrupted", e);
         }
     }
 
@@ -739,8 +606,7 @@ public class NetworkManager {
         onPlayerJoined = null;
         playerNames = new String[4];  // reset player names array
         localPlayerIndex = 0;
-        hashQueue.clear();
-        resyncQueue.clear();
+
     }
 
     // Test seam — override sendAction for unit tests (null = use real network)
@@ -765,6 +631,33 @@ public class NetworkManager {
     public static boolean isActionReaderRunning() { return actionReaderRunning; }
     public static void setActionReaderRunningForTesting(boolean running) { actionReaderRunning = running; }
     public static void resetActionReaderForTesting() { actionReaderRunning = false; }
+
+    // Test seam — reset hero-ready coordination state between tests
+    public static void resetHeroReadyStateForTesting() {
+        synchronized (NetworkManager.class) {
+            heroReadyCount = 0;
+            heroReadyReceived = false;
+            collectedClasses = null;
+        }
+    }
+
+    // Test seam — expose heroReadyCount for race-condition assertions
+    public static int getHeroReadyCountForTesting() {
+        synchronized (NetworkManager.class) {
+            return heroReadyCount;
+        }
+    }
+
+    // Test seam — inject a mock DataInputStream for the first client slot
+    public static void setClientInputStreamForTesting(java.io.DataInputStream in) {
+        ins.clear();
+        ins.add(in);
+    }
+
+    // Test seam — clear all client input streams
+    public static void clearClientInputStreamsForTesting() {
+        ins.clear();
+    }
 
     /**
      * Encodes a HeroAction into a byte action type for the wire protocol.
@@ -832,22 +725,6 @@ public class NetworkManager {
     private static volatile HeroClass[] collectedClasses = null;
     private static volatile boolean handshakeReceived = false;
     private static volatile HandshakePayload handshakePayload = null;
-
-    /**
-     * Queue that bridges the single stream-reader thread and receiveHash().
-     * receiveActionAsync() enqueues HASH packets here instead of letting receiveHash()
-     * read them directly from the stream — this ensures only one thread ever reads
-     * from the underlying DataInputStream.
-     */
-    private static final LinkedBlockingQueue<HashPacket> hashQueue = new LinkedBlockingQueue<>();
-
-    /**
-     * Queue that bridges the single stream-reader thread and receiveResyncBundle().
-     * receiveActionAsync() enqueues RESUME_HANDSHAKE payloads here so that
-     * receiveResyncBundle() never touches the DataInputStream directly — it
-     * drains one entry from this queue instead.
-     */
-    private static final LinkedBlockingQueue<byte[]> resyncQueue = new LinkedBlockingQueue<>();
 
     /**
      * Guard flag: prevents more than one net-reader-action thread from starting.
@@ -987,9 +864,14 @@ public class NetworkManager {
     public static void waitForAllHeroReady(int playerCount) {
         if (!lanMode || !isHost) return;
 
-        heroReadyCount = 0;
         collectedClasses = new HeroClass[playerCount];
-        heroReadyReceived = false;
+        // Initialize heroReadyCount=1 BEFORE starting reader threads so that if a client
+        // sends HERO_READY before the main thread reaches the synchronized block below,
+        // the increment from 1→playerCount fires heroReadyReceived correctly.
+        synchronized (NetworkManager.class) {
+            heroReadyCount = 1;
+            heroReadyReceived = (playerCount == 1);
+        }
 
         // One reader thread per client — handles CLASS_CLAIMED/UNCLAIMED interleaved
         // with HERO_READY so the host relays class reservations during selection
@@ -1060,13 +942,6 @@ public class NetworkManager {
             }, "net-hero-ready-" + ci).start();
         }
 
-        // Count the host's own HERO_READY immediately (host class is set by caller)
-        synchronized (NetworkManager.class) {
-            heroReadyCount = 1;
-            if (playerCount == 1) { // solo host — shouldn't happen in LAN but guard it
-                heroReadyReceived = true;
-            }
-        }
     }
 
     /** Broadcasts CLASS_CLAIMED for a confirmed player to all clients (host side). */
@@ -1172,19 +1047,6 @@ public class NetworkManager {
             this.seed = seed;
             this.playerCount = playerCount;
             this.heroClasses = heroClasses;
-        }
-    }
-
-    /**
-     * Simple data holder for hash packets.
-     */
-    public static class HashPacket {
-        public int turn;
-        public long hash;
-
-        public HashPacket(int turn, long hash) {
-            this.turn = turn;
-            this.hash = hash;
         }
     }
 

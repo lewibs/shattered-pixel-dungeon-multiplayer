@@ -1,7 +1,11 @@
 {
-  "skillsWritten": [
-    "skills/actor-init-timing-placement/SKILL.md",
-    "skills/falling-hero-exclusion/SKILL.md"
+  "docsWritten": [
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/network-manager.md"
   ],
-  "summary": "Extracted 2 patterns: Actor.init() timing means Actor.findChar() is unusable for pre-init placement (use local HashSet instead), and falling heroes (WaitingToFall/Chasm.Falling) must be skipped during stair-adjacent placement"
+  "summary": "Updated network-manager.md: documented single-reader invariant, actionReaderRunning singleton guard, hashQueue/resyncQueue routing, and cleanup queue-drain paths; added receiveActionAsync, receiveHash, and receiveResyncBundle flow sections",
+  "artifacts": {
+    "modified": [
+      "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/network-manager.md"
+    ]
+  }
 }

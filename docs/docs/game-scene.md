@@ -30,6 +30,9 @@ flowchart TD
     MenuBtn --> WndGame["GameScene.show(new WndGame())"]
 
     GameScene -->|show| Window["addToFront(Window wnd)\ncancel() to clear cell selector first"]
+
+    GameSceneCreate["GameScene.create()\nfor each hero in Dungeon.heroes"] --> LocalIdx["localIdx = Math.min(localPlayerIndex, heroes.size()-1)\nclamps stale index if session ended"]
+    LocalIdx --> HeroSprite["if h == heroes.get(localIdx): hero = hs\n(local camera-tracked sprite)"]
 ```
 
 ## Flows
@@ -91,6 +94,32 @@ show(Window wnd):
     inherit offset from existing window or lastOffset
   scene.addToFront(wnd)
 ```
+
+### Flow: `create` — hero sprite selection
+- Core files: `GameScene.java`
+
+#### Pseudocode
+
+```
+create():
+  for each Hero h in Dungeon.heroes:
+    hs = createHeroSprite(h)
+    // clamp stale localPlayerIndex — guards against IndexOutOfBoundsException
+    // when a prior LAN client session left localPlayerIndex=1 but the next
+    // solo game has only 1 hero (heroes.size()=1)
+    localIdx = Math.min(NetworkManager.localPlayerIndex, Dungeon.heroes.size() - 1)
+    if h == Dungeon.heroes.get(localIdx):
+      hero = hs   // this device's camera-tracked hero sprite
+```
+
+#### Paths
+
+| path | input | output | path-type | notes |
+| --- | --- | --- | --- | --- |
+| `create.heroSprite.normal` | `localPlayerIndex` in bounds | `hero` set to sprite for `heroes.get(localPlayerIndex)` | happy path | LAN or solo sessions started fresh |
+| `create.heroSprite.clamp` | `localPlayerIndex` stale (> heroes.size()-1) | `localIdx` clamped to `heroes.size()-1`; `hero` set to last hero sprite | guard | Prevents IndexOutOfBoundsException when a LAN client session ends without `cleanup()` resetting `localPlayerIndex` |
+
+---
 
 ### Flow: `WndPlayerCount → HeroSelectScene`
 - Core files: `WndPlayerCount.java`, `HeroSelectScene.java`, `GamesInProgress.java`

@@ -56,8 +56,11 @@ GamesInProgress.currentPlayerSelecting: int    -- set to 0 in LAN mode
 NetworkManager.lanMode: boolean                -- true while in LAN session
 NetworkManager.isHost: boolean                 -- true on host device
 NetworkManager.localPlayerIndex: int           -- 0 = host, 1..N = clients
+                                               -- reset to 0 by NetworkManager.cleanup() on session end
 NetworkManager.connectedPlayerCount: int       -- total players (host counts as 1)
 ```
+
+**Session lifecycle note**: `NetworkManager.cleanup()` resets `localPlayerIndex` to 0. This is critical for correctness — if a device acted as a LAN client (`localPlayerIndex=1`) and then starts a solo game, `GameScene.create()` must see `localPlayerIndex=0` to track the correct (only) hero. Without the reset, `GameScene.create()` would attempt `Dungeon.heroes.get(1)` on a single-hero roster and throw `IndexOutOfBoundsException`. A bounds clamp `Math.min(localPlayerIndex, heroes.size()-1)` in `GameScene.java:346` provides a secondary safety guard.
 
 ---
 
