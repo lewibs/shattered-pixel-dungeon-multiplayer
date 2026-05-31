@@ -295,8 +295,12 @@ public class NetworkManager {
                             // Decode and set the action
                             HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
                             if (decodedAction != null) {
-                                remoteHero.curAction = decodedAction;
-                                com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread();
+                                // Hold the hero's lock when setting curAction so the
+                                // synchronized wait in Hero.act() can never miss this notify.
+                                synchronized (remoteHero.lanActionLock) {
+                                    remoteHero.curAction = decodedAction;
+                                    remoteHero.lanActionLock.notifyAll();
+                                }
                             }
                         } else if (type == PacketType.ITEM_IDENTIFIED) {
                             String className = in.readUTF();

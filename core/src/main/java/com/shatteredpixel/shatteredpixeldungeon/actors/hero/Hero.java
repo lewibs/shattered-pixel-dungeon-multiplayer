@@ -225,6 +225,10 @@ public class Hero extends Char {
 	// LAN: true only for the single act() call where curAction was just set by player input.
 	// Prevents sendAction from firing on every step of a multi-step move.
 	private boolean lanActionQueued = false;
+	// LAN: lock used to atomically wait for a remote action packet. The network
+	// reader thread holds this lock when setting curAction, so the wait/notify
+	// pair is race-free (no lost notifications possible).
+	public final Object lanActionLock = new Object();
 
 	//reference to the enemy the hero is currently in the process of attacking
 	private Char attackTarget;
@@ -953,19 +957,25 @@ public class Hero extends Char {
 			}
 		}
 
+		// LAN remote hero: block until the action packet arrives.
+		// Uses a synchronized lock so notify() from the reader thread can never
+		// be lost — the wait/notify pair is race-free by construction.
+		if (NetworkManager.lanMode && Dungeon.heroes != null) {
+			int myIdx = Dungeon.heroes.indexOf(this);
+			if (myIdx != NetworkManager.localPlayerIndex) {
+				synchronized (lanActionLock) {
+					NetworkManager.receiveActionAsync(this); // start reader (idempotent)
+					while (curAction == null && NetworkManager.lanMode) {
+						try { lanActionLock.wait(5000); } catch (InterruptedException e) { break; }
+					}
+				}
+				if (curAction == null) return false; // timeout / disconnect
+				// curAction is set — fall through to execute it below
+			}
+		}
+
 		boolean actResult;
 		if (curAction == null) {
-
-			// LAN remote hero: wait for action packet from peer.
-			// GameScene polls every frame for curAction != null and wakes the actor
-			// thread, so a missed notify is recovered within ~16ms.
-			if (NetworkManager.lanMode && Dungeon.heroes != null) {
-				int myIdx = Dungeon.heroes.indexOf(this);
-				if (myIdx != NetworkManager.localPlayerIndex) {
-					NetworkManager.receiveActionAsync(this);
-					return false;
-				}
-			}
 
 			if (resting) {
 				spendConstant( TIME_TO_REST );
