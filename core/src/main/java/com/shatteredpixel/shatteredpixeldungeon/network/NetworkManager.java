@@ -36,6 +36,43 @@ import java.util.concurrent.TimeUnit;
  * hash synchronization, and remote hero action reception.
  */
 public class NetworkManager {
+
+    // -------------------------------------------------------------------------
+    // LAN_DEBUG logging helper — writes to android.util.Log.d (via reflection
+    // when available) AND to the in-game GLog so logs appear on both channels.
+    // Tag: "LAN_DEBUG" for logcat filtering: adb logcat -s LAN_DEBUG
+    //
+    // Reflection is cached after the first successful lookup so repeated calls
+    // (e.g. inside the reader thread loop) do not pay getMethod() overhead each time.
+    // -------------------------------------------------------------------------
+    private static final String LAN_DEBUG_TAG = "LAN_DEBUG";
+
+    // Cached reflection handle for android.util.Log.d — null on desktop/test.
+    private static java.lang.reflect.Method androidLogMethod = null;
+    private static boolean androidLogLookupDone = false;
+
+    public static void lanLog(String msg) {
+        // GLog always works (in-game log visible in GameScene)
+        try { GLog.i(LAN_DEBUG_TAG + " | " + msg); } catch (Throwable ignored) {}
+        // Android logcat via cached reflection — no-op on desktop/test
+        if (!androidLogLookupDone) {
+            androidLogLookupDone = true;
+            try {
+                Class<?> log = Class.forName("android.util.Log");
+                androidLogMethod = log.getMethod("d", String.class, String.class);
+            } catch (Throwable ignored) {
+                androidLogMethod = null;
+            }
+        }
+        if (androidLogMethod != null) {
+            try { androidLogMethod.invoke(null, LAN_DEBUG_TAG, msg); } catch (Throwable ignored) {}
+        }
+    }
+
+    public static void lanLog(String fmt, Object... args) {
+        lanLog(String.format(fmt, args));
+    }
+
     // Static flags and configuration
     public static boolean lanMode = false;
     public static int localPlayerIndex = 0;
@@ -271,6 +308,9 @@ public class NetworkManager {
             byte actionType = encodeHeroAction(action);
             int targetPos = getActionTargetPos(action);
 
+            lanLog("sendAction | heroId=%d actionType=%d targetPos=%d isHost=%b",
+                    heroId, actionType, targetPos, isHost);
+
             if (isHost) {
                 // Host sends to all connected clients — per-stream lock (EC-6.1)
                 for (int i = 0; i < outs.size(); i++) {
@@ -284,6 +324,7 @@ public class NetworkManager {
                         out.flush();
                     }
                 }
+                lanLog("sendAction | sent ACTION to %d clients", outs.size());
             } else {
                 // Client sends to host — clientOutLock (EC-6.1)
                 if (clientOut != null) {
@@ -294,10 +335,14 @@ public class NetworkManager {
                         clientOut.writeInt(targetPos);
                         clientOut.flush();
                     }
+                    lanLog("sendAction | sent ACTION to host");
+                } else {
+                    lanLog("sendAction | WARN clientOut is null, packet not sent!");
                 }
             }
         } catch (IOException e) {
             GLog.n("Failed to send action: %s", e.getMessage());
+            lanLog("sendAction | ERROR sending action: %s", e.getMessage());
         }
     }
 
@@ -317,20 +362,35 @@ public class NetworkManager {
         int heroIndex = (Dungeon.heroes != null) ? Dungeon.heroes.indexOf(remoteHero) : 0;
         int streamIndex = isHost ? Math.max(0, heroIndex - 1) : 0; // ins.get(0) for hero[1], ins.get(1) for hero[2]
 
+        lanLog("receiveActionAsync | heroIndex=%d streamIndex=%d starting=%b",
+                heroIndex, streamIndex, true);
+
         synchronized (NetworkManager.class) {
             if (streamIndex >= 0 && streamIndex < actionReaderRunningPerStream.length) {
-                if (actionReaderRunningPerStream[streamIndex]) return;
+                if (actionReaderRunningPerStream[streamIndex]) {
+                    lanLog("receiveActionAsync | guard already true for stream %d — no-op",
+                            streamIndex);
+                    return;
+                }
                 actionReaderRunningPerStream[streamIndex] = true;
             } else {
                 // Fallback to legacy global guard
-                if (actionReaderRunning) return;
+                if (actionReaderRunning) {
+                    lanLog("receiveActionAsync | global guard true — no-op");
+                    return;
+                }
                 actionReaderRunning = true;
             }
         }
 
+        lanLog("receiveActionAsync | reader thread starting for heroIndex=%d streamIndex=%d",
+                heroIndex, streamIndex);
+
         final int finalStreamIndex = streamIndex;
 
         new Thread(() -> {
+            lanLog("receiveActionAsync | reader thread alive, waiting for bytes on stream %d",
+                    finalStreamIndex);
             try {
                 // EC-6.7: select the correct stream based on which hero's turn it is
                 DataInputStream in;
@@ -339,16 +399,27 @@ public class NetworkManager {
                 } else {
                     in = clientIn;
                 }
-                if (in == null) return;
+                if (in == null) {
+                    lanLog("receiveActionAsync | ERROR: stream is null for index %d", finalStreamIndex);
+                    return;
+                }
 
                 while (lanMode && remoteHero != null) {
                     try {
                         byte type = in.readByte();
+                        // Skip logging for PING packets (sent every 5 s) to avoid GLog spam
+                        if (type != PacketType.PING) {
+                            lanLog("receiveActionAsync | read packet type=%d on stream %d",
+                                    type, finalStreamIndex);
+                        }
 
                         if (type == PacketType.ACTION) {
                             int heroId = in.readInt();
                             byte actionType = in.readByte();
                             int targetPos = in.readInt();
+
+                            lanLog("receiveActionAsync | ACTION received heroId=%d actionType=%d targetPos=%d",
+                                    heroId, actionType, targetPos);
 
                             // Decode and set the action
                             HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
@@ -358,9 +429,13 @@ public class NetworkManager {
                             synchronized (remoteHero.lanActionLock) {
                                 if (decodedAction != null) {
                                     remoteHero.curAction = decodedAction;
+                                    lanLog("receiveActionAsync | curAction set, calling notifyAll");
+                                } else {
+                                    lanLog("receiveActionAsync | decodedAction is null, calling notifyAll anyway");
                                 }
                                 remoteHero.lanActionLock.notifyAll();
                             }
+                            lanLog("receiveActionAsync | notifyAll fired, guard will reset in finally");
                             // Exit after delivering ONE action packet so the guard resets.
                             // Reader is one-shot per turn: receiveActionAsync() is called again
                             // at the start of each remote turn via the idempotent guard check.
@@ -402,6 +477,8 @@ public class NetworkManager {
                         }
                     } catch (IOException e) {
                         if (!Thread.currentThread().isInterrupted()) {
+                            lanLog("receiveActionAsync | IOException on stream %d: %s — dispatching disconnect",
+                                    finalStreamIndex, e.getClass().getSimpleName());
                             GLog.w("Peer disconnected: %s", e.getClass().getSimpleName());
                             peerDisconnectSignal.dispatch(new PeerDisconnected(remoteHero));
                             com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread();
@@ -421,6 +498,7 @@ public class NetworkManager {
                     }
                     actionReaderRunning = false;
                 }
+                lanLog("receiveActionAsync | guard reset for stream %d (finally)", finalStreamIndex);
             }
         }, "net-reader-action").start();
     }

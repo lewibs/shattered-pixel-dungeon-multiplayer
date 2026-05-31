@@ -1,15 +1,15 @@
 {
   "bugFiles": [
-    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-31-lan-freeze-remote-hero-unvisited-path.md"
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-31-lan-freeze-multistep-walk-stale-reader.md"
   ],
   "notes": [
-    "debugger-agent: root cause was THREE contributing factors causing permanent LAN freeze, fixed in Hero.java / NetworkManager.java / GameScene.java",
-    "Root cause 1 (PRIMARY): Hero.getCloser() restricted pathfinding to visited/mapped tiles — remote hero could not pathfind to cells P2 hadn't explored, so actMove() called ready() clearing curAction, re-entering LAN wait forever",
-    "Root cause 2: receiveActionAsync() reader looped after delivering action, reading next turn's bytes prematurely; ready() then wiped the pre-delivered action — deadlock on turn N+1",
-    "Root cause 3: GameScene.cellSelector.listener was null at game start on P2 device because defaultCellListener is only set when local hero's act() runs, which was blocked by remote hero",
-    "Fix 1: Hero.getCloser() uses p[i] (no visited restriction) for LAN remote heroes",
-    "Fix 2: receiveActionAsync() breaks after delivering ONE action packet",
-    "Fix 3: GameScene.create() pre-initializes defaultCellListener for LAN mode",
-    "New tests: LanRemoteHeroPathfindingTest (5 tests), LanClientPerspectiveTest (7 tests), LanPersistentReaderDeadlockTest (5 tests)"
+    "debugger-agent: root cause of REMAINING LAN freeze fixed in Hero.java with supporting logging in NetworkManager.java and GameScene.java",
+    "Root cause: Hero.act() called receiveActionAsync() unconditionally on EVERY act() call for remote hero, including intermediate steps of a multi-step walk where curAction was already set",
+    "During intermediate walk steps, this started a stale reader that blocked on readByte() and consumed the NEXT turn's action packet early",
+    "When the walk completed, ready() cleared curAction, losing the consumed action — next remote turn had no action to receive → permanent freeze",
+    "Fix: guard receiveActionAsync() with (curAction == null) in Hero.act() — reader only starts at the true beginning of a remote turn",
+    "Logging: added LAN_DEBUG tag logging to NetworkManager.sendAction(), receiveActionAsync(), Hero.act() LAN block, Hero.handle(), GameScene.notifyActorThread(), GameScene.update() LAN poll",
+    "Tests: 6 new tests in LanMultiStepWalkFreezeTest — 3 confirm buggy path behavior, 3 confirm fixed path behavior",
+    "All 158 LAN tests pass after fix — no regressions"
   ]
 }
