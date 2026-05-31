@@ -101,6 +101,10 @@ public class HeroSelectScene extends PixelScene {
 	private static boolean heroWasRandomized = true;
 	private static boolean chalWasRandomized = false;
 
+	// Stored during layout so repositionStartBtn() can re-center without a full re-layout
+	private float startBtnLandscapeLeftArea = 0;
+	private float startBtnLandscapeUiHeight = 0;
+
 	// LAN state — tracks async hero selection flow
 	private boolean lanHeroConfirmed  = false;  // local player pressed Select
 	private boolean lanReadyToStart   = false;  // host: all HERO_READY received
@@ -207,7 +211,7 @@ public class HeroSelectScene extends PixelScene {
 					// Disable the Select button — can't change after confirming
 					startBtn.enable(false);
 					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "waiting")));
-					startBtn.setSize(startBtn.reqWidth() + 8, 21);
+					repositionStartBtn();
 
 					// Send HERO_READY asynchronously — never block the render thread
 					NetworkManager.sendHeroReady(GamesInProgress.selectedClass);
@@ -322,6 +326,8 @@ public class HeroSelectScene extends PixelScene {
 		if (landscape()){
 			float leftArea = Math.max(100, w/3f);
 			float uiHeight = Math.min(h-20, 300);
+			startBtnLandscapeLeftArea = leftArea;
+			startBtnLandscapeUiHeight = uiHeight;
 			float uiSpacing = (uiHeight-120)/2f;
 
 			if (uiHeight >= 160) uiSpacing -= 5;
@@ -382,9 +388,7 @@ public class HeroSelectScene extends PixelScene {
 			add(heroDesc);
 
 			startBtn.text(Messages.titleCase(Messages.get(this, "start")));
-			startBtn.setSize(startBtn.reqWidth()+8, 21);
-			startBtn.setPos(insets.left + (leftArea - startBtn.width())/2f, title.top() + uiHeight - startBtn.height());
-			align(startBtn);
+			repositionStartBtn();
 
 			btnFade = new IconButton(Icons.CHEVRON.get()){
 				@Override
@@ -510,8 +514,8 @@ public class HeroSelectScene extends PixelScene {
 					lanHeroConfirmed = false;
 					for (StyledButton b : heroBtns) b.active = true;
 					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "start")));
-					startBtn.setSize(startBtn.reqWidth() + 8, 21);
 					startBtn.enable(false);
+					repositionStartBtn();
 					GamesInProgress.selectedClass = null;
 					GamesInProgress.selectedClasses = new ArrayList<>();
 					add(new WndMessage(Messages.get(HeroSelectScene.class, "hero_taken")));
@@ -603,10 +607,7 @@ public class HeroSelectScene extends PixelScene {
 
 			startBtn.visible = startBtn.active = true;
 			startBtn.text(Messages.titleCase(cl.title()));
-			startBtn.setSize(startBtn.reqWidth() + 8, 21);
-
-			startBtn.setPos((Camera.main.width - startBtn.width())/2f, (Camera.main.height - insets.bottom - HeroBtn.HEIGHT + 2 - startBtn.height()));
-			PixelScene.align(startBtn);
+			repositionStartBtn();
 
 			infoButton.visible = infoButton.active = true;
 			infoButton.setPos(startBtn.right(), startBtn.top());
@@ -619,6 +620,35 @@ public class HeroSelectScene extends PixelScene {
 		}
 
 		updateOptionsColor();
+	}
+
+	/**
+	 * Resize startBtn to fit its current text, then re-centre it and reposition
+	 * btnFade / btnOptions / infoButton so nothing overlaps.
+	 * Called whenever the button label changes (hero name → waiting → lan_start → start).
+	 */
+	private void repositionStartBtn() {
+		startBtn.setSize(startBtn.reqWidth() + 8, 21);
+		if (landscape()) {
+			startBtn.setPos(
+					insets.left + (startBtnLandscapeLeftArea - startBtn.width()) / 2f,
+					title.top() + startBtnLandscapeUiHeight - startBtn.height());
+			align(startBtn);
+			if (btnFade != null)    btnFade.setRect(startBtn.left() - 20, startBtn.top(), 20, 21);
+			if (btnOptions != null) btnOptions.setRect(startBtn.right(), startBtn.top(), 20, 21);
+			if (optionsPane != null)
+				optionsPane.setPos(btnOptions.right(), btnOptions.top() - optionsPane.height() - 2);
+		} else {
+			startBtn.setPos(
+					(Camera.main.width - startBtn.width()) / 2f,
+					Camera.main.height - insets.bottom - HeroBtn.HEIGHT + 2 - startBtn.height());
+			align(startBtn);
+			if (infoButton != null) infoButton.setPos(startBtn.right(), startBtn.top());
+			if (btnOptions != null) btnOptions.setPos(startBtn.left() - btnOptions.width(), startBtn.top());
+			if (optionsPane != null)
+				optionsPane.setPos(heroBtns.isEmpty() ? startBtn.left() : heroBtns.get(0).left(),
+						startBtn.top() - optionsPane.height() - 2);
+		}
 	}
 
 	private float uiAlpha;
@@ -634,8 +664,8 @@ public class HeroSelectScene extends PixelScene {
 					lanReadyToStart = true;
 					// Reuse startBtn: change text to "Start Game" and re-enable for host
 					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "lan_start")));
-					startBtn.setSize(startBtn.reqWidth() + 8, 21);
 					startBtn.enable(true);
+					repositionStartBtn();
 					startBtn.visible = true;
 				}
 			} else if (!NetworkManager.isHost() && !lanHandshakeReady) {
@@ -671,8 +701,17 @@ public class HeroSelectScene extends PixelScene {
 	private void updateFade(){
 		float alpha = GameMath.gate(0f, uiAlpha, 1f);
 		title.alpha(alpha);
+		if (subtitle != null) subtitle.alpha(alpha);
 		for (StyledButton b : heroBtns){
-			b.enable(alpha != 0);
+			// Don't re-enable buttons for classes already claimed by another player.
+			// isTaken() returns true when the class is in selectedClasses but is NOT
+			// the local player's current live claim, so the local player can still change
+			// their own provisional selection before confirming.
+			boolean canEnable = alpha != 0;
+			if (canEnable && b instanceof HeroBtn && ((HeroBtn) b).isTaken()) {
+				canEnable = false;
+			}
+			b.enable(canEnable);
 			b.alpha(alpha);
 		}
 		if (heroName != null){
