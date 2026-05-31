@@ -974,27 +974,15 @@ public class Hero extends Char {
 		if (NetworkManager.lanMode && Dungeon.heroes != null) {
 			int myIdx = Dungeon.heroes.indexOf(this);
 			if (myIdx != NetworkManager.localPlayerIndex) {
-				NetworkManager.lanLog("Hero.act | remote hero idx=%d entry curAction=%s",
-						myIdx, curAction != null ? curAction.getClass().getSimpleName() : "null");
 				synchronized (lanActionLock) {
 					if (curAction == null) {
-						NetworkManager.lanLog("Hero.act | curAction null — starting reader for idx=%d", myIdx);
 						NetworkManager.receiveActionAsync(this); // start reader only at turn start
-					} else {
-						NetworkManager.lanLog("Hero.act | curAction already set (%s) — skipping reader (intermediate step)",
-								curAction.getClass().getSimpleName());
-					}
-					if (curAction == null) {
-						NetworkManager.lanLog("Hero.act | waiting on lanActionLock for idx=%d", myIdx);
 					}
 					while (curAction == null && NetworkManager.lanMode) {
 						try { lanActionLock.wait(5000); } catch (InterruptedException e) { break; }
 					}
-					NetworkManager.lanLog("Hero.act | woke from lanActionLock idx=%d curAction=%s",
-							myIdx, curAction != null ? curAction.getClass().getSimpleName() : "null");
 				}
 				if (curAction == null) {
-					NetworkManager.lanLog("Hero.act | TIMEOUT/DISCONNECT idx=%d returning false", myIdx);
 					return false; // timeout / disconnect
 				}
 				// curAction is set — fall through to execute it below
@@ -1031,8 +1019,6 @@ public class Hero extends Char {
 			// LAN: send action once per player tap (lanActionQueued prevents re-sending
 			// on every step of a multi-step move).
 			if (NetworkManager.lanMode && lanActionQueued) {
-				NetworkManager.lanLog("Hero.act | lanActionQueued=true sending action curAction=%s",
-						curAction != null ? curAction.getClass().getSimpleName() : "null");
 				lanActionQueued = false;
 				NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
 
@@ -2166,9 +2152,6 @@ public class Hero extends Char {
 
 		if (NetworkManager.lanMode) {
 			lanActionQueued = true;
-			NetworkManager.lanLog("Hero.handle | lanActionQueued=true curAction=%s dst=%d",
-					curAction != null ? curAction.getClass().getSimpleName() : "null",
-					curAction != null ? curAction.dst : -1);
 		}
 		return true;
 	}

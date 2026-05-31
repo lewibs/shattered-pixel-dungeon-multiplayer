@@ -869,12 +869,9 @@ public class GameScene extends PixelScene {
 
 	public static void notifyActorThread() {
 		if (actorThread != null && actorThread.isAlive()) {
-			NetworkManager.lanLog("GameScene.notifyActorThread | notifying actor thread");
 			synchronized (actorThread) {
 				actorThread.notify();
 			}
-		} else {
-			NetworkManager.lanLog("GameScene.notifyActorThread | called but actorThread is null or dead");
 		}
 	}
 
@@ -941,10 +938,6 @@ public class GameScene extends PixelScene {
 				&& Dungeon.heroes != null) {
 			for (Hero h : Dungeon.heroes) {
 				if (h != Dungeon.hero && h.curAction != null) {
-					NetworkManager.lanLog(
-							"GameScene.update | LAN poll: hero %d has curAction=%s — notifying actor thread",
-							Dungeon.heroes.indexOf(h),
-							h.curAction.getClass().getSimpleName());
 					notifyActorThread();
 					break;
 				}
