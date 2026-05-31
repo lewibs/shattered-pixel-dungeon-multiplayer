@@ -75,7 +75,6 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.Locale;
 import java.util.TimeZone;
 
@@ -111,9 +110,6 @@ public class HeroSelectScene extends PixelScene {
 	private boolean lanReadyToStart   = false;  // host: all HERO_READY received
 	private boolean lanHandshakeReady = false;  // client: HANDSHAKE received
 
-	// Maps HeroClass → short player label ("P1", "P2", "You") for taken-button display
-	private final HashMap<HeroClass, String> claimedByName = new HashMap<>();
-
 	@Override
 	public void create() {
 		super.create();
@@ -129,21 +125,6 @@ public class HeroSelectScene extends PixelScene {
 			lanReadyToStart   = false;
 			lanHandshakeReady = false;
 
-			// Receive CLASS_CLAIMED/UNCLAIMED from peers → disable/restore buttons on render thread
-			NetworkManager.onClassClaimedReceived = (playerIdx, cls) -> Game.runOnRenderThread(() -> {
-				if (cls != null && !GamesInProgress.selectedClasses.contains(cls)) {
-					GamesInProgress.selectedClasses.add(cls);
-					claimedByName.put(cls, NetworkManager.getPlayerName(playerIdx));
-				}
-				updateFade();
-			});
-			NetworkManager.onClassUnclaimedReceived = (playerIdx, cls) -> Game.runOnRenderThread(() -> {
-				if (cls != null) {
-					GamesInProgress.selectedClasses.remove(cls);
-					claimedByName.remove(cls);
-				}
-				updateFade();
-			});
 		}
 
 		Badges.loadGlobal();
@@ -212,10 +193,6 @@ public class HeroSelectScene extends PixelScene {
 					}
 					// LAN mode: lock in local selection, send HERO_READY, wait async
 					lanHeroConfirmed = true;
-					// Lock out unconfirmed claim — the confirmed class stays in selectedClasses
-					if (!GamesInProgress.selectedClasses.contains(GamesInProgress.selectedClass))
-						GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
-
 					// Disable ALL hero buttons so nobody can change after confirming
 					for (StyledButton b : heroBtns) b.active = false;
 
@@ -517,23 +494,6 @@ public class HeroSelectScene extends PixelScene {
 		collectedClasses[0] = GamesInProgress.selectedClass;
 
 		// Validate no two players chose the same class
-		for (int i = 0; i < collectedClasses.length; i++) {
-			for (int j = i + 1; j < collectedClasses.length; j++) {
-				if (collectedClasses[i] != null && collectedClasses[i] == collectedClasses[j]) {
-					// Duplicate — can't start. Reset and ask players to reselect
-					lanReadyToStart = false;
-					lanHeroConfirmed = false;
-					for (StyledButton b : heroBtns) b.active = true;
-					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "start")));
-					startBtn.enable(false);
-					repositionStartBtn();
-					GamesInProgress.selectedClass = null;
-					GamesInProgress.selectedClasses = new ArrayList<>();
-					add(new WndMessage(Messages.get(HeroSelectScene.class, "hero_taken")));
-					return;
-				}
-			}
-		}
 		long seed = Dungeon.seed;
 		if (seed == 0) { Dungeon.initSeed(); seed = Dungeon.seed; }
 		NetworkManager.sendHandshake(seed, collectedClasses);
@@ -556,21 +516,6 @@ public class HeroSelectScene extends PixelScene {
 	}
 
 	private void setSelectedHero(HeroClass cl){
-		// In LAN mode, broadcast claim/unclaim so all devices disable the right buttons
-		if (NetworkManager.lanMode && !lanHeroConfirmed) {
-			HeroClass prev = GamesInProgress.selectedClass;
-			if (prev != null && prev != cl) {
-				NetworkManager.sendClassUnclaimed(NetworkManager.localPlayerIndex, prev);
-				GamesInProgress.selectedClasses.remove(prev);
-				claimedByName.remove(prev);
-			}
-			if (cl != null) {
-				NetworkManager.sendClassClaimed(NetworkManager.localPlayerIndex, cl);
-				if (!GamesInProgress.selectedClasses.contains(cl))
-					GamesInProgress.selectedClasses.add(cl);
-				claimedByName.put(cl, NetworkManager.getPlayerName(NetworkManager.localPlayerIndex));
-			}
-		}
 		GamesInProgress.selectedClass = cl;
 		GamesInProgress.randomizedClass = false;
 
@@ -717,15 +662,7 @@ public class HeroSelectScene extends PixelScene {
 		title.alpha(alpha);
 		if (subtitle != null) subtitle.alpha(alpha);
 		for (StyledButton b : heroBtns){
-			// Don't re-enable buttons for classes already claimed by another player.
-			// isTaken() returns true when the class is in selectedClasses but is NOT
-			// the local player's current live claim, so the local player can still change
-			// their own provisional selection before confirming.
-			boolean canEnable = alpha != 0;
-			if (canEnable && b instanceof HeroBtn && ((HeroBtn) b).isTaken()) {
-				canEnable = false;
-			}
-			b.enable(canEnable);
+			b.enable(alpha != 0);
 			b.alpha(alpha);
 		}
 		if (heroName != null){
@@ -789,7 +726,6 @@ public class HeroSelectScene extends PixelScene {
 	private class HeroBtn extends StyledButton {
 
 		private HeroClass cl;
-		private boolean wasTaken = false;
 
 		private static final int MIN_WIDTH = 20;
 		private static final int HEIGHT = 24;
@@ -803,39 +739,17 @@ public class HeroSelectScene extends PixelScene {
 
 		}
 
-		/**
-		 * Returns true when this class has been claimed by another player (not the local
-		 * player's own current provisional selection).  Used by updateFade() to keep the
-		 * button disabled so peers cannot tap a hero that has already been taken.
-		 */
-		boolean isTaken() {
-			if (GamesInProgress.selectedClasses == null) return false;
-			if (!GamesInProgress.selectedClasses.contains(cl)) return false;
-			// The local player's own current claim lives in selectedClasses too (as a
-			// provisional reservation). Do not lock them out of their own current pick.
-			return cl != GamesInProgress.selectedClass;
-		}
-
 		@Override
 		public void update() {
 			super.update();
-			boolean taken = isTaken();
 			if (cl != GamesInProgress.selectedClass) {
 				if (!cl.isUnlocked()) {
 					icon.brightness(0.1f);
-				} else if (taken) {
-					icon.brightness(0.3f);
 				} else {
 					icon.brightness(0.6f);
 				}
 			} else {
 				icon.brightness(1f);
-			}
-			// Update button label when taken state changes (avoids per-frame text re-render)
-			if (taken != wasTaken) {
-				wasTaken = taken;
-				String label = taken ? claimedByName.getOrDefault(cl, "Taken") : "";
-				text(label);
 			}
 		}
 
@@ -845,9 +759,6 @@ public class HeroSelectScene extends PixelScene {
 
 			if( !cl.isUnlocked() ){
 				ShatteredPixelDungeon.scene().addToFront( new WndMessage(cl.unlockMsg()));
-			} else if (GamesInProgress.selectedClasses != null && GamesInProgress.selectedClasses.contains(cl)) {
-				// Already taken in multiplayer
-				ShatteredPixelDungeon.scene().addToFront( new WndMessage(Messages.get(HeroSelectScene.class, "hero_taken")));
 			} else if (GamesInProgress.selectedClass == cl) {
 				Window w = new WndHeroInfo(cl);
 				if (landscape()){
