@@ -788,6 +788,19 @@ public class HeroSelectScene extends PixelScene {
 
 		}
 
+		/**
+		 * Returns true when this class has been claimed by another player (not the local
+		 * player's own current provisional selection).  Used by updateFade() to keep the
+		 * button disabled so peers cannot tap a hero that has already been taken.
+		 */
+		boolean isTaken() {
+			if (GamesInProgress.selectedClasses == null) return false;
+			if (!GamesInProgress.selectedClasses.contains(cl)) return false;
+			// The local player's own current claim lives in selectedClasses too (as a
+			// provisional reservation). Do not lock them out of their own current pick.
+			return cl != GamesInProgress.selectedClass;
+		}
+
 		@Override
 		public void update() {
 			super.update();

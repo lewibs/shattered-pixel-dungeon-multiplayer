@@ -542,8 +542,11 @@ public class Toolbar extends Component {
 		float right = width;
 
 		int quickslotsToShow = 4;
-		if (PixelScene.uiCamera.width > 152) quickslotsToShow ++;
-		if (PixelScene.uiCamera.width > 170) quickslotsToShow ++;
+		// When the follow button is visible it takes ~20px of extra toolbar space,
+		// so raise the width thresholds by that amount to avoid overcrowding.
+		int followOffset = btnFollow.visible ? 20 : 0;
+		if (PixelScene.uiCamera.width > 152 + followOffset) quickslotsToShow ++;
+		if (PixelScene.uiCamera.width > 170 + followOffset) quickslotsToShow ++;
 
 		int startingSlot;
 		if (SPDSettings.quickSwapper() && quickslotsToShow < 6){

@@ -8,8 +8,8 @@
 
 ## Stage Gate Tracker
 
-- [ ] Stage 1 Mermaid approved
-- [ ] Stage 2 Flows approved
+- [x] Stage 1 Mermaid approved
+- [x] Stage 2 Flows approved
 - [ ] Stage 3 Logs + Deployment approved or skipped
 
 ## Mermaid Diagram
@@ -31,8 +31,6 @@ classDef unchanged fill:#d3d3d3,stroke:#666,stroke-width:1px;
 classDef updated fill:#ffe58a,stroke:#666,stroke-width:1px;
 classDef created fill:#a8e6a3,stroke:#666,stroke-width:1px;
 ```
-
-ONCE YOU GET APPROVAL FROM THE DEVELOPER, DELETE THIS LINE AND UPDATE THE STAGE GATE TRACKER
 
 ## Flows
 
@@ -119,9 +117,10 @@ FollowHeroBuffState {
 
 | path | input | output | path-type | notes | updated |
 | --- | --- | --- | --- | --- | --- |
-| `followHeroMovement.moveToward` | curAction==null, buff present, target moved | `curAction = HeroAction.Move(targetPos)` set before action dispatch | `happy path` | Buff.targetStopped() returns false | |
+| `followHeroMovement.moveToward` | curAction==null, buff present, target moved, no visible enemies | `curAction = HeroAction.Move(targetPos)` set before action dispatch | `happy path` | Buff.targetStopped() returns false | |
 | `followHeroMovement.stopOnTargetIdle` | curAction==null, buff present, target pos unchanged since last turn | buff detached; `ready()` called normally | `stop condition` | Buff.targetStopped() returns true | |
 | `followHeroMovement.stopOnTargetDead` | target hero is dead or removed | buff detached; `ready()` called normally | `stop condition` | getTargetHero() returns null | |
+| `followHeroMovement.stopOnEnemyVisible` | new enemy enters hero's FOV (damageInterrupt check) | buff detached; `ready()` called — player regains control | `interrupt` | Same mechanism as hold-wait rest interrupt; checked via visibleEnemies.size() > 0 | |
 | `followHeroMovement.firstTurn` | curAction==null, buff present, lastKnownTargetPos==-1 | always follow (no stop check on first turn) | `initialization` | Prevents premature detach on attach turn | |
 
 #### Pseudocode
@@ -131,9 +130,9 @@ FollowHeroBuffState {
 
 FollowHeroBuff follow = buff(FollowHeroBuff.class);
 if (curAction == null && follow != null) {
-  if (follow.targetStopped()) {
+  if (follow.targetStopped() || visibleEnemies.size() > 0) {
     follow.detach();
-    // fall through to normal ready() path below
+    // fall through to normal ready() path below (player regains control)
   } else {
     int targetPos = follow.getTargetPos();
     if (targetPos >= 0 && targetPos != pos) {
@@ -246,8 +245,6 @@ btnFollow.alpha(value);  // add alongside existing alpha calls
 // followInformer static field (alongside existing informer):
 private static CellSelector.Listener followInformer = new CellSelector.Listener() { ... };
 ```
-
-ONCE YOU GET APPROVAL FROM THE DEVELOPER, DELETE THIS LINE AND UPDATE THE STAGE GATE TRACKER
 
 ## Logs
 

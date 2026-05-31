@@ -1,11 +1,13 @@
 {
   "docsWritten": [
-    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/network-manager.md"
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/hero-act.md",
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-30-lan-action-packet-not-delivered.md"
   ],
-  "summary": "Updated network-manager.md: documented single-reader invariant, actionReaderRunning singleton guard, hashQueue/resyncQueue routing, and cleanup queue-drain paths; added receiveActionAsync, receiveHash, and receiveResyncBundle flow sections",
+  "summary": "Removed stale Known Bug section from hero-act.md (bug fixed); updated bug doc status to fixed with completed verification checklist",
   "artifacts": {
     "modified": [
-      "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/network-manager.md"
+      "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/hero-act.md",
+      "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-30-lan-action-packet-not-delivered.md"
     ]
   }
 }

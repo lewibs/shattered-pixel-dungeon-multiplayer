@@ -951,7 +951,14 @@ public class Hero extends Char {
 
 		boolean actResult;
 		if (curAction == null) {
-			
+
+			// Remote hero in LAN: no action yet — start the async receiver and yield.
+			// The receiver thread sets curAction and notifies the actor thread to re-run act().
+			if (NetworkManager.lanMode && this != Dungeon.hero) {
+				NetworkManager.receiveActionAsync(this);
+				return false;
+			}
+
 			if (resting) {
 				spendConstant( TIME_TO_REST );
 				next();
@@ -967,29 +974,18 @@ public class Hero extends Char {
 					buff(TalismanOfForesight.Foresight.class).checkAwareness();
 				}
 			}
-			
+
 			actResult = false;
-			
+
 		} else {
 
 			resting = false;
 
 			ready = false;
 
-			// LAN turn sync: send local hero's action, receive remote hero's action
-			if (NetworkManager.lanMode) {
-				if (this == Dungeon.hero) {
-					// Local hero: send action before dispatch
-					if (curAction != null) {
-						NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
-					}
-				} else {
-					// Remote hero: start async receiver if no action yet
-					if (curAction == null) {
-						NetworkManager.receiveActionAsync(this);
-						return false;
-					}
-				}
+			// LAN: local hero sends their action to the peer before executing it.
+			if (NetworkManager.lanMode && this == Dungeon.hero) {
+				NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
 			}
 
 			if (curAction instanceof HeroAction.Move) {
