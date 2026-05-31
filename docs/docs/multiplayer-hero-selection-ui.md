@@ -124,6 +124,8 @@ HeroSelectScene.HeroBtn.onClick():
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
 | `perPlayerHeroSelection.subtitle` | `playerCount > 1` | subtitle label set to "Player N" (1-based from `currentPlayerSelecting + 1`) | happy path | Single-player (`playerCount == 1`) renders no subtitle |
+| `perPlayerHeroSelection.subtitleHideOnSelect` | Portrait mode: `setSelectedHero(cl)` called | `title.visible = false` and `subtitle.visible = false` — both hidden in sync when a hero is selected | happy path | Mirrors title hide so "Player N" does not linger over the splash art |
+| `perPlayerHeroSelection.subtitleRestoreOnReset` | `resetFade()` called (tap or `update()` window check) | `title.visible = true` and `subtitle.visible = true` — both restored in sync | happy path | `resetFade()` also resets `uiAlpha = 2f` to restart the fade timer |
 | `perPlayerHeroSelection.disableTaken` | hero class already in `selectedClasses` | HeroBtn dimmed to 0.3 brightness; click shows `WndMessage("hero_taken")` | happy path | Prevents two players choosing the same class |
 | `perPlayerHeroSelection.advancePlayer` | Start clicked, `currentPlayerSelecting + 1 < playerCount` | class added to `selectedClasses`, `currentPlayerSelecting++`, `selectedClass = null`, `switchScene(HeroSelectScene.class)` | happy path | Loop back for next player |
 | `perPlayerHeroSelection.lastPlayer` | Start clicked, all players have selected | class added to `selectedClasses`, `currentPlayerSelecting++`, proceed to `InterlevelScene` | happy path | Identical to previous single-player start path from this point |
@@ -136,6 +138,18 @@ HeroSelectScene.HeroBtn.onClick():
 if (GamesInProgress.playerCount > 1):
     subtitle = renderTextBlock(Messages.get(this, "player_selecting", currentPlayerSelecting + 1))
     add subtitle
+
+// HeroSelectScene.setSelectedHero(cl) — portrait mode visibility sync
+if (!landscape()):
+    title.visible = false
+    if (subtitle != null): subtitle.visible = false   // hides "Player N" in sync with title
+    startBtn.visible = startBtn.active = true
+    // (landscape branch does not touch visible — hero name / desc shown instead)
+
+// HeroSelectScene.resetFade() — restores both title and subtitle
+uiAlpha = 2f
+title.visible = true
+if (subtitle != null): subtitle.visible = true       // restored in sync with title
 
 // HeroSelectScene.startBtn.onClick()
 GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);

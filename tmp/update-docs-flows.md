@@ -68,6 +68,13 @@
 # Affected Docs Checklist (lan-hero-select-sync — lockout bug fix)
 - [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/hero-select-scene.md — updated: removed BUG annotations, updated all three flows to reflect implemented code, added isTaken()/updateFade() types and paths to lanHeroCardGrayOut
 
+# Flows Checklist (hero-select-subtitle-fade-sync)
+- [x] perPlayerHeroSelection.subtitleHideOnSelect — modified (portrait: subtitle.visible=false in setSelectedHero())
+- [x] perPlayerHeroSelection.subtitleRestoreOnReset — modified (subtitle.visible=true in resetFade())
+
+# Affected Docs Checklist (hero-select-subtitle-fade-sync)
+- [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/multiplayer-hero-selection-ui.md — updated: 2 new paths + pseudocode for subtitle visibility sync
+
 # Flows Checklist (remove-HashDeterminismTest)
 - [x] HashDeterminismTest — removed (referenced deleted GameScene.computeHash() from removed hash anti-cheat system)
 

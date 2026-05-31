@@ -142,6 +142,64 @@ HeroSelectScene (per-player loop):
   when all selected → Dungeon.newGame()
 ```
 
+### Flow: `cellSelector` — cell input routing
+
+- Core files: `GameScene.java`, `CellSelector.java`
+- Triggered by: player tap on dungeon tiles/sprites
+
+#### How input is gated
+
+`GameScene.update()` calls `cellSelector.enable(...)` every frame:
+
+```java
+cellSelector.enable(NetworkManager.lanMode ? Dungeon.hero.isAlive() : Dungeon.hero.ready);
+```
+
+So in LAN mode the `enabled` flag is `true` whenever the hero is alive (not just when `ready`).
+
+However, `CellSelector.select()` (the actual dispatch path on tap) has its own gate:
+
+```java
+if (enabled && Dungeon.hero.ready && !GameScene.interfaceBlockingHero()
+        && listener != null && cell != -1) {
+    listener.onSelect(cell);   // action queued
+} else {
+    GameScene.cancel();        // tap discarded
+}
+```
+
+**The `Dungeon.hero.ready` check is separate from `enabled`** and is not relaxed for LAN mode. Therefore, setting `enabled = isAlive()` in GameScene has no practical effect — taps are still dropped when `ready == false` because `CellSelector.select()` gatekeeps independently.
+
+#### Action queuing in LAN mode (post-fix behavior)
+
+The intended behavior is: player taps while `ready == false` → tap accepted → `curAction` set → preserved through `Hero.ready()` call → actor thread picks up action next turn.
+
+Two changes are required:
+
+1. `CellSelector.select()` must relax its `ready` check for LAN mode:
+   ```java
+   boolean readyOrLan = Dungeon.hero.ready || (NetworkManager.lanMode && Dungeon.hero.isAlive());
+   if (enabled && readyOrLan && ...)
+   ```
+
+2. `Hero.ready()` must not clear `curAction` when a queued action is present in LAN mode:
+   ```java
+   if (!NetworkManager.lanMode) {
+       curAction = null;
+   }
+   ```
+
+#### Paths
+
+| path | input | output | path-type | notes |
+| --- | --- | --- | --- | --- |
+| `cellSelector.select.ready` | tap when `ready==true` | `listener.onSelect(cell)` called | happy path | both solo and LAN |
+| `cellSelector.select.not-ready-solo` | tap when `ready==false`, solo | tap dropped via `GameScene.cancel()` | expected | cell selector disabled in solo when not ready |
+| `cellSelector.select.not-ready-lan-pre-fix` | tap when `ready==false`, LAN | tap dropped — `select()` checks `ready` regardless of `enabled` | bug | `enabled=isAlive()` but `select()` still gates on `ready` |
+| `cellSelector.select.not-ready-lan-post-fix` | tap when `ready==false`, LAN | `listener.onSelect(cell)` called; `curAction` preserved through `ready()` | happy path | queuing works end-to-end |
+
+---
+
 ## Logs
 
 | Source | Location |

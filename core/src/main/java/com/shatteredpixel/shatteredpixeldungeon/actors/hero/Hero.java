@@ -1056,7 +1056,13 @@ public class Hero extends Char {
 	
 	private void ready() {
 		if (sprite.looping()) sprite.idle();
-		curAction = null;
+		// In LAN mode the player may have queued a new action by tapping while this
+		// hero was still executing (ready==false). Preserve that queued curAction so
+		// the actor loop can dispatch it immediately on the next turn, without forcing
+		// the player to tap again.
+		if (!NetworkManager.lanMode) {
+			curAction = null;
+		}
 		damageInterrupt = true;
 		waitOrPickup = false;
 		ready = true;

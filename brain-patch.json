@@ -1,7 +1,4 @@
 {
-  "docsWritten": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-30-lan-hero-select-sync.md"],
-  "summary": "Updated lan-hero-select-sync bug log: marked test-infra verification checkbox done; noted HashDeterminismTest.java removed (referenced deleted GameScene.computeHash() from removed hash anti-cheat system)",
-  "artifacts": {
-    "modified": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-30-lan-hero-select-sync.md"]
-  }
+  "prUrl": "https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1",
+  "notes": ["pr-agent: opened PR for hero select subtitle visibility fix"]
 }
