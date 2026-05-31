@@ -27,7 +27,9 @@ import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroSubClass;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.InterlevelScene;
+import com.shatteredpixel.shatteredpixeldungeon.scenes.LanLobbyScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.StartScene;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.HeroSprite;
@@ -189,18 +191,41 @@ public class WndGameInProgress extends Window {
 
 	private void addContinueAndErase(final int slot, final GamesInProgress.Info info) {
 
-		RedButton cont = new RedButton(Messages.get(this, "continue")){
+		String buttonLabel = Messages.get(this, "continue");
+		String buttonAction = "continue";
+
+		// For LAN saves, show "Host" instead of "Continue"
+		if (info.isMultiplayerSave) {
+			buttonLabel = Messages.get(this, "host");
+			buttonAction = "host";
+		}
+
+		RedButton cont = new RedButton(buttonLabel){
 			@Override
 			protected void onClick() {
 				super.onClick();
 
 				GamesInProgress.curSlot = slot;
 
-				Dungeon.hero = null;
-				Dungeon.daily = Dungeon.dailyReplay = false;
-				ActionIndicator.clearAction();
-				InterlevelScene.mode = InterlevelScene.Mode.CONTINUE;
-				ShatteredPixelDungeon.switchScene(InterlevelScene.class);
+				if (info.isMultiplayerSave) {
+					// For LAN saves, host the game
+					try {
+						Dungeon.loadGame(slot);
+						NetworkManager.hostGame(7777);
+						hide();
+						LanLobbyScene.resumeMode = true;
+						ShatteredPixelDungeon.switchScene(LanLobbyScene.class);
+					} catch (Exception e) {
+						ShatteredPixelDungeon.reportException(e);
+					}
+				} else {
+					// For single-player saves, continue the game normally
+					Dungeon.hero = null;
+					Dungeon.daily = Dungeon.dailyReplay = false;
+					ActionIndicator.clearAction();
+					InterlevelScene.mode = InterlevelScene.Mode.CONTINUE;
+					ShatteredPixelDungeon.switchScene(InterlevelScene.class);
+				}
 			}
 		};
 

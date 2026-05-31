@@ -364,10 +364,6 @@ public class StartScene extends PixelScene {
 				GamesInProgress.selectedClass = null;
 				GamesInProgress.curSlot = slot;
 				ShatteredPixelDungeon.scene().add(new WndPlayerCount());
-			} else if (info != null && info.isMultiplayerSave) {
-				// For LAN saves, show WndLANMenu with resume option
-				GamesInProgress.curSlot = slot;
-				ShatteredPixelDungeon.scene().addToFront(new WndLANMenu(slot));
 			} else {
 				GamesInProgress.curSlot = slot;
 				ShatteredPixelDungeon.scene().add(new WndGameInProgress(slot));
