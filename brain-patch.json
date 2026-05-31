@@ -1,10 +1,15 @@
 {
-  "bugFiles": ["core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/network/NetworkManager.java"],
+  "bugFiles": [
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-31-lan-freeze-remote-hero-unvisited-path.md"
+  ],
   "notes": [
-    "Fixed LAN persistent-reader deadlock in receiveActionAsync()",
-    "Root cause: reader thread looped indefinitely, consuming next turn's bytes before current turn finished, then ready() wiped the pre-delivered action",
-    "Fix: break out of reader loop after delivering ONE ACTION packet; guard resets in finally so receiveActionAsync() starts fresh reader each turn",
-    "New tests: LanPersistentReaderDeadlockTest (5 tests all pass)",
-    "Regression: all 98 existing LAN tests pass"
+    "debugger-agent: root cause was THREE contributing factors causing permanent LAN freeze, fixed in Hero.java / NetworkManager.java / GameScene.java",
+    "Root cause 1 (PRIMARY): Hero.getCloser() restricted pathfinding to visited/mapped tiles — remote hero could not pathfind to cells P2 hadn't explored, so actMove() called ready() clearing curAction, re-entering LAN wait forever",
+    "Root cause 2: receiveActionAsync() reader looped after delivering action, reading next turn's bytes prematurely; ready() then wiped the pre-delivered action — deadlock on turn N+1",
+    "Root cause 3: GameScene.cellSelector.listener was null at game start on P2 device because defaultCellListener is only set when local hero's act() runs, which was blocked by remote hero",
+    "Fix 1: Hero.getCloser() uses p[i] (no visited restriction) for LAN remote heroes",
+    "Fix 2: receiveActionAsync() breaks after delivering ONE action packet",
+    "Fix 3: GameScene.create() pre-initializes defaultCellListener for LAN mode",
+    "New tests: LanRemoteHeroPathfindingTest (5 tests), LanClientPerspectiveTest (7 tests), LanPersistentReaderDeadlockTest (5 tests)"
   ]
 }
