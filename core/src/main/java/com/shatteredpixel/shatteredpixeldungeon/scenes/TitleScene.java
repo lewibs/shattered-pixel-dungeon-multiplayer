@@ -143,6 +143,14 @@ public class TitleScene extends PixelScene {
 		signs.y = title.y;
 		add( signs );
 
+		BitmapText subtitle = new BitmapText( "Multiplayer", pixelFont);
+		subtitle.measure();
+		subtitle.hardlight( 0xFFD700 );
+		subtitle.x = insets.left + (w - subtitle.width()) / 2f;
+		subtitle.y = title.y + title.height() - 4;
+		align(subtitle);
+		add(subtitle);
+
 		final Chrome.Type GREY_TR = Chrome.Type.GREY_BUTTON_TR;
 		
 		btnPlay = new StyledButton(GREY_TR, Messages.get(this, "enter")){
