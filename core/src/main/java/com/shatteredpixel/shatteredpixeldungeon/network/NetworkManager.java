@@ -326,10 +326,14 @@ public class NetworkManager {
                             if (onClassUnclaimedReceived != null)
                                 onClassUnclaimedReceived.call(pidx, cls);
                         }
+                    } catch (SocketTimeoutException e) {
+                        // Read timed out — peer is still connected, just hasn't moved yet.
+                        // Continue waiting; a real disconnect produces EOFException/IOException.
+                        if (!lanMode || Thread.currentThread().isInterrupted()) break;
+                        // continue reading
                     } catch (IOException e) {
                         if (!Thread.currentThread().isInterrupted()) {
                             GLog.w("Peer disconnected: %s", e.getClass().getSimpleName());
-                            // Dispatch disconnect signal
                             peerDisconnectSignal.dispatch(new PeerDisconnected(remoteHero));
                             com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread();
                         }
