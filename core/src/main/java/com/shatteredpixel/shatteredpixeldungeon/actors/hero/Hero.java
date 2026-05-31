@@ -856,8 +856,12 @@ public class Hero extends Char {
 	
 	// Called whenever this hero becomes the active player. Updates all singletons and UI to reflect this hero.
 	public void activate() {
-		if (NetworkManager.lanMode && this != Dungeon.hero) {
-			return;
+		if (NetworkManager.lanMode) {
+			// Use localPlayerIndex to identify the local hero, not Dungeon.hero.
+			// Dungeon.hero starts as heroes.get(0) on every device so the old
+			// "this != Dungeon.hero" check incorrectly treated every non-hero-0 as remote.
+			int myIdx = Dungeon.heroes != null ? Dungeon.heroes.indexOf(this) : -1;
+			if (myIdx != NetworkManager.localPlayerIndex) return;
 		}
 		Dungeon.hero      = this;
 		Dungeon.quickslot = this.quickslot;
@@ -954,9 +958,12 @@ public class Hero extends Char {
 
 			// Remote hero in LAN: no action yet — start the async receiver and yield.
 			// The receiver thread sets curAction and notifies the actor thread to re-run act().
-			if (NetworkManager.lanMode && this != Dungeon.hero) {
-				NetworkManager.receiveActionAsync(this);
-				return false;
+			if (NetworkManager.lanMode) {
+				int myIdx = Dungeon.heroes != null ? Dungeon.heroes.indexOf(this) : -1;
+				if (myIdx != NetworkManager.localPlayerIndex) {
+					NetworkManager.receiveActionAsync(this);
+					return false;
+				}
 			}
 
 			if (resting) {
@@ -984,8 +991,11 @@ public class Hero extends Char {
 			ready = false;
 
 			// LAN: local hero sends their action to the peer before executing it.
-			if (NetworkManager.lanMode && this == Dungeon.hero) {
-				NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
+			if (NetworkManager.lanMode) {
+				int myIdx = Dungeon.heroes != null ? Dungeon.heroes.indexOf(this) : -1;
+				if (myIdx == NetworkManager.localPlayerIndex) {
+					NetworkManager.sendAction(curAction, myIdx);
+				}
 			}
 
 			if (curAction instanceof HeroAction.Move) {
