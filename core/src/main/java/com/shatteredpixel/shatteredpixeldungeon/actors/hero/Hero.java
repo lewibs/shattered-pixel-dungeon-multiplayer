@@ -1057,6 +1057,16 @@ public class Hero extends Char {
 			Barkskin.conditionallyAppend(this, (lvl*pointsInTalent(Talent.BARKSKIN))/2, 1 );
 		}
 
+		// LAN remote hero: when an action finishes (actResult=false, ready() cleared curAction),
+		// call next() so Actor.processing() becomes false. Without this, current stays set to
+		// this hero and GameScene never wakes the actor loop — permanent deadlock.
+		if (!actResult && NetworkManager.lanMode && Dungeon.heroes != null) {
+			int myIdx = Dungeon.heroes.indexOf(this);
+			if (myIdx != NetworkManager.localPlayerIndex) {
+				next(); // current = null → Actor.processing() = false → GameScene wakes loop
+			}
+		}
+
 		return actResult;
 	}
 	
