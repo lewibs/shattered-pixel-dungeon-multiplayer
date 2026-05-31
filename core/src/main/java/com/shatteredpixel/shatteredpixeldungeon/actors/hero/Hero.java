@@ -1976,8 +1976,19 @@ public class Hero extends Char {
 				boolean[] v = Dungeon.level.visited;
 				boolean[] m = Dungeon.level.mapped;
 				boolean[] passable = new boolean[len];
+				// In LAN mode, the remote hero executes actions commanded by its owner on
+				// the other device. The owner already validated the path on their own screen,
+				// so any dungeon-passable tile is a legal step candidate regardless of whether
+				// the peer's device has "visited" that tile yet. Without this exception the
+				// remote hero's getCloser() returns false for targets in unexplored fog,
+				// ready() clears curAction, and the hero re-enters the LAN wait indefinitely —
+				// causing the permanent freeze described in
+				// docs/bugs/2026-05-31-lan-freeze-remote-hero-unvisited-path.md.
+				boolean remoteLanHero = NetworkManager.lanMode
+						&& Dungeon.heroes != null
+						&& Dungeon.heroes.indexOf(this) != NetworkManager.localPlayerIndex;
 				for (int i = 0; i < len; i++) {
-					passable[i] = p[i] && (v[i] || m[i]);
+					passable[i] = p[i] && (remoteLanHero || v[i] || m[i]);
 				}
 
 				PathFinder.Path newpath = Dungeon.findPath(this, target, passable, fieldOfView, true);

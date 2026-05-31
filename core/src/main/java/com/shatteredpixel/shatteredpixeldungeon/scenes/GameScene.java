@@ -783,6 +783,15 @@ public class GameScene extends PixelScene {
 		if (!invVisible) toggleInvPane();
 		fadeIn();
 
+		// LAN: pre-initialize default cell listener so non-host players can
+		// queue their first action while waiting for the remote hero's turn.
+		// Without this, cellSelector.listener stays null until the local hero's
+		// first act() call, which only happens after the remote hero finishes —
+		// making P2's taps silently ignored at game start.
+		if (NetworkManager.lanMode && Dungeon.hero != null && Dungeon.hero.isAlive()) {
+			selectCell(defaultCellListener);
+		}
+
 		//re-show WndResurrect if needed
 		if (!Dungeon.hero.isAlive()){
 			//check if hero has an unblessed ankh

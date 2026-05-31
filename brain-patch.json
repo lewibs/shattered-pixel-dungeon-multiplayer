@@ -1,4 +1,10 @@
 {
-  "prUrl": "https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1",
-  "notes": ["pr-agent: updated PR with LAN action queuing fix, CI pending"]
+  "bugFiles": ["core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/network/NetworkManager.java"],
+  "notes": [
+    "Fixed LAN persistent-reader deadlock in receiveActionAsync()",
+    "Root cause: reader thread looped indefinitely, consuming next turn's bytes before current turn finished, then ready() wiped the pre-delivered action",
+    "Fix: break out of reader loop after delivering ONE ACTION packet; guard resets in finally so receiveActionAsync() starts fresh reader each turn",
+    "New tests: LanPersistentReaderDeadlockTest (5 tests all pass)",
+    "Regression: all 98 existing LAN tests pass"
+  ]
 }

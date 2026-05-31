@@ -360,6 +360,14 @@ public class NetworkManager {
                                     remoteHero.lanActionLock.notifyAll();
                                 }
                             }
+                            // Exit after delivering ONE action packet so the guard resets.
+                            // The persistent-reader bug: if we loop here, we read the NEXT
+                            // turn's bytes from the stream before the game is ready for them.
+                            // ready() then clears curAction at the end of this turn, wiping
+                            // the pre-delivered action — permanent deadlock on turn N+1.
+                            // receiveActionAsync() is called again at the start of each remote
+                            // turn (idempotent guard check), so a fresh reader starts per turn.
+                            break;
                         } else if (type == PacketType.STATE_HASH) {
                             // EC-6.4: desync detection
                             int turn = in.readInt();
