@@ -26,7 +26,8 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(value = 20, unit = TimeUnit.SECONDS)
 class LanTurnSequenceTest {
 
-    private static final int SOCKET_TIMEOUT_MS = 200;
+    // Delay simulating a thinking player (no socket timeout in production)
+    private static final int THINK_DELAY_MS = 250;
 
     private ServerSocket serverSocket;
     private Socket       hostSideSocket;
@@ -50,8 +51,8 @@ class LanTurnSequenceTest {
         catch (InterruptedException | ExecutionException | TimeoutException e) {
             throw new IOException("setup failed", e);
         }
-        hostSideSocket.setSoTimeout(SOCKET_TIMEOUT_MS);
-        clientSocket.setSoTimeout(SOCKET_TIMEOUT_MS);
+        
+        
 
         hostIn   = new DataInputStream(hostSideSocket.getInputStream());
         hostOut  = new DataOutputStream(hostSideSocket.getOutputStream());
@@ -178,16 +179,16 @@ class LanTurnSequenceTest {
     void p2ThinksBetweenTurns_noFreeze() throws Exception {
         // P2 takes slightly longer than socket timeout to think each time
         doLocalTurn(1);
-        doRemoteTurn(2, SOCKET_TIMEOUT_MS + 50, "T2 slow");  // P2 "thinks" past timeout
+        doRemoteTurn(2, THINK_DELAY_MS + 50, "T2 slow");  // P2 "thinks" past timeout
         doLocalTurn(3);
-        doRemoteTurn(4, SOCKET_TIMEOUT_MS + 50, "T4 slow");  // was the freeze point
+        doRemoteTurn(4, THINK_DELAY_MS + 50, "T4 slow");  // was the freeze point
         doLocalTurn(5);
-        doRemoteTurn(6, SOCKET_TIMEOUT_MS + 50, "T6 slow");
+        doRemoteTurn(6, THINK_DELAY_MS + 50, "T6 slow");
     }
 
     @Test
     void p2VerySlowEveryOtherTurn_noFreeze() throws Exception {
-        int[] delays = {5, SOCKET_TIMEOUT_MS + 100, 5, SOCKET_TIMEOUT_MS + 100, 5};
+        int[] delays = {5, THINK_DELAY_MS + 100, 5, THINK_DELAY_MS + 100, 5};
         for (int i = 0; i < delays.length; i++) {
             doLocalTurn(i * 2 + 1);
             doRemoteTurn(i * 2 + 2, delays[i], "remote-" + i);
@@ -304,7 +305,7 @@ class LanTurnSequenceTest {
     @Test
     void thirdMoveWithSlowPeer_noFreeze() throws Exception {
         // Same scenario but P2 takes > socket timeout each time
-        int slowDelay = SOCKET_TIMEOUT_MS + 60;
+        int slowDelay = THINK_DELAY_MS + 60;
         doLocalTurn(1);
         doRemoteTurn(2, slowDelay, "P2-slow-move1");
         doLocalTurn(3);
@@ -321,7 +322,7 @@ class LanTurnSequenceTest {
     void singletonGuard_allowsReEntryAfterTimeout() throws Exception {
         // Start reader, let it timeout, then start again — must still work
         NetworkManager.receiveActionAsync(remoteHero);
-        Thread.sleep(SOCKET_TIMEOUT_MS + 100); // let timeout fire
+        Thread.sleep(THINK_DELAY_MS + 100); // let timeout fire
 
         // Reset guard (simulates actionReaderRunning=false after timeout)
         // With the fix, the reader NEVER exits on timeout, so guard stays true
@@ -382,7 +383,7 @@ class LanTurnSequenceTest {
         for (int i = 0; i < 50; i++) {
             doLocalTurn(i * 2 + 1);
             // Every 7th turn P2 is slow (> socket timeout)
-            long delay = (i % 7 == 0) ? SOCKET_TIMEOUT_MS + 60 : 3;
+            long delay = (i % 7 == 0) ? THINK_DELAY_MS + 60 : 3;
             doRemoteTurn(i * 2 + 2, delay, "t" + i);
         }
     }
@@ -395,7 +396,7 @@ class LanTurnSequenceTest {
     void actionArrivesExactlyAtTimeoutBoundary_received() throws Exception {
         NetworkManager.receiveActionAsync(remoteHero);
         // Send at exactly the timeout boundary
-        Thread.sleep(SOCKET_TIMEOUT_MS - 10);
+        Thread.sleep(THINK_DELAY_MS - 10);
         clientSendsAction(33);
         boolean got = waitForAction(remoteHero, 3000);
         assertTrue(got, "Action at timeout boundary must be received");
@@ -406,7 +407,7 @@ class LanTurnSequenceTest {
     void actionArrivesJustAfterTimeout_received() throws Exception {
         NetworkManager.receiveActionAsync(remoteHero);
         // Send just AFTER the timeout fires
-        Thread.sleep(SOCKET_TIMEOUT_MS + 30);
+        Thread.sleep(THINK_DELAY_MS + 30);
         clientSendsAction(44);
         boolean got = waitForAction(remoteHero, 3000);
         assertTrue(got, "Action arriving just after timeout must be received");

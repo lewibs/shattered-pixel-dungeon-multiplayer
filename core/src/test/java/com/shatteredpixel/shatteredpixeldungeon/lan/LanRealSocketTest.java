@@ -27,8 +27,9 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
 class LanRealSocketTest {
 
-    // Short timeout so tests are fast — 200ms instead of 30s
-    private static final int SOCKET_TIMEOUT_MS = 200;
+    // Simulated "think time" delay — no actual socket timeout set
+    // (production uses THINK_DELAY_MS=0 with periodic PING for disconnect detection)
+    private static final int THINK_DELAY_MS = 200;
 
     private ServerSocket serverSocket;
     private Socket hostSideSocket;   // host's view of the client connection
@@ -56,9 +57,7 @@ class LanRealSocketTest {
         try { hostSideSocket = serverSide.get(2, TimeUnit.SECONDS); }
         catch (InterruptedException | ExecutionException | TimeoutException e) { throw new IOException("setup failed", e); }
 
-        // Short timeout so SocketTimeoutException fires quickly in tests
-        hostSideSocket.setSoTimeout(SOCKET_TIMEOUT_MS);
-        clientSocket.setSoTimeout(SOCKET_TIMEOUT_MS);
+        // No socket timeout — matches production (THINK_DELAY_MS=0)
 
         hostIn   = new DataInputStream(hostSideSocket.getInputStream());
         hostOut  = new DataOutputStream(hostSideSocket.getOutputStream());
@@ -152,8 +151,8 @@ class LanRealSocketTest {
         // Start the real reader (uses actual hostIn socket)
         NetworkManager.receiveActionAsync(remoteHero);
 
-        // Wait longer than SOCKET_TIMEOUT_MS so the reader's readByte() times out
-        Thread.sleep(SOCKET_TIMEOUT_MS + 100);
+        // Wait longer than THINK_DELAY_MS so the reader's readByte() times out
+        Thread.sleep(THINK_DELAY_MS + 100);
 
         // NOW send the action — with broken code the reader is dead, so this is lost
         clientSendsAction(1, 99);
@@ -174,8 +173,8 @@ class LanRealSocketTest {
     void threeTimeoutsThenAction_mustStillReceive() throws Exception {
         NetworkManager.receiveActionAsync(remoteHero);
 
-        // Let the reader time out 3 times (3 × SOCKET_TIMEOUT_MS)
-        Thread.sleep((SOCKET_TIMEOUT_MS + 50) * 3);
+        // Let the reader time out 3 times (3 × THINK_DELAY_MS)
+        Thread.sleep((THINK_DELAY_MS + 50) * 3);
 
         // Send action after multiple timeouts
         clientSendsAction(1, 7);
@@ -221,7 +220,7 @@ class LanRealSocketTest {
             NetworkManager.receiveActionAsync(remoteHero);
 
             // Peer "thinks" for longer than socket timeout
-            Thread.sleep(SOCKET_TIMEOUT_MS + 80);
+            Thread.sleep(THINK_DELAY_MS + 80);
 
             // Then sends action
             clientSendsAction(1, round * 10);
@@ -244,7 +243,7 @@ class LanRealSocketTest {
         NetworkManager.receiveActionAsync(remoteHero);
 
         // Wait for timeout to fire
-        Thread.sleep(SOCKET_TIMEOUT_MS + 100);
+        Thread.sleep(THINK_DELAY_MS + 100);
 
         // actionReaderRunning should be false again so a new reader can start
         // (if the reader broke on timeout and reset the flag)

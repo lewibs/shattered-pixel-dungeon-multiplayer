@@ -501,6 +501,7 @@ public class HeroSelectScene extends PixelScene {
 		GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(collectedClasses));
 		Dungeon.daily = Dungeon.dailyReplay = false;
 		ActionIndicator.clearAction();
+		NetworkManager.startPingSender(); // keep connections alive; detect real disconnects
 		InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
 		Game.switchScene(InterlevelScene.class);
 	}
@@ -635,6 +636,7 @@ public class HeroSelectScene extends PixelScene {
 					GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(payload.heroClasses));
 					Dungeon.daily = Dungeon.dailyReplay = false;
 					ActionIndicator.clearAction();
+					NetworkManager.startPingSender();
 					InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
 					Game.switchScene(InterlevelScene.class);
 				}

@@ -57,7 +57,10 @@ public class NetworkManager {
     private static DataOutputStream clientOut = null;
 
     // Socket timeout for all read operations (30 seconds)
-    private static final int SOCKET_TIMEOUT_MS = 30000;
+    // No read timeout on gameplay sockets — a player may take as long as they
+    // want to make a move. Disconnect detection is handled by periodic PING writes.
+    private static final int SOCKET_TIMEOUT_MS = 0; // 0 = no timeout
+    private static final int PING_INTERVAL_MS  = 5000; // send PING every 5 seconds
 
     // UDP discovery port
     public static final int UDP_DISCOVERY_PORT = 7778;
@@ -110,6 +113,7 @@ public class NetworkManager {
         public static final byte CLASS_UNCLAIMED = 13;
         public static final byte ITEM_IDENTIFIED = 14;
         public static final byte NAME_ANNOUNCE    = 15; // client → host immediately on connect
+        public static final byte PING             = 16; // heartbeat — silently ignored by reader
     }
 
     // HeroAction type constants for serialization
@@ -325,11 +329,9 @@ public class NetworkManager {
                             HeroClass cls = ordinalToHeroClass(ord);
                             if (onClassUnclaimedReceived != null)
                                 onClassUnclaimedReceived.call(pidx, cls);
+                        } else if (type == PacketType.PING) {
+                            // Heartbeat — silently discard, just proves the connection is alive
                         }
-                    } catch (SocketTimeoutException e) {
-                        // Read timed out — peer is still connected, just hasn't moved yet.
-                        // Continue reading; only a real IOException means disconnect.
-                        if (!lanMode || Thread.currentThread().isInterrupted()) break;
                     } catch (IOException e) {
                         if (!Thread.currentThread().isInterrupted()) {
                             GLog.w("Peer disconnected: %s", e.getClass().getSimpleName());
@@ -349,6 +351,41 @@ public class NetworkManager {
                 actionReaderRunning = false;
             }
         }, "net-reader-action").start();
+    }
+
+    /**
+     * Starts a background thread that sends a PING packet to all peers every
+     * PING_INTERVAL_MS milliseconds. This keeps NAT/firewall entries alive and
+     * provides write-based disconnect detection: if the peer is gone the write
+     * throws IOException, which is caught and triggers the disconnect signal.
+     *
+     * Call once after gameplay begins. Stops automatically when lanMode=false.
+     */
+    public static void startPingSender() {
+        if (!lanMode) return;
+        new Thread(() -> {
+            while (lanMode) {
+                try {
+                    Thread.sleep(PING_INTERVAL_MS);
+                    if (!lanMode) break;
+                    if (isHost) {
+                        for (DataOutputStream out : outs) {
+                            out.writeByte(PacketType.PING);
+                            out.flush();
+                        }
+                    } else if (clientOut != null) {
+                        clientOut.writeByte(PacketType.PING);
+                        clientOut.flush();
+                    }
+                } catch (IOException e) {
+                    if (lanMode) GLog.w("Ping failed — peer disconnected: %s", e.getMessage());
+                    break;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }, "net-ping-sender").start();
     }
 
     /**
