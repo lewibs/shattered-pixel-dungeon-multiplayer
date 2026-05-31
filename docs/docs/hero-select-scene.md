@@ -74,26 +74,37 @@ NetworkManager.connectedPlayerCount: int       -- total players (host counts as 
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `lanHeroCardTap.select` | Player taps an unlocked, unclaimed hero card in LAN mode | `setSelectedHero(cl)` called locally; `sendClassClaimed(localPlayerIndex, cl)` sent to all peers | happy path | **BUG**: As of 2026-05-30, `sendClassClaimed` is never called in `HeroBtn.onClick()` — missing wiring |
-| `lanHeroCardTap.alreadyTaken` | Player taps a hero card in `GamesInProgress.selectedClasses` | `WndMessage("hero_taken")` shown | guard | Works correctly today |
-| `lanHeroCardTap.peerReceiveClaim` | Peer device receives `CLASS_CLAIMED` packet | class added to `GamesInProgress.selectedClasses`; `HeroBtn.update()` dims it to brightness 0.3 | happy path | **BUG**: No listener exists in `HeroSelectScene` to receive and apply CLASS_CLAIMED packets — missing wiring |
+| `lanHeroCardTap.select` | Player taps an unlocked, unclaimed hero card in LAN mode | `setSelectedHero(cl)` called; `sendClassClaimed(localPlayerIndex, cl)` broadcast to all peers; previous provisional claim unclaimed via `sendClassUnclaimed` | happy path | `setSelectedHero()` handles the claim/unclaim sequence and updates `GamesInProgress.selectedClasses` locally |
+| `lanHeroCardTap.alreadyTaken` | Player taps a hero card in `GamesInProgress.selectedClasses` | `WndMessage("hero_taken")` shown | guard | Button is also disabled by `updateFade()` via `isTaken()` so click rarely reaches this path |
+| `lanHeroCardTap.peerReceiveClaim` | Peer device receives `CLASS_CLAIMED` packet | class added to `GamesInProgress.selectedClasses` on the render thread; `HeroBtn.update()` dims it to brightness 0.3; `updateFade()` disables the button via `isTaken()` | happy path | Listener registered in `HeroSelectScene.create()` via `NetworkManager.onClassClaimedReceived` |
+| `lanHeroCardTap.peerReceiveUnclaim` | Peer device receives `CLASS_UNCLAIMED` packet | class removed from `GamesInProgress.selectedClasses` on render thread; button re-enabled and brightness restored | happy path | Listener registered via `NetworkManager.onClassUnclaimedReceived` |
 
-#### Pseudocode (intended, not yet implemented)
+#### Pseudocode
 
 ```
-// HeroSelectScene.HeroBtn.onClick() — LAN tap path
-} else {
-    setSelectedHero(cl);
-    if (NetworkManager.lanMode) {
+// HeroSelectScene.create() — LAN listener registration
+NetworkManager.onClassClaimedReceived = (playerIdx, cls) -> Game.runOnRenderThread(() -> {
+    if (cls != null && !GamesInProgress.selectedClasses.contains(cls))
+        GamesInProgress.selectedClasses.add(cls);
+});
+NetworkManager.onClassUnclaimedReceived = (playerIdx, cls) -> Game.runOnRenderThread(() -> {
+    if (cls != null) GamesInProgress.selectedClasses.remove(cls);
+});
+
+// HeroSelectScene.setSelectedHero(cl) — LAN claim/unclaim sequence
+if (NetworkManager.lanMode && !lanHeroConfirmed) {
+    HeroClass prev = GamesInProgress.selectedClass;
+    if (prev != null && prev != cl) {
+        NetworkManager.sendClassUnclaimed(NetworkManager.localPlayerIndex, prev);
+        GamesInProgress.selectedClasses.remove(prev);
+    }
+    if (cl != null) {
         NetworkManager.sendClassClaimed(NetworkManager.localPlayerIndex, cl);
+        if (!GamesInProgress.selectedClasses.contains(cl))
+            GamesInProgress.selectedClasses.add(cl);
     }
 }
-
-// HeroSelectScene — background CLASS_CLAIMED listener (missing, needs to be added)
-// When CLASS_CLAIMED received from peer:
-Game.runOnRenderThread(() -> {
-    GamesInProgress.selectedClasses.add(heroClass);
-});
+GamesInProgress.selectedClass = cl;
 ```
 
 ---
@@ -108,56 +119,53 @@ Game.runOnRenderThread(() -> {
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `lanSelectConfirm.playerConfirm` | Any player taps "Select" / Confirm button | `sendHeroReady(selectedClass)` sent; button disabled; "Waiting…" shown | happy path | **BUG**: Current code runs a blocking `Thread.sleep` poll loop on the render thread instead of returning immediately |
-| `lanSelectConfirm.hostAllReady` | Host receives HERO_READY from all clients | `heroReadyReceived = true`; `Game.runOnRenderThread` enables host "Start Game" button | happy path | **BUG**: Current code polls with `Thread.sleep` on render thread; should use callback from `waitForAllHeroReady` background thread |
-| `lanSelectConfirm.hostStartGame` | Host taps "Start Game" button | `collectedClasses` assembled, `sendHandshake(seed, classes)`, `switchScene(InterlevelScene)` | happy path | **BUG**: No separate "Start Game" button exists — the single button tries to do everything synchronously |
-| `lanSelectConfirm.clientReceiveHandshake` | Client receives HANDSHAKE packet | `Dungeon.seed` and `GamesInProgress.selectedClasses` set from payload; `switchScene(InterlevelScene)` | happy path | **BUG**: Client side also polls with `Thread.sleep` on render thread; should use callback from `waitForHandshake` background thread |
+| `lanSelectConfirm.playerConfirm` | Any player taps "Select" / Confirm button | `lanHeroConfirmed = true`; confirmed class locked into `selectedClasses`; `sendHeroReady(selectedClass)` sent; button disabled; "Waiting…" label shown; returns immediately | happy path | Does not block the render thread |
+| `lanSelectConfirm.hostAllReady` | Host receives HERO_READY from all clients | `heroReadyReceived = true`; `Game.runOnRenderThread` enables host "Start Game" button | happy path | Driven by background thread via `waitForAllHeroReady`; host polls `lanReadyToStart` flag in `update()` |
+| `lanSelectConfirm.hostStartGame` | Host taps "Start Game" button | `collectedClasses` assembled, `Dungeon.initSeed()`, `sendHandshake(seed, classes)`, `GamesInProgress.selectedClasses` populated, `switchScene(InterlevelScene)` | happy path | Host-only button enabled after `lanReadyToStart = true` |
+| `lanSelectConfirm.clientReceiveHandshake` | Client receives HANDSHAKE packet | `Dungeon.seed` and `GamesInProgress.selectedClasses` set from payload; `switchScene(InterlevelScene)` | happy path | Driven by background thread via `waitForHandshake`; client polls `lanHandshakeReady` flag in `update()` |
 
-#### Pseudocode (intended design)
+#### Pseudocode
 
 ```
 // Phase A — every player: tap "Select/Confirm"
-startBtn.onClick():
+startBtn.onClick() [LAN path]:
     if (GamesInProgress.selectedClass == null) return;
-    if (NetworkManager.lanMode) {
-        NetworkManager.sendHeroReady(GamesInProgress.selectedClass);
-        startBtn.enable(false);
-        startBtn.text("Waiting...");
-        if (NetworkManager.isHost()) {
-            int expected = NetworkManager.getConnectedPlayerCount();
-            NetworkManager.waitForAllHeroReady(expected);  // starts background thread
-            // host listens for heroReadyReceived via update() or a Runnable callback
-        } else {
-            NetworkManager.waitForHandshake();  // starts background thread
-        }
-        return;  // DO NOT block
+    lanHeroConfirmed = true;
+    if (!GamesInProgress.selectedClasses.contains(GamesInProgress.selectedClass))
+        GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
+    NetworkManager.sendHeroReady(GamesInProgress.selectedClass);
+    startBtn.enable(false);
+    startBtn.text("Waiting...");
+    if (NetworkManager.isHost()) {
+        NetworkManager.waitForAllHeroReady(connectedPlayerCount);  // background thread
+    } else {
+        NetworkManager.waitForHandshake();  // background thread
     }
-    // (solo path follows)
+    return;  // never blocks render thread
 
-// Phase B — host only: game loop checks heroReadyReceived
-// When NetworkManager.isHeroReadyReceived() becomes true, on render thread:
-HeroClass[] classes = NetworkManager.getCollectedClasses();
-classes[0] = GamesInProgress.selectedClass;  // host's own class at index 0
-hostStartBtn.enable(true);
+// Phase B — host: HeroSelectScene.update() polls lanReadyToStart
+if (lanReadyToStart):
+    lanReadyToStart = false;
+    hostStartBtn.enable(true);
 
 // Phase C — host: tap "Start Game"
 hostStartBtn.onClick():
-    long seed = Dungeon.seed != 0 ? Dungeon.seed : (Dungeon.initSeed(), Dungeon.seed);
-    NetworkManager.sendHandshake(seed, classes);
-    Dungeon.seed = seed;
-    GamesInProgress.selectedClasses = new ArrayList<>(Arrays.asList(classes));
-    ActionIndicator.clearAction();
+    HeroClass[] collectedClasses = NetworkManager.getCollectedClasses();
+    collectedClasses[0] = GamesInProgress.selectedClass;
+    Dungeon.initSeed();
+    NetworkManager.sendHandshake(Dungeon.seed, collectedClasses);
+    GamesInProgress.selectedClasses = new ArrayList<>(Arrays.asList(collectedClasses));
     InterlevelScene.mode = Mode.DESCEND;
     Game.switchScene(InterlevelScene.class);
 
-// Phase D — client: game loop checks handshakeReceived
-// When NetworkManager.isHandshakeReceived() becomes true, on render thread:
-NetworkManager.HandshakePayload payload = NetworkManager.getHandshakePayload();
-Dungeon.seed = payload.seed;
-GamesInProgress.selectedClasses = new ArrayList<>(Arrays.asList(payload.heroClasses));
-ActionIndicator.clearAction();
-InterlevelScene.mode = Mode.DESCEND;
-Game.switchScene(InterlevelScene.class);
+// Phase D — client: HeroSelectScene.update() polls lanHandshakeReady
+if (lanHandshakeReady):
+    lanHandshakeReady = false;
+    NetworkManager.HandshakePayload payload = NetworkManager.getHandshakePayload();
+    Dungeon.seed = payload.seed;
+    GamesInProgress.selectedClasses = new ArrayList<>(Arrays.asList(payload.heroClasses));
+    InterlevelScene.mode = Mode.DESCEND;
+    Game.switchScene(InterlevelScene.class);
 ```
 
 ---
@@ -167,13 +175,27 @@ Game.switchScene(InterlevelScene.class);
 - Core files:
   - `core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/scenes/HeroSelectScene.java`
 
+#### Types
+
+```txt
+HeroBtn.isTaken(): boolean
+  Returns true when cl is in GamesInProgress.selectedClasses AND cl != GamesInProgress.selectedClass.
+  Exempts the local player's own provisional claim so they can still change their hover before confirming.
+
+HeroSelectScene.updateFade()
+  Iterates heroBtns. For each button, if isTaken() is true, forces canEnable = false regardless of
+  the UI fade alpha — preventing the enable(true) call from re-activating a taken card each frame.
+```
+
 #### Paths
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `lanHeroCardGrayOut.localClaim` | Local player selects a hero | `GamesInProgress.selectedClass` set; card brightness 1.0 | happy path | Works today |
-| `lanHeroCardGrayOut.remoteClaim` | Remote CLASS_CLAIMED packet received | Class added to `GamesInProgress.selectedClasses`; `HeroBtn.update()` sets brightness 0.3 | happy path | **BUG**: Never actually happens — no listener sends CLASS_CLAIMED or receives it |
-| `lanHeroCardGrayOut.updateLoop` | `HeroBtn.update()` runs each frame | `selectedClasses.contains(cl)` → 0.3 brightness; `cl == selectedClass` → 1.0; else → 0.6 | always | Logic is correct; just never triggered for remote claims |
+| `lanHeroCardGrayOut.localClaim` | Local player selects a hero | `GamesInProgress.selectedClass` set; card brightness 1.0 | happy path | Local claim also added to `selectedClasses` as provisional reservation |
+| `lanHeroCardGrayOut.remoteClaim` | Remote CLASS_CLAIMED packet received | Class added to `GamesInProgress.selectedClasses` on render thread; `HeroBtn.update()` sets brightness 0.3; `updateFade()` calls `isTaken()` and disables button | happy path | Driven by `onClassClaimedReceived` listener set in `create()` |
+| `lanHeroCardGrayOut.remoteUnclaim` | Remote CLASS_UNCLAIMED packet received | Class removed from `GamesInProgress.selectedClasses` on render thread; button re-enabled and brightness restored next frame | happy path | Driven by `onClassUnclaimedReceived` listener set in `create()` |
+| `lanHeroCardGrayOut.updateLoop` | `HeroBtn.update()` runs each frame | `cl == selectedClass` → 1.0 brightness; `selectedClasses.contains(cl)` → 0.3; else → 0.6 | always | Visual dim only; `updateFade()` enforces the `enable(false)` via `isTaken()` |
+| `lanHeroCardGrayOut.updateFadeGuard` | `updateFade()` runs each frame | For each `HeroBtn` where `isTaken()` is true, `canEnable` forced to false; `b.enable(false)` called | always | Prevents the fade alpha restore from re-enabling a taken button mid-frame |
 
 ---
 

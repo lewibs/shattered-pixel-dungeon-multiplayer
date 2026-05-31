@@ -855,7 +855,15 @@ public class GameScene extends PixelScene {
 	}
 
 	private static Thread actorThread;
-	
+
+	public static void notifyActorThread() {
+		if (actorThread != null && actorThread.isAlive()) {
+			synchronized (actorThread) {
+				actorThread.notify();
+			}
+		}
+	}
+
 	//sometimes UI changes can be prompted by the actor thread.
 	// We queue any removed element destruction, rather than destroying them in the actor thread.
 	private ArrayList<Gizmo> toDestroy = new ArrayList<>();

@@ -59,3 +59,11 @@
 
 # Affected Docs Checklist (hash-exchange-stream-race)
 - [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/network-manager.md — updated: single-reader invariant documented, 3 new flows added, cleanup pseudocode updated
+
+# Flows Checklist (lan-hero-select-sync — lockout bug fix)
+- [x] lanHeroCardTap — modified (setSelectedHero sends CLASS_CLAIMED/UNCLAIMED; listeners wired in create())
+- [x] lanHeroCardGrayOut — modified (isTaken() added; updateFade() uses isTaken() guard)
+- [x] lanSelectConfirm — modified (non-blocking confirm; background thread polling; host Start button)
+
+# Affected Docs Checklist (lan-hero-select-sync — lockout bug fix)
+- [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/hero-select-scene.md — updated: removed BUG annotations, updated all three flows to reflect implemented code, added isTaken()/updateFade() types and paths to lanHeroCardGrayOut

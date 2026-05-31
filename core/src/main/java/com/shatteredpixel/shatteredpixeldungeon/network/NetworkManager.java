@@ -296,11 +296,7 @@ public class NetworkManager {
                             HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
                             if (decodedAction != null) {
                                 remoteHero.curAction = decodedAction;
-
-                                // Notify actor thread that new action is available
-                                synchronized (Actor.class) {
-                                    Actor.class.notifyAll();
-                                }
+                                com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread();
                             }
                         } else if (type == PacketType.ITEM_IDENTIFIED) {
                             String className = in.readUTF();
@@ -331,10 +327,7 @@ public class NetworkManager {
                             GLog.w("Peer disconnected: %s", e.getClass().getSimpleName());
                             // Dispatch disconnect signal
                             peerDisconnectSignal.dispatch(new PeerDisconnected(remoteHero));
-                            // Wake actor thread
-                            synchronized (Actor.class) {
-                                Actor.class.notifyAll();
-                            }
+                            com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread();
                         }
                         break;
                     }
