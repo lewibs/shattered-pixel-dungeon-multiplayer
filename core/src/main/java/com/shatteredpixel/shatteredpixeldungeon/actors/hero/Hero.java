@@ -222,6 +222,9 @@ public class Hero extends Char {
 	public boolean damageInterrupt = true;
 	public HeroAction curAction = null;
 	public HeroAction lastAction = null;
+	// LAN: true only for the single act() call where curAction was just set by player input.
+	// Prevents sendAction from firing on every step of a multi-step move.
+	private boolean lanActionQueued = false;
 
 	//reference to the enemy the hero is currently in the process of attacking
 	private Char attackTarget;
@@ -990,10 +993,14 @@ public class Hero extends Char {
 
 			ready = false;
 
-			// LAN: local hero sends their action to the peer before executing it.
-			if (NetworkManager.lanMode) {
+			// LAN: send only once (the turn the player set curAction), not on every
+			// step of a multi-step move. Without this guard, the peer receives N
+			// action packets for an N-step path and re-executes it N times, diverging
+			// game state and causing a deadlock.
+			if (NetworkManager.lanMode && lanActionQueued) {
 				int myIdx = Dungeon.heroes != null ? Dungeon.heroes.indexOf(this) : -1;
 				if (myIdx == NetworkManager.localPlayerIndex) {
+					lanActionQueued = false;
 					NetworkManager.sendAction(curAction, myIdx);
 				}
 			}
@@ -2101,9 +2108,10 @@ public class Hero extends Char {
 			
 		}
 
+		if (NetworkManager.lanMode) lanActionQueued = true;
 		return true;
 	}
-	
+
 	public void earnExp( int exp, Class source ) {
 
 		//xp granted by ascension challenge is only for on-exp gain effects
