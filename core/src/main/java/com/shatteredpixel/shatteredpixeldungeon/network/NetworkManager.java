@@ -352,21 +352,18 @@ public class NetworkManager {
 
                             // Decode and set the action
                             HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
-                            if (decodedAction != null) {
-                                // Hold the hero's lock when setting curAction so the
-                                // synchronized wait in Hero.act() can never miss this notify.
-                                synchronized (remoteHero.lanActionLock) {
+                            // Always notify under the lock — even for null (unknown action type)
+                            // so Hero.act() never waits the full 5-second timeout on a bad packet.
+                            // curAction stays null for null actions; Hero.act() will return false.
+                            synchronized (remoteHero.lanActionLock) {
+                                if (decodedAction != null) {
                                     remoteHero.curAction = decodedAction;
-                                    remoteHero.lanActionLock.notifyAll();
                                 }
+                                remoteHero.lanActionLock.notifyAll();
                             }
                             // Exit after delivering ONE action packet so the guard resets.
-                            // The persistent-reader bug: if we loop here, we read the NEXT
-                            // turn's bytes from the stream before the game is ready for them.
-                            // ready() then clears curAction at the end of this turn, wiping
-                            // the pre-delivered action — permanent deadlock on turn N+1.
-                            // receiveActionAsync() is called again at the start of each remote
-                            // turn (idempotent guard check), so a fresh reader starts per turn.
+                            // Reader is one-shot per turn: receiveActionAsync() is called again
+                            // at the start of each remote turn via the idempotent guard check.
                             break;
                         } else if (type == PacketType.STATE_HASH) {
                             // EC-6.4: desync detection
