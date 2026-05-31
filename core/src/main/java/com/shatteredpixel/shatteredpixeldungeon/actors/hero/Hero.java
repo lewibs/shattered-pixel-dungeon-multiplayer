@@ -859,13 +859,8 @@ public class Hero extends Char {
 	
 	// Called whenever this hero becomes the active player. Updates all singletons and UI to reflect this hero.
 	public void activate() {
-		if (NetworkManager.lanMode) {
-			// Use localPlayerIndex to identify the local hero, not Dungeon.hero.
-			// Dungeon.hero starts as heroes.get(0) on every device so the old
-			// "this != Dungeon.hero" check incorrectly treated every non-hero-0 as remote.
-			int myIdx = Dungeon.heroes != null ? Dungeon.heroes.indexOf(this) : -1;
-			if (myIdx != NetworkManager.localPlayerIndex) return;
-		}
+		// In LAN mode only the local hero is in the actor queue, so this is always
+		// the local hero — no index check needed.
 		Dungeon.hero      = this;
 		Dungeon.quickslot = this.quickslot;
 		InventoryPane.lastBag = this.belongings.backpack;
@@ -959,16 +954,6 @@ public class Hero extends Char {
 		boolean actResult;
 		if (curAction == null) {
 
-			// Remote hero in LAN: no action yet — start the async receiver and yield.
-			// The receiver thread sets curAction and notifies the actor thread to re-run act().
-			if (NetworkManager.lanMode) {
-				int myIdx = Dungeon.heroes != null ? Dungeon.heroes.indexOf(this) : -1;
-				if (myIdx != NetworkManager.localPlayerIndex) {
-					NetworkManager.receiveActionAsync(this);
-					return false;
-				}
-			}
-
 			if (resting) {
 				spendConstant( TIME_TO_REST );
 				next();
@@ -993,16 +978,11 @@ public class Hero extends Char {
 
 			ready = false;
 
-			// LAN: send only once (the turn the player set curAction), not on every
-			// step of a multi-step move. Without this guard, the peer receives N
-			// action packets for an N-step path and re-executes it N times, diverging
-			// game state and causing a deadlock.
+			// LAN: send action once per player tap (lanActionQueued prevents re-sending
+			// on every step of a multi-step move).
 			if (NetworkManager.lanMode && lanActionQueued) {
-				int myIdx = Dungeon.heroes != null ? Dungeon.heroes.indexOf(this) : -1;
-				if (myIdx == NetworkManager.localPlayerIndex) {
-					lanActionQueued = false;
-					NetworkManager.sendAction(curAction, myIdx);
-				}
+				lanActionQueued = false;
+				NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
 			}
 
 			if (curAction instanceof HeroAction.Move) {

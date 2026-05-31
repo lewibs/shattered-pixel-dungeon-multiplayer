@@ -200,6 +200,12 @@ public abstract class Actor implements Bundlable {
 		for (int i = 0; i < n; i++) {
 			Hero h = Dungeon.heroes.get(i);
 			if (!h.isAlive()) continue; // dead heroes have no turns
+			// In LAN mode only the local hero takes turns in the actor queue.
+			// Remote heroes are display-only and receive position updates via network.
+			if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode
+					&& i != com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.localPlayerIndex) {
+				continue;
+			}
 			h.actPriority = HERO_PRIO + (n - 1 - i); // player 0 acts first
 			add(h);
 		}
