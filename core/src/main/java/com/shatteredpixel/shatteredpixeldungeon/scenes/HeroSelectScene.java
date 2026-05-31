@@ -617,6 +617,7 @@ public class HeroSelectScene extends PixelScene {
 
 		} else {
 			title.visible = false;
+			if (subtitle != null) subtitle.visible = false;
 
 			startBtn.visible = startBtn.active = true;
 			startBtn.text(Messages.titleCase(cl.title()));
@@ -770,6 +771,8 @@ public class HeroSelectScene extends PixelScene {
 	private void resetFade(){
 		//starts fading after 4 seconds, fades over 4 seconds.
 		uiAlpha = 2f;
+		title.visible = true;
+		if (subtitle != null) subtitle.visible = true;
 		updateFade();
 	}
 
