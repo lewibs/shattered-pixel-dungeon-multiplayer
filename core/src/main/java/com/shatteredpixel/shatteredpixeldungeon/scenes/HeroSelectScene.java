@@ -133,7 +133,7 @@ public class HeroSelectScene extends PixelScene {
 			NetworkManager.onClassClaimedReceived = (playerIdx, cls) -> Game.runOnRenderThread(() -> {
 				if (cls != null && !GamesInProgress.selectedClasses.contains(cls)) {
 					GamesInProgress.selectedClasses.add(cls);
-					claimedByName.put(cls, "P" + (playerIdx + 1));
+					claimedByName.put(cls, NetworkManager.getPlayerName(playerIdx));
 				}
 				updateFade();
 			});
@@ -568,7 +568,7 @@ public class HeroSelectScene extends PixelScene {
 				NetworkManager.sendClassClaimed(NetworkManager.localPlayerIndex, cl);
 				if (!GamesInProgress.selectedClasses.contains(cl))
 					GamesInProgress.selectedClasses.add(cl);
-				claimedByName.put(cl, "You");
+				claimedByName.put(cl, NetworkManager.getPlayerName(NetworkManager.localPlayerIndex));
 			}
 		}
 		GamesInProgress.selectedClass = cl;
