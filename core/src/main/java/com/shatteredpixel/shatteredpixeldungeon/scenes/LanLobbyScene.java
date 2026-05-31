@@ -221,7 +221,7 @@ public class LanLobbyScene extends PixelScene {
 		active = false;
 		NetworkManager.onPlayerJoined = null; // unregister callback
 
-		long seed = new Random().nextLong();
+		long seed = com.shatteredpixel.shatteredpixeldungeon.utils.DungeonSeed.randomSeed();
 		int playerCount = NetworkManager.getConnectedPlayerCount();
 		GLog.p("LAN lobby: host tapping Start, playerCount=%d", playerCount);
 		try {
