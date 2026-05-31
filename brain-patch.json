@@ -1,20 +1,6 @@
 {
-  "bugFiles": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-30-lan-hero-select-sync.md"],
+  "prUrl": "https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1",
   "notes": [
-    "debugger-agent: root cause was updateFade() blindly re-enabling all hero buttons every frame, overriding the taken-class lockout. Fixed by adding HeroBtn.isTaken() and gating canEnable in updateFade() — fixed in HeroSelectScene.java"
-  ],
-  "skillsWritten": [
-    "skills/render-loop-enable-overwrite/SKILL.md",
-    "skills/provisional-claim-exemption/SKILL.md",
-    "skills/network-callback-render-thread-marshalling/SKILL.md"
-  ],
-  "docsWritten": [
-    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/hero-select-scene.md"
-  ],
-  "summary": "Updated hero-select-scene.md: removed BUG annotations from all three LAN flows, updated pseudocode and paths to reflect implemented code (setSelectedHero claim/unclaim, CLASS_CLAIMED/UNCLAIMED listeners, isTaken()/updateFade() lockout guard, non-blocking confirm flow)",
-  "artifacts": {
-    "modified": [
-      "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/hero-select-scene.md"
-    ]
-  }
+    "pr-agent: opened PR at https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1, waiting for CI and review"
+  ]
 }
