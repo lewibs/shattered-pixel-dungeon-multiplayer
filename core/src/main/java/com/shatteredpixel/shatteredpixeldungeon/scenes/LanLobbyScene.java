@@ -283,13 +283,19 @@ public class LanLobbyScene extends PixelScene {
 					if (type == NetworkManager.PacketType.PLAYER_JOINED) {
 						int playerIndex = in.readInt();
 						int total       = in.readInt();
-						String playerName = in.readUTF(); // read the player name
-						// Store the player name in NetworkManager
-						NetworkManager.setPlayerName(playerIndex, playerName);
-						// The first PLAYER_JOINED whose name matches ours is our own slot
-						if (!myIndexFound && playerName.equals(NetworkManager.playerName)) {
-							NetworkManager.localPlayerIndex = playerIndex;
-							myIndexFound = true;
+						// Read the full roster of all current player names
+						int nameCount = in.readInt();
+						for (int k = 0; k < nameCount; k++) {
+							String name = in.readUTF();
+							NetworkManager.setPlayerName(k, name);
+						}
+						// Identify our own slot: the newly added slot whose name matches ours
+						if (!myIndexFound) {
+							String newName = NetworkManager.getPlayerName(playerIndex);
+							if (newName != null && newName.equals(NetworkManager.playerName)) {
+								NetworkManager.localPlayerIndex = playerIndex;
+								myIndexFound = true;
+							}
 						}
 						Game.runOnRenderThread(new Callback() {
 							@Override

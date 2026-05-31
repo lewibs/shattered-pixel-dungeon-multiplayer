@@ -410,7 +410,12 @@ public class NetworkManager {
                     dest.writeByte(PacketType.PLAYER_JOINED);
                     dest.writeInt(newPlayerIndex);
                     dest.writeInt(connectedPlayerCount);
-                    dest.writeUTF(clientName);
+                    // Include ALL current player names so clients always know the host's name
+                    dest.writeInt(connectedPlayerCount);
+                    for (int k = 0; k < connectedPlayerCount; k++) {
+                        String n = playerNames[k];
+                        dest.writeUTF(n != null ? n : "Player " + (k + 1));
+                    }
                     dest.flush();
                 }
 
