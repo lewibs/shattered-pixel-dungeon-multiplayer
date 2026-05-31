@@ -1108,6 +1108,8 @@ public class Hero extends Char {
 		
 		Char ch = action.ch;
 
+		if (ch == null) { ready(); return false; }
+
 		if (ch.isAlive() && ch.canInteract(this)) {
 			
 			ready();
@@ -1521,6 +1523,13 @@ public class Hero extends Char {
 	private boolean actAttack( HeroAction.Attack action ) {
 
 		attackTarget = action.target;
+
+		// In LAN mode the target is resolved by position at decode time; it may be null
+		// if the mob died or moved before this device processed the action.
+		if (attackTarget == null) {
+			ready();
+			return false;
+		}
 
 		if (isCharmedBy(attackTarget)){
 			GLog.w( Messages.get(Charm.class, "cant_attack"));

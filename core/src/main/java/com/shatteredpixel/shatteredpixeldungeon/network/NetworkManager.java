@@ -699,8 +699,20 @@ public class NetworkManager {
      */
     static HeroAction decodeAction(byte actionType, int targetPos) {
         if (actionType == ActionType.MOVE)           return new HeroAction.Move(targetPos);
-        if (actionType == ActionType.ATTACK)         { HeroAction.Attack a = new HeroAction.Attack(null); a.dst = targetPos; return a; }
-        if (actionType == ActionType.INTERACT)       { HeroAction.Interact i = new HeroAction.Interact(null); i.dst = targetPos; return i; }
+        if (actionType == ActionType.ATTACK) {
+            com.shatteredpixel.shatteredpixeldungeon.actors.Char target =
+                com.shatteredpixel.shatteredpixeldungeon.actors.Actor.findChar(targetPos);
+            HeroAction.Attack a = new HeroAction.Attack(target);
+            a.dst = targetPos;
+            return a;
+        }
+        if (actionType == ActionType.INTERACT) {
+            com.shatteredpixel.shatteredpixeldungeon.actors.Char ch =
+                com.shatteredpixel.shatteredpixeldungeon.actors.Actor.findChar(targetPos);
+            HeroAction.Interact i = new HeroAction.Interact(ch);
+            i.dst = targetPos;
+            return i;
+        }
         if (actionType == ActionType.PICKUP)         return new HeroAction.PickUp(targetPos);
         if (actionType == ActionType.OPEN_CHEST)     return new HeroAction.OpenChest(targetPos);
         if (actionType == ActionType.UNLOCK)         return new HeroAction.Unlock(targetPos);

@@ -516,6 +516,12 @@ public class Dungeon {
 
 		if (heroesNeedInitialPlacement) {
 			heroesNeedInitialPlacement = false;
+			// In LAN mode always place heroes[0] at the entrance so positions are
+			// identical on both screens regardless of which device is the host.
+			if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode
+					&& heroes != null && !heroes.isEmpty()) {
+				heroes.get(0).pos = pos;
+			}
 			placeHeroesNearEntrance(level, pos, heroes);
 		}
 
@@ -556,15 +562,15 @@ public class Dungeon {
 		}
 	}
 
-	// Package-private for testing. Places stair-descending heroes[1..N] adjacent to
-	// entrancePos on the new level. Heroes in a falling state (WaitingToFall or
-	// Chasm.Falling) already have their fall-cell assigned and are skipped.
+	// Package-private for testing. Places heroes[1..N] adjacent to entrancePos.
+	// heroes[0] is always placed at the entrance (by switchLevel or LAN override)
+	// so both screens have identical hero positions regardless of localPlayerIndex.
 	// Uses a local occupied set because Actor.init() has not run yet —
 	// Actor.findChar() would return null for every cell at this point.
 	static void placeHeroesNearEntrance(Level level, int entrancePos,
 	                                    ArrayList<Hero> heroes) {
 		HashSet<Integer> occupied = new HashSet<>();
-		occupied.add(entrancePos); // hero[0] is at the entrance
+		occupied.add(entrancePos); // heroes[0] is at the entrance
 		for (int i = 1; i < heroes.size(); i++) {
 			Hero h = heroes.get(i);
 			// Falling heroes keep their fall-cell — don't overwrite or claim a stair slot

@@ -1,6 +1,7 @@
 {
-  "prUrl": "https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1",
-  "notes": [
-    "pr-agent: opened PR at https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1, waiting for CI and review"
-  ]
+  "docsWritten": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/toolbar-ui.md"],
+  "summary": "Updated toolbar-ui.md: removed btnFollow/followInformer from system intent, mermaid diagram, and deleted followButtonClick, followHeroMovement, and toolbarFollowLayout flow sections",
+  "artifacts": {
+    "modified": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/toolbar-ui.md"]
+  }
 }

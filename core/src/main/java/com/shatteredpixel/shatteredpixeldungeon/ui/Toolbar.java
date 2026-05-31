@@ -28,7 +28,6 @@ import com.shatteredpixel.shatteredpixeldungeon.SPDAction;
 import com.shatteredpixel.shatteredpixeldungeon.SPDSettings;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
-import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.FollowHeroBuff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.HoldFast;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Belongings;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
@@ -65,7 +64,6 @@ import java.util.ArrayList;
 public class Toolbar extends Component {
 
 	private Tool btnWait;
-	private Tool btnFollow;
 	private Tool btnSearch;
 	private Tool btnInventory;
 	private QuickslotTool[] btnQuick;
@@ -234,54 +232,6 @@ public class Toolbar extends Component {
 		});
 		btnWait.icon( 176, 0, 16, 16 );
 
-		add(btnFollow = new Tool(24, 0, 20, 26) {
-			private Image potionIcon;
-
-			@Override
-			protected void onClick() {
-				if (Dungeon.hero == null || !Dungeon.hero.ready || GameScene.cancel()) {
-					return;
-				}
-				if (Dungeon.hero.buff(FollowHeroBuff.class) != null) {
-					Dungeon.hero.buff(FollowHeroBuff.class).detach();
-					return;
-				}
-				if (Dungeon.heroes.size() < 2) {
-					return;
-				}
-				examining = false;
-				GameScene.selectCell(followInformer);
-			}
-
-			@Override
-			protected String hoverText() {
-				return "Follow Hero";
-			}
-
-			@Override
-			protected void createChildren() {
-				super.createChildren();
-				potionIcon = new Image(Assets.Sprites.ITEM_ICONS);
-				potionIcon.frame(ItemSpriteSheet.Icons.film.get(ItemSpriteSheet.Icons.POTION_HASTE));
-				potionIcon.scale.set(1.3f);
-				add(potionIcon);
-			}
-
-			@Override
-			protected void layout() {
-				super.layout();
-				if (potionIcon != null) {
-					potionIcon.x = PixelScene.align(x + (width - potionIcon.width()) / 2f);
-					potionIcon.y = PixelScene.align(y + (height - potionIcon.height()) / 2f);
-				}
-			}
-
-			@Override
-			public void enable(boolean value) {
-				if (potionIcon != null) potionIcon.alpha(value ? 1f : 0.4f);
-				super.enable(value);
-			}
-		});
 
 		//hidden button for rest keybind
 		add(new Button(){
@@ -542,11 +492,8 @@ public class Toolbar extends Component {
 		float right = width;
 
 		int quickslotsToShow = 4;
-		// When the follow button is visible it takes ~20px of extra toolbar space,
-		// so raise the width thresholds by that amount to avoid overcrowding.
-		int followOffset = btnFollow.visible ? 20 : 0;
-		if (PixelScene.uiCamera.width > 152 + followOffset) quickslotsToShow ++;
-		if (PixelScene.uiCamera.width > 170 + followOffset) quickslotsToShow ++;
+		if (PixelScene.uiCamera.width > 152) quickslotsToShow ++;
+		if (PixelScene.uiCamera.width > 170) quickslotsToShow ++;
 
 		int startingSlot;
 		if (SPDSettings.quickSwapper() && quickslotsToShow < 6){
@@ -574,12 +521,7 @@ public class Toolbar extends Component {
 		if (SPDSettings.interfaceSize() > 0){
 			btnInventory.setPos(right - btnInventory.width(), y);
 			btnWait.setPos(btnInventory.left() - btnWait.width(), y);
-			if (btnFollow.visible) {
-				btnFollow.setPos(btnWait.left() - btnFollow.width(), y);
-				btnSearch.setPos(btnFollow.left() - btnSearch.width(), y);
-			} else {
-				btnSearch.setPos(btnWait.left() - btnSearch.width(), y);
-			}
+			btnSearch.setPos(btnWait.left() - btnSearch.width(), y);
 
 			right = btnSearch.left();
 			for(int i = endingSlot; i >= startingSlot; i--) {
@@ -628,12 +570,7 @@ public class Toolbar extends Component {
 		switch(mode){
 			case SPLIT:
 				btnWait.setPos(x, y);
-				if (btnFollow.visible) {
-					btnFollow.setPos(btnWait.right(), y);
-					btnSearch.setPos(btnFollow.right(), y);
-				} else {
-					btnSearch.setPos(btnWait.right(), y);
-				}
+				btnSearch.setPos(btnWait.right(), y);
 
 				btnInventory.setPos(right - btnInventory.width(), y);
 
@@ -655,7 +592,6 @@ public class Toolbar extends Component {
 			//center = group but.. well.. centered, so all we need to do is pre-emptively set the right side further in.
 			case CENTER:
 				float toolbarWidth = btnWait.width() + btnSearch.width() + btnInventory.width();
-				if (btnFollow.visible) toolbarWidth += btnFollow.width();
 				for(Button slot : btnQuick){
 					if (slot.visible) toolbarWidth += slot.width();
 				}
@@ -664,12 +600,7 @@ public class Toolbar extends Component {
 
 			case GROUP:
 				btnWait.setPos(right - btnWait.width(), y);
-				if (btnFollow.visible) {
-					btnFollow.setPos(btnWait.left() - btnFollow.width(), y);
-					btnSearch.setPos(btnFollow.left() - btnSearch.width(), y);
-				} else {
-					btnSearch.setPos(btnWait.left() - btnSearch.width(), y);
-				}
+				btnSearch.setPos(btnWait.left() - btnSearch.width(), y);
 				btnInventory.setPos(btnSearch.left() - btnInventory.width(), y);
 
 				btnQuick[startingSlot].setPos(btnInventory.left() - btnQuick[startingSlot].width(), y + 2);
@@ -701,9 +632,6 @@ public class Toolbar extends Component {
 		if (SPDSettings.flipToolbar()) {
 
 			btnWait.setPos( (right - btnWait.right()), y);
-			if (btnFollow.visible) {
-				btnFollow.setPos( (right - btnFollow.right()), y);
-			}
 			btnSearch.setPos( (right - btnSearch.right()), y);
 			btnInventory.setPos( (right - btnInventory.right()), y);
 
@@ -745,17 +673,10 @@ public class Toolbar extends Component {
 			btnInventory.enable(true);
 		}
 
-		boolean multiPlayer = Dungeon.heroes != null && Dungeon.heroes.size() > 1;
-		if (btnFollow.visible != multiPlayer) {
-			btnFollow.visible = multiPlayer;
-			btnFollow.active = multiPlayer && lastEnabled;
-			layout();
-		}
 	}
 
 	public void alpha( float value ){
 		btnWait.alpha( value );
-		btnFollow.alpha( value );
 		btnSearch.alpha( value );
 		btnInventory.alpha( value );
 		for (QuickslotTool tool : btnQuick){
@@ -785,27 +706,6 @@ public class Toolbar extends Component {
 		}
 	};
 
-	private static CellSelector.Listener followInformer = new CellSelector.Listener() {
-		@Override
-		public void onSelect( Integer cell ) {
-			if (cell == null || instance == null) {
-				return;
-			}
-			com.shatteredpixel.shatteredpixeldungeon.actors.Actor ch = Actor.findChar(cell);
-			if (ch instanceof Hero && ch != Dungeon.hero) {
-				int heroIdx = Dungeon.heroes.indexOf(ch);
-				if (heroIdx >= 0) {
-					FollowHeroBuff buff = Buff.affect(Dungeon.hero, FollowHeroBuff.class);
-					buff.setTargetHeroId(heroIdx);
-				}
-			}
-		}
-
-		@Override
-		public String prompt() {
-			return "Select a hero to follow";
-		}
-	};
 
 	private static class Tool extends Button {
 		
