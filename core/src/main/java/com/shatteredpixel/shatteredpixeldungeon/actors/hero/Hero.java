@@ -859,8 +859,10 @@ public class Hero extends Char {
 	
 	// Called whenever this hero becomes the active player. Updates all singletons and UI to reflect this hero.
 	public void activate() {
-		// In LAN mode only the local hero is in the actor queue, so this is always
-		// the local hero — no index check needed.
+		if (NetworkManager.lanMode && Dungeon.heroes != null) {
+			int myIdx = Dungeon.heroes.indexOf(this);
+			if (myIdx != NetworkManager.localPlayerIndex) return; // remote hero — don't update singletons
+		}
 		Dungeon.hero      = this;
 		Dungeon.quickslot = this.quickslot;
 		InventoryPane.lastBag = this.belongings.backpack;
@@ -954,6 +956,17 @@ public class Hero extends Char {
 		boolean actResult;
 		if (curAction == null) {
 
+			// LAN remote hero: wait for action packet from peer.
+			// GameScene polls every frame for curAction != null and wakes the actor
+			// thread, so a missed notify is recovered within ~16ms.
+			if (NetworkManager.lanMode && Dungeon.heroes != null) {
+				int myIdx = Dungeon.heroes.indexOf(this);
+				if (myIdx != NetworkManager.localPlayerIndex) {
+					NetworkManager.receiveActionAsync(this);
+					return false;
+				}
+			}
+
 			if (resting) {
 				spendConstant( TIME_TO_REST );
 				next();
@@ -1043,13 +1056,7 @@ public class Hero extends Char {
 	
 	private void ready() {
 		if (sprite.looping()) sprite.idle();
-		// In LAN mode the player may have queued a new action by tapping while this
-		// hero was still executing (ready==false). Preserve that queued curAction so
-		// the actor loop can dispatch it immediately on the next turn, without forcing
-		// the player to tap again.
-		if (!NetworkManager.lanMode) {
-			curAction = null;
-		}
+		curAction = null;
 		damageInterrupt = true;
 		waitOrPickup = false;
 		ready = true;
