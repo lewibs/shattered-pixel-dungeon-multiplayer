@@ -6,12 +6,16 @@
 
 ## System Intent
 
-- What this is: `NetworkManager` is the static singleton that owns all TCP socket state for LAN multiplayer. It handles host/client connection setup, packet transmission (actions, hashes, hero-selection coordination), and session teardown. All public fields and methods are static; there is no instance.
+- What this is: `NetworkManager` is the static singleton that owns all TCP socket state for LAN multiplayer. It handles host/client connection setup, packet transmission (actions, hashes, hero-selection coordination), lobby management, and session teardown. All public fields and methods are static; there is no instance.
 - Key responsibilities:
   - Opening a `ServerSocket` (host) or `Socket` (client) and managing `DataInputStream`/`DataOutputStream` per peer
-  - Broadcasting and receiving typed packets: `ACTION`, `HASH`, `HANDSHAKE`, `HERO_READY`, `CLASS_CLAIMED`, `CLASS_UNCLAIMED`, `PLAYER_JOINED`, `NAME_ANNOUNCE`, and resume-mode variants
+  - Broadcasting and receiving typed packets: `ACTION`, `STATE_HASH`, `HANDSHAKE`, `HERO_READY`, `CLASS_CLAIMED`, `CLASS_UNCLAIMED`, `PLAYER_JOINED`, `PLAYER_LEFT`, `NAME_ANNOUNCE`, `NAME_REJECTED`, `KICK`, `HOST_DISCONNECTED`, and resume-mode variants
   - Tracking `localPlayerIndex` (which hero slot this device owns: 0 = host, 1..N = client)
-  - Enforcing the **single-reader invariant**: only one thread (`net-reader-action`) ever reads from the `DataInputStream` during gameplay; `HASH` and `RESUME_HANDSHAKE` payloads are routed through queues (`hashQueue`, `resyncQueue`) so no other thread touches the stream
+  - Per-stream reader threads (EC-6.7): each remote hero gets its own `net-reader-action` thread reading from its own `DataInputStream` (`ins.get(heroIndex-1)`), controlled by `actionReaderRunningPerStream[]`
+  - Per-stream write locks (EC-6.1): `outLocks` list prevents concurrent multi-byte writes from interleaving packets
+  - Protocol version negotiation (EC-6.5): `PROTOCOL_VERSION` field in `HANDSHAKE` packet; mismatches throw `IOException`
+  - Lobby player management (EC-1.1, EC-1.2, EC-1.3, EC-1.4, EC-6.10): `removeClient()`, `kickPlayer()`, `broadcastHostDisconnected()`
+  - Desync detection (EC-6.4): host sends `STATE_HASH` every 10 turns; `DesyncDetectedSignal` fires on mismatch
   - Cleaning up all socket state and resetting all session fields via `cleanup()`
 
 ## Mermaid Diagram
@@ -123,54 +127,54 @@ cleanup():
 #### Types
 
 ```txt
-actionReaderRunning: volatile boolean  -- singleton guard; true while net-reader-action thread is alive
-hashQueue: LinkedBlockingQueue<HashPacket>  -- receives HASH payloads from the reader thread
-resyncQueue: LinkedBlockingQueue<byte[]>    -- receives RESUME_HANDSHAKE payloads from the reader thread
+actionReaderRunningPerStream: volatile boolean[]  -- per-stream guard, size MAX_PLAYERS; keyed by heroIndex-1
+actionReaderRunning: volatile boolean             -- legacy global guard (also checked for backward compat)
+streamIndex: int                                  -- heroIndex - 1 for host; always 0 for client
 
-HashPacket {
-  turn: int
-  hash: long
-}
+// EC-6.7: each remote hero has its own reader thread on its own stream
+// Host: hero[1] → ins.get(0), hero[2] → ins.get(1), etc.
+// Client: always reads from clientIn (single stream)
 ```
 
 #### Paths
 
 | path | input | output | path-type | notes |
 | --- | --- | --- | --- | --- |
-| `receiveActionAsync.guardReject` | called while `actionReaderRunning == true` | immediate no-op return | guard | Prevents multiple concurrent reader threads from racing on the same `DataInputStream`. Hero.act() calls this every turn when `curAction == null`; without the guard, each call would spawn a persistent reader thread. |
-| `receiveActionAsync.started` | `actionReaderRunning == false` | `actionReaderRunning = true`; `net-reader-action` thread starts | happy path | Thread reads until `!lanMode` or disconnect |
-| `receiveActionAsync.action` | `ACTION` packet on stream | `remoteHero.curAction` set; `Actor.class.notifyAll()` | happy path | |
-| `receiveActionAsync.hash` | `HASH` packet on stream | payload (4 int + 8 long) read; `HashPacket` enqueued to `hashQueue` | happy path | Keeps stream synchronized; `receiveHash()` consumes from queue |
-| `receiveActionAsync.resumeHandshake` | `RESUME_HANDSHAKE` packet on stream | length-prefixed bytes read; enqueued to `resyncQueue` | happy path | `receiveResyncBundle()` consumes from queue |
-| `receiveActionAsync.disconnect` | `IOException` on read | `peerDisconnectSignal` dispatched; `Actor.class.notifyAll()`; thread exits; `actionReaderRunning = false` | error | |
+| `receiveActionAsync.guardReject` | called while `actionReaderRunningPerStream[streamIndex] == true` | immediate no-op return | guard | EC-6.7: per-stream guard; each remote hero can have its own active reader simultaneously |
+| `receiveActionAsync.started` | per-stream guard false | `actionReaderRunningPerStream[streamIndex] = true`; `net-reader-action` thread starts | happy path | Thread reads from `ins.get(streamIndex)` (host) or `clientIn` (client) |
+| `receiveActionAsync.action` | `ACTION` packet on stream | `remoteHero.curAction` set; `lanActionLock.notifyAll()` | happy path | |
+| `receiveActionAsync.stateHash` | `STATE_HASH` packet on stream | local hash computed; if mismatch → `desyncDetectedSignal.dispatch()` | happy path | EC-6.4 desync detection |
+| `receiveActionAsync.disconnect` | `IOException` on read | `peerDisconnectSignal` dispatched; `GameScene.notifyActorThread()`; thread exits; per-stream guard cleared | error | |
 
 #### Pseudocode
 
 ```
 receiveActionAsync(remoteHero):
+  heroIndex = Dungeon.heroes.indexOf(remoteHero)
+  streamIndex = isHost ? max(0, heroIndex - 1) : 0
   synchronized(NetworkManager.class):
-    if actionReaderRunning: return   // singleton guard
-    actionReaderRunning = true
+    if actionReaderRunningPerStream[streamIndex]: return   // per-stream guard (EC-6.7)
+    actionReaderRunningPerStream[streamIndex] = true
   start thread "net-reader-action":
-    in = isHost ? ins.get(0) : clientIn
+    in = isHost ? ins.get(streamIndex) : clientIn
     loop while lanMode:
       type = in.readByte()
       if type == ACTION:
         heroId = in.readInt(); actionType = in.readByte(); targetPos = in.readInt()
-        remoteHero.curAction = decodeAction(actionType, targetPos)
-        notify Actor.class
-      else if type == HASH:
-        turn = in.readInt(); hash = in.readLong()
-        hashQueue.offer(HashPacket(turn, hash))
-      else if type == RESUME_HANDSHAKE:
-        len = in.readInt(); bytes = new byte[len]; in.readFully(bytes)
-        resyncQueue.offer(bytes)
+        synchronized(remoteHero.lanActionLock):
+          remoteHero.curAction = decodeAction(actionType, targetPos)
+          remoteHero.lanActionLock.notifyAll()
+      else if type == STATE_HASH:
+        turn = in.readInt(); remoteHash = in.readLong()
+        localHash = computeStateHash()
+        if localHash != remoteHash: desyncDetectedSignal.dispatch(...)
       else if type == ITEM_IDENTIFIED: ...
       else if type == CLASS_CLAIMED / CLASS_UNCLAIMED: ...
+      else if type == PING: // discard
       on IOException:
         peerDisconnectSignal.dispatch(remoteHero)
-        notify Actor.class; break
-    finally: actionReaderRunning = false
+        GameScene.notifyActorThread(); break
+    finally: actionReaderRunningPerStream[streamIndex] = false
 ```
 
 ---
@@ -239,6 +243,51 @@ PacketType.CLASS_UNCLAIMED = 13 -- any device → all peers: "I abandoned this c
 
 ---
 
+### Flow: `lobbyPlayerManagement`
+- Core files: `NetworkManager.java`, `LanLobbyScene.java`
+
+#### Overview
+
+Implements EC-1.1, EC-1.2, EC-1.3, EC-1.4, EC-6.10: correct lobby slot management when clients drop, are rejected, or are kicked, and when the host leaves.
+
+#### New Packet Types
+
+| Packet | Value | Direction | Purpose |
+|--------|-------|-----------|---------|
+| `PLAYER_LEFT` | 17 | Host → Clients | A player was removed from the lobby |
+| `NAME_REJECTED` | 18 | Host → Client | Duplicate name; client must pick another |
+| `KICK` | 19 | Host → Client | Client kicked by host |
+| `HOST_DISCONNECTED` | 20 | Host → Clients | Host leaving the lobby |
+
+#### Key Methods
+
+- `removeClient(int index)` — synchronized; closes socket, compacts `peerSockets`/`ins`/`outs`/`outLocks`/`playerNames`, decrements `connectedPlayerCount`, broadcasts `PLAYER_LEFT`
+- `kickPlayer(int playerSlot)` — writes `KICK` to target client then calls `removeClient()`
+- `broadcastHostDisconnected()` — writes `HOST_DISCONNECTED` to all connected clients; called from `LanLobbyScene.destroy()` when `!gameStarted && isHost`
+
+#### Duplicate Name Rejection (EC-1.2 / EC-5.3)
+
+In `acceptClientsLoop()`, after reading `NAME_ANNOUNCE`, if the announced name matches any `playerNames[0..connectedPlayerCount-2]` (case-insensitive), the host sends `NAME_REJECTED` and closes the socket without adding the client to the lists.
+
+---
+
+### Flow: `protocolHardening`
+- Core files: `NetworkManager.java`
+
+#### Overview
+
+Implements EC-6.1 (write locks), EC-6.3 (handshake validation), EC-6.4 (desync detection), EC-6.5 (version field), EC-6.8 (accessor methods).
+
+#### Key Changes
+
+- **EC-6.1**: `outLocks` list (one `Object` per client in `outs`); `clientOutLock` for client mode. Every multi-byte write is wrapped in `synchronized(lock)`.
+- **EC-6.3**: In `waitForHandshake()`, `playerCount` is validated `>= 1 && <= MAX_PLAYERS`; each `classOrdinal` is validated `< HeroClass.values().length`.
+- **EC-6.5**: `PROTOCOL_VERSION = 1` written before `seed` in `sendHandshake()`; read and compared in `waitForHandshake()` — mismatch throws `IOException("Protocol version mismatch: ...")`.
+- **EC-6.4**: `sendStateHash(int turn, long hash)` sends `STATE_HASH` packet; `computeStateHash()` hashes level map XOR hero positions XOR hero HP. Host calls this every 10 turns from `Hero.act()`.
+- **EC-6.8**: `getClientIn()` and `getClientOut()` public accessors replace reflection in `WndHeroClaim`.
+
+---
+
 ## Logs
 
 | Source | Location |
@@ -246,6 +295,9 @@ PacketType.CLASS_UNCLAIMED = 13 -- any device → all peers: "I abandoned this c
 | Host game | `GLog.p("Hosting game on port %d", port)` |
 | Client connect | `GLog.p("Connected to host at %s:%d as \"%s\"", ...)` |
 | Client joined | `GLog.p("Client \"%s\" connected, total players: %d", ...)` |
+| Client removed | `GLog.p("Removed client at index %d, connectedPlayerCount=%d", ...)` |
+| Duplicate name rejected | `GLog.w("Rejected client with duplicate name: %s", ...)` |
+| Desync detected | `GLog.n("DESYNC DETECTED at turn %d: local=%d remote=%d", ...)` |
 | HERO_READY sent | `GLog.p("HERO_READY sent to host: %s", ...)` |
 | HANDSHAKE sent | `GLog.p("HANDSHAKE sent: %d players, seed %d", ...)` |
 | Handshake received | `GLog.p("Handshake received — %d players, seed %d", ...)` |

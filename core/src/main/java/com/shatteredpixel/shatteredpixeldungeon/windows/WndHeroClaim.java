@@ -123,10 +123,12 @@ public class WndHeroClaim extends Window {
 		}
 
 		try {
-			// Send HERO_CLAIM to host via reflection since clientOut is private
-			java.lang.reflect.Field field = NetworkManager.class.getDeclaredField("clientOut");
-			field.setAccessible(true);
-			java.io.DataOutputStream out = (java.io.DataOutputStream) field.get(null);
+			// EC-6.8: use public accessor instead of reflection
+			java.io.DataOutputStream out = NetworkManager.getClientOut();
+			if (out == null) {
+				showError("Network error: not connected");
+				return;
+			}
 
 			out.writeByte(NetworkManager.PacketType.HERO_CLAIM);
 			out.writeInt(selectedIndex);
@@ -154,10 +156,9 @@ public class WndHeroClaim extends Window {
 	private void waitForResumeHandshake() {
 		new Thread(() -> {
 			try {
-				// Get client input stream via reflection
-				java.lang.reflect.Field field = NetworkManager.class.getDeclaredField("clientIn");
-				field.setAccessible(true);
-				java.io.DataInputStream in = (java.io.DataInputStream) field.get(null);
+				// EC-6.8: use public accessor instead of reflection
+				java.io.DataInputStream in = NetworkManager.getClientIn();
+				if (in == null) { GLog.n("clientIn is null, cannot wait for RESUME_HANDSHAKE"); return; }
 
 				byte type = in.readByte();
 				if (type == NetworkManager.PacketType.RESUME_HANDSHAKE) {
@@ -195,8 +196,6 @@ public class WndHeroClaim extends Window {
 				}
 			} catch (IOException e) {
 				GLog.n("Error waiting for RESUME_HANDSHAKE: %s", e.getMessage());
-			} catch (Exception e) {
-				GLog.n("Error accessing network stream: %s", e.getMessage());
 			}
 		}, "net-wait-resume-handshake").start();
 	}

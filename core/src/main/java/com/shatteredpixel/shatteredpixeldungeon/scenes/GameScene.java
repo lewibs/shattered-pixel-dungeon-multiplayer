@@ -240,17 +240,19 @@ public class GameScene extends PixelScene {
 						// Pause actor thread
 						Actor.keepActorThreadAlive = false;
 
-						// Auto-save if host
 						if (NetworkManager.isHostMode()) {
+							// EC-3 / EC-4: host saves and shows waiting room with rejoin/exit options
 							try {
 								Dungeon.saveAll();
 							} catch (IOException e) {
 								GLog.n("Failed to auto-save: %s", e.getMessage());
 							}
+							// Show disconnect dialog — host gets "Wait for Rejoin" + "Save and Exit"
+							addToFront(new WndPeerDisconnected(event.hero));
+						} else {
+							// EC-3 / EC-5.1: client — do NOT save; show simpler host-disconnected dialog
+							addToFront(new com.shatteredpixel.shatteredpixeldungeon.windows.WndHostDisconnected());
 						}
-
-						// Show disconnect dialog
-						addToFront(new WndPeerDisconnected(event.hero));
 					});
 					return true;
 				}

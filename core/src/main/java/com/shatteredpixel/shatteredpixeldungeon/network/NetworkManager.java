@@ -56,6 +56,15 @@ public class NetworkManager {
     private static DataInputStream clientIn = null;
     private static DataOutputStream clientOut = null;
 
+    // Per-stream write locks for EC-6.1 — one lock per entry in outs
+    private static List<Object> outLocks = new ArrayList<>();
+    // Write lock for client mode (EC-6.1)
+    private static final Object clientOutLock = new Object();
+
+    // Per-stream reader running guards for EC-6.7 (keyed by heroIndex - 1)
+    // Size 4 = MAX_PLAYERS; cannot reference MAX_PLAYERS here due to forward reference
+    private static volatile boolean[] actionReaderRunningPerStream = new boolean[4];
+
     // Socket timeout for all read operations (30 seconds)
     // No read timeout on gameplay sockets — a player may take as long as they
     // want to make a move. Disconnect detection is handled by periodic PING writes.
@@ -96,6 +105,23 @@ public class NetworkManager {
     public static OnClassUpdate onClassClaimedReceived   = null;
     public static OnClassUpdate onClassUnclaimedReceived = null;
 
+    // Protocol version for HANDSHAKE version negotiation (EC-6.5)
+    public static final int PROTOCOL_VERSION = 1;
+
+    // Maximum players supported (EC-6.3)
+    public static final int MAX_PLAYERS = 4;
+
+    // Desync detection signal (EC-6.4)
+    public static class DesyncDetected {
+        public long localHash;
+        public long remoteHash;
+        public DesyncDetected(long localHash, long remoteHash) {
+            this.localHash = localHash;
+            this.remoteHash = remoteHash;
+        }
+    }
+    public static Signal<DesyncDetected> desyncDetectedSignal = new Signal<>();
+
     // Packet type constants
     public static class PacketType {
         public static final byte ACTION = 1;
@@ -114,6 +140,11 @@ public class NetworkManager {
         public static final byte ITEM_IDENTIFIED = 14;
         public static final byte NAME_ANNOUNCE    = 15; // client → host immediately on connect
         public static final byte PING             = 16; // heartbeat — silently ignored by reader
+        public static final byte PLAYER_LEFT      = 17; // host → clients: player removed from lobby
+        public static final byte NAME_REJECTED    = 18; // host → client: duplicate name
+        public static final byte KICK             = 19; // host → client: kicked by host
+        public static final byte HOST_DISCONNECTED = 20; // host → clients: host leaving lobby
+        public static final byte STATE_HASH       = 21; // host → clients: state hash for desync detection
     }
 
     // HeroAction type constants for serialization
@@ -241,22 +272,28 @@ public class NetworkManager {
             int targetPos = getActionTargetPos(action);
 
             if (isHost) {
-                // Host sends to all connected clients
-                for (DataOutputStream out : outs) {
-                    out.writeByte(PacketType.ACTION);
-                    out.writeInt(heroId);
-                    out.writeByte(actionType);
-                    out.writeInt(targetPos);
-                    out.flush();
+                // Host sends to all connected clients — per-stream lock (EC-6.1)
+                for (int i = 0; i < outs.size(); i++) {
+                    DataOutputStream out = outs.get(i);
+                    Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+                    synchronized (lock) {
+                        out.writeByte(PacketType.ACTION);
+                        out.writeInt(heroId);
+                        out.writeByte(actionType);
+                        out.writeInt(targetPos);
+                        out.flush();
+                    }
                 }
             } else {
-                // Client sends to host
+                // Client sends to host — clientOutLock (EC-6.1)
                 if (clientOut != null) {
-                    clientOut.writeByte(PacketType.ACTION);
-                    clientOut.writeInt(heroId);
-                    clientOut.writeByte(actionType);
-                    clientOut.writeInt(targetPos);
-                    clientOut.flush();
+                    synchronized (clientOutLock) {
+                        clientOut.writeByte(PacketType.ACTION);
+                        clientOut.writeInt(heroId);
+                        clientOut.writeByte(actionType);
+                        clientOut.writeInt(targetPos);
+                        clientOut.flush();
+                    }
                 }
             }
         } catch (IOException e) {
@@ -274,18 +311,35 @@ public class NetworkManager {
     public static void receiveActionAsync(Hero remoteHero) {
         if (!lanMode || remoteHero == null) return;
 
-        // Singleton guard: only one stream-reader thread may run at a time.
-        // Hero.act() calls this every turn when curAction == null; without the guard
-        // each call would spawn another persistent reader thread that competes to read
-        // bytes from the same DataInputStream, corrupting the packet stream.
+        // EC-6.7: per-stream guard keyed by heroIndex - 1 for 3+ player games.
+        // Each remote hero gets its own reader thread on its own stream; the old
+        // global singleton guard prevented concurrent readers for hero[1] and hero[2].
+        int heroIndex = (Dungeon.heroes != null) ? Dungeon.heroes.indexOf(remoteHero) : 0;
+        int streamIndex = isHost ? Math.max(0, heroIndex - 1) : 0; // ins.get(0) for hero[1], ins.get(1) for hero[2]
+
         synchronized (NetworkManager.class) {
-            if (actionReaderRunning) return;
-            actionReaderRunning = true;
+            if (streamIndex >= 0 && streamIndex < actionReaderRunningPerStream.length) {
+                if (actionReaderRunningPerStream[streamIndex]) return;
+                actionReaderRunningPerStream[streamIndex] = true;
+            } else {
+                // Fallback to legacy global guard
+                if (actionReaderRunning) return;
+                actionReaderRunning = true;
+            }
         }
+
+        final int finalStreamIndex = streamIndex;
 
         new Thread(() -> {
             try {
-                DataInputStream in = isHost ? ins.get(0) : clientIn;
+                // EC-6.7: select the correct stream based on which hero's turn it is
+                DataInputStream in;
+                if (isHost) {
+                    in = (finalStreamIndex < ins.size()) ? ins.get(finalStreamIndex) : null;
+                } else {
+                    in = clientIn;
+                }
+                if (in == null) return;
 
                 while (lanMode && remoteHero != null) {
                     try {
@@ -305,6 +359,15 @@ public class NetworkManager {
                                     remoteHero.curAction = decodedAction;
                                     remoteHero.lanActionLock.notifyAll();
                                 }
+                            }
+                        } else if (type == PacketType.STATE_HASH) {
+                            // EC-6.4: desync detection
+                            int turn = in.readInt();
+                            long remoteHash = in.readLong();
+                            long localHash = computeStateHash();
+                            if (localHash != remoteHash) {
+                                GLog.n("DESYNC DETECTED at turn %d: local=%d remote=%d", turn, localHash, remoteHash);
+                                desyncDetectedSignal.dispatch(new DesyncDetected(localHash, remoteHash));
                             }
                         } else if (type == PacketType.ITEM_IDENTIFIED) {
                             String className = in.readUTF();
@@ -346,9 +409,13 @@ public class NetworkManager {
                     Thread.currentThread().interrupt();
                 }
             } finally {
-                // Release the singleton guard so a reconnect or level transition
-                // can start a new reader thread when needed.
-                actionReaderRunning = false;
+                // Release the per-stream guard so reconnect or level transition can start fresh
+                synchronized (NetworkManager.class) {
+                    if (finalStreamIndex >= 0 && finalStreamIndex < actionReaderRunningPerStream.length) {
+                        actionReaderRunningPerStream[finalStreamIndex] = false;
+                    }
+                    actionReaderRunning = false;
+                }
             }
         }, "net-reader-action").start();
     }
@@ -369,13 +436,33 @@ public class NetworkManager {
                     Thread.sleep(PING_INTERVAL_MS);
                     if (!lanMode) break;
                     if (isHost) {
-                        for (DataOutputStream out : outs) {
-                            out.writeByte(PacketType.PING);
-                            out.flush();
+                        for (int i = 0; i < outs.size(); i++) {
+                            DataOutputStream out = outs.get(i);
+                            Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+                            try {
+                                synchronized (lock) {
+                                    out.writeByte(PacketType.PING);
+                                    out.flush();
+                                }
+                            } catch (IOException e) {
+                                // EC-6.2: ping write failure fires peerDisconnectSignal for the affected hero
+                                if (lanMode) {
+                                    try { GLog.w("Ping failed for client %d — firing disconnect signal: %s", i, e.getMessage()); } catch (Throwable ignored) {}
+                                    Hero disconnectedHero = null;
+                                    if (Dungeon.heroes != null && (i + 1) < Dungeon.heroes.size()) {
+                                        disconnectedHero = Dungeon.heroes.get(i + 1);
+                                    }
+                                    peerDisconnectSignal.dispatch(new PeerDisconnected(disconnectedHero));
+                                    try { com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread(); } catch (Throwable ignored) {}
+                                }
+                                break;
+                            }
                         }
                     } else if (clientOut != null) {
-                        clientOut.writeByte(PacketType.PING);
-                        clientOut.flush();
+                        synchronized (clientOutLock) {
+                            clientOut.writeByte(PacketType.PING);
+                            clientOut.flush();
+                        }
                     }
                 } catch (IOException e) {
                     if (lanMode) GLog.w("Ping failed — peer disconnected: %s", e.getMessage());
@@ -396,15 +483,21 @@ public class NetworkManager {
         if (!lanMode) return;
         try {
             if (isHost) {
-                for (DataOutputStream out : outs) {
-                    out.writeByte(PacketType.ITEM_IDENTIFIED);
-                    out.writeUTF(itemClassName);
-                    out.flush();
+                for (int i = 0; i < outs.size(); i++) {
+                    DataOutputStream out = outs.get(i);
+                    Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+                    synchronized (lock) {
+                        out.writeByte(PacketType.ITEM_IDENTIFIED);
+                        out.writeUTF(itemClassName);
+                        out.flush();
+                    }
                 }
             } else if (clientOut != null) {
-                clientOut.writeByte(PacketType.ITEM_IDENTIFIED);
-                clientOut.writeUTF(itemClassName);
-                clientOut.flush();
+                synchronized (clientOutLock) {
+                    clientOut.writeByte(PacketType.ITEM_IDENTIFIED);
+                    clientOut.writeUTF(itemClassName);
+                    clientOut.flush();
+                }
             }
         } catch (IOException e) {
             GLog.w("Failed to send item identification: %s", e.getMessage());
@@ -426,6 +519,7 @@ public class NetworkManager {
                 peerSockets.add(clientSocket);
                 ins.add(in);
                 outs.add(out);
+                outLocks.add(new Object()); // EC-6.1: per-stream write lock
 
                 connectedPlayerCount++;
                 int newPlayerIndex = connectedPlayerCount - 1;
@@ -444,6 +538,31 @@ public class NetworkManager {
                 } finally {
                     clientSocket.setSoTimeout(SOCKET_TIMEOUT_MS); // restore normal timeout
                 }
+
+                // EC-1.2 / EC-5.3: reject duplicate names
+                boolean nameTaken = false;
+                for (int k = 0; k < connectedPlayerCount - 1; k++) { // check slots 0..newPlayerIndex-1
+                    if (clientName.equalsIgnoreCase(playerNames[k])) {
+                        nameTaken = true;
+                        break;
+                    }
+                }
+                if (nameTaken) {
+                    GLog.w("Rejected client with duplicate name: %s", clientName);
+                    try {
+                        out.writeByte(PacketType.NAME_REJECTED);
+                        out.flush();
+                    } catch (IOException ignored) {}
+                    // Roll back the add
+                    peerSockets.remove(peerSockets.size() - 1);
+                    ins.remove(ins.size() - 1);
+                    outs.remove(outs.size() - 1);
+                    if (!outLocks.isEmpty()) outLocks.remove(outLocks.size() - 1);
+                    connectedPlayerCount--;
+                    try { clientSocket.close(); } catch (IOException ignored) {}
+                    continue;
+                }
+
                 playerNames[newPlayerIndex] = clientName;
 
                 GLog.p("Client \"%s\" connected, total players: %d", clientName, connectedPlayerCount);
@@ -490,10 +609,166 @@ public class NetworkManager {
     }
 
     /**
+     * EC-1.1 / EC-6.10: Removes a connected client by index (0-indexed in peerSockets/ins/outs).
+     * Closes socket, removes from lists, decrements connectedPlayerCount, compacts indices,
+     * broadcasts PLAYER_LEFT to remaining clients, and calls onPlayerJoined callback.
+     */
+    public static synchronized void removeClient(int index) {
+        if (index < 0 || index >= peerSockets.size()) return;
+
+        // Close the socket (null-safe for testing)
+        try {
+            Socket s = peerSockets.get(index);
+            if (s != null && !s.isClosed()) s.close();
+        } catch (Exception ignored) {}
+
+        // Remove from lists
+        peerSockets.remove(index);
+        ins.remove(index);
+        DataOutputStream removedOut = outs.remove(index);
+        if (index < outLocks.size()) outLocks.remove(index);
+
+        // Shift playerNames down (slot 0 = host, index+1 corresponds to socket index)
+        int playerSlot = index + 1; // peerSockets[0] = player at slot 1
+        for (int k = playerSlot; k < playerNames.length - 1; k++) {
+            playerNames[k] = playerNames[k + 1];
+        }
+        playerNames[playerNames.length - 1] = null;
+
+        connectedPlayerCount--;
+
+        // Broadcast PLAYER_LEFT to remaining clients
+        for (int i = 0; i < outs.size(); i++) {
+            DataOutputStream dest = outs.get(i);
+            Object lock = i < outLocks.size() ? outLocks.get(i) : dest;
+            try {
+                synchronized (lock) {
+                    dest.writeByte(PacketType.PLAYER_LEFT);
+                    dest.writeInt(connectedPlayerCount);
+                    dest.writeInt(connectedPlayerCount);
+                    for (int k = 0; k < connectedPlayerCount; k++) {
+                        String n = playerNames[k];
+                        dest.writeUTF(n != null ? n : "Player " + (k + 1));
+                    }
+                    dest.flush();
+                }
+            } catch (IOException ignored) {}
+        }
+
+        // Notify host lobby UI
+        if (onPlayerJoined != null) {
+            onPlayerJoined.call(-1, connectedPlayerCount);
+        }
+
+        try { GLog.p("Removed client at index %d, connectedPlayerCount=%d", index, connectedPlayerCount); } catch (Throwable ignored) {}
+    }
+
+    /**
+     * EC-1.3: Host kicks a player at the given player slot (1-indexed).
+     * Sends KICK packet to the target, then calls removeClient().
+     */
+    public static void kickPlayer(int playerSlot) {
+        if (!isHost) return;
+        int socketIndex = playerSlot - 1; // peerSockets is 0-indexed, playerSlot 1 = first client
+        if (socketIndex < 0 || socketIndex >= outs.size()) return;
+
+        DataOutputStream out = outs.get(socketIndex);
+        Object lock = socketIndex < outLocks.size() ? outLocks.get(socketIndex) : out;
+        try {
+            synchronized (lock) {
+                out.writeByte(PacketType.KICK);
+                out.flush();
+            }
+        } catch (IOException e) {
+            try { GLog.w("Failed to send KICK to player %d: %s", playerSlot, e.getMessage()); } catch (Throwable ignored) {}
+        }
+
+        removeClient(socketIndex);
+    }
+
+    /**
+     * EC-1.4: Host broadcasts HOST_DISCONNECTED to all connected clients (lobby phase only).
+     */
+    public static void broadcastHostDisconnected() {
+        if (!isHost) return;
+        for (int i = 0; i < outs.size(); i++) {
+            DataOutputStream out = outs.get(i);
+            Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+            try {
+                synchronized (lock) {
+                    out.writeByte(PacketType.HOST_DISCONNECTED);
+                    out.flush();
+                }
+            } catch (IOException ignored) {}
+        }
+    }
+
+    /**
+     * EC-6.4: Sends a STATE_HASH packet to all peers for desync detection.
+     * Called by Host every 10 turns.
+     */
+    public static void sendStateHash(int turn, long hash) {
+        if (!lanMode || !isHost) return;
+        try {
+            for (int i = 0; i < outs.size(); i++) {
+                DataOutputStream out = outs.get(i);
+                Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+                synchronized (lock) {
+                    out.writeByte(PacketType.STATE_HASH);
+                    out.writeInt(turn);
+                    out.writeLong(hash);
+                    out.flush();
+                }
+            }
+        } catch (IOException e) {
+            GLog.w("Failed to send state hash: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * EC-6.4: Computes a lightweight state hash from level map XOR hero positions XOR hero HP.
+     */
+    public static long computeStateHash() {
+        long hash = 0L;
+        try {
+            if (Dungeon.level != null && Dungeon.level.map != null) {
+                for (int tile : Dungeon.level.map) {
+                    hash = hash * 31 + tile;
+                }
+            }
+            if (Dungeon.heroes != null) {
+                for (Hero h : Dungeon.heroes) {
+                    if (h != null) {
+                        hash ^= (long) h.pos * 0x9e3779b97f4a7c15L;
+                        hash ^= (long) h.HP * 0x6c62272e07bb0142L;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Ignore — hash remains partial
+        }
+        return hash;
+    }
+
+    /**
      * Returns the client input stream (for client-side lobby packet reading).
      */
     public static DataInputStream getClientInput() {
         return clientIn;
+    }
+
+    /**
+     * EC-6.8: Public accessor for clientIn — eliminates reflection in WndHeroClaim.
+     */
+    public static DataInputStream getClientIn() {
+        return clientIn;
+    }
+
+    /**
+     * EC-6.8: Public accessor for clientOut — eliminates reflection in WndHeroClaim.
+     */
+    public static DataOutputStream getClientOut() {
+        return clientOut;
     }
 
     /**
@@ -638,6 +913,7 @@ public class NetworkManager {
         peerSockets.clear();
         ins.clear();
         outs.clear();
+        outLocks.clear(); // EC-6.1: clear per-stream write locks
         serverSocket = null;
         clientSocket = null;
         clientIn = null;
@@ -648,7 +924,25 @@ public class NetworkManager {
         onPlayerJoined = null;
         playerNames = new String[4];  // reset player names array
         localPlayerIndex = 0;
+        actionReaderRunningPerStream = new boolean[MAX_PLAYERS]; // EC-6.7: reset per-stream guards
 
+    }
+
+    // Test seam — expose connectedPlayerCount for assertions
+    public static int getConnectedPlayerCountForTesting() { return connectedPlayerCount; }
+
+    // Test seam — set connectedPlayerCount directly for setup
+    public static void setConnectedPlayerCountForTesting(int count) { connectedPlayerCount = count; }
+
+    // Test seam — expose playerNames for assertions
+    public static String[] getPlayerNamesForTesting() { return playerNames; }
+
+    // Test seam — directly add a socket/stream pair to the host lists (simulates acceptClientsLoop)
+    public static void addPeerForTesting(Socket socket, DataInputStream in, DataOutputStream out) {
+        peerSockets.add(socket);
+        ins.add(in);
+        outs.add(out);
+        outLocks.add(new Object());
     }
 
     // Test seam — override sendAction for unit tests (null = use real network)
@@ -670,9 +964,35 @@ public class NetworkManager {
     }
 
     // Test seams for actionReaderRunning guard
-    public static boolean isActionReaderRunning() { return actionReaderRunning; }
+    public static boolean isActionReaderRunning() {
+        if (actionReaderRunning) return true;
+        // Also check per-stream guards (EC-6.7)
+        for (boolean b : actionReaderRunningPerStream) {
+            if (b) return true;
+        }
+        return false;
+    }
     public static void setActionReaderRunningForTesting(boolean running) { actionReaderRunning = running; }
-    public static void resetActionReaderForTesting() { actionReaderRunning = false; }
+    public static void resetActionReaderForTesting() {
+        actionReaderRunning = false;
+        actionReaderRunningPerStream = new boolean[MAX_PLAYERS];
+    }
+    // EC-6.7: per-stream reader guard test seams
+    public static boolean isActionReaderRunningForStream(int streamIndex) {
+        if (streamIndex >= 0 && streamIndex < actionReaderRunningPerStream.length) {
+            return actionReaderRunningPerStream[streamIndex];
+        }
+        return false;
+    }
+    public static void setActionReaderRunningForStreamTesting(int streamIndex, boolean running) {
+        if (streamIndex >= 0 && streamIndex < actionReaderRunningPerStream.length) {
+            actionReaderRunningPerStream[streamIndex] = running;
+        }
+    }
+    // EC-6.1: inject outLocks for testing
+    public static void injectOutLocksForTesting(List<Object> locks) {
+        outLocks = locks;
+    }
 
     // Test seams — inject real socket streams so integration tests can use real TCP
     public static void injectHostStreamsForTesting(DataInputStream in, DataOutputStream out) {
@@ -832,14 +1152,19 @@ public class NetworkManager {
         if (!lanMode || !isHost) return;
 
         try {
-            for (DataOutputStream out : outs) {
-                out.writeByte(PacketType.HANDSHAKE);
-                out.writeLong(seed);
-                out.writeInt(classes.length);
-                for (HeroClass cls : classes) {
-                    out.writeByte(cls.ordinal());
+            for (int i = 0; i < outs.size(); i++) {
+                DataOutputStream out = outs.get(i);
+                Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+                synchronized (lock) {
+                    out.writeByte(PacketType.HANDSHAKE);
+                    out.writeInt(PROTOCOL_VERSION); // EC-6.5: version field before seed
+                    out.writeLong(seed);
+                    out.writeInt(classes.length);
+                    for (HeroClass cls : classes) {
+                        out.writeByte(cls.ordinal());
+                    }
+                    out.flush();
                 }
-                out.flush();
             }
             GLog.p("HANDSHAKE sent: %d players, seed %d", classes.length, seed);
         } catch (IOException e) {
@@ -857,18 +1182,24 @@ public class NetworkManager {
             byte classOrdinal = (byte) heroClass.ordinal();
 
             if (isHost) {
-                for (DataOutputStream out : outs) {
-                    out.writeByte(PacketType.CLASS_CLAIMED);
-                    out.writeInt(playerIndex);
-                    out.writeByte(classOrdinal);
-                    out.flush();
+                for (int i = 0; i < outs.size(); i++) {
+                    DataOutputStream out = outs.get(i);
+                    Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+                    synchronized (lock) {
+                        out.writeByte(PacketType.CLASS_CLAIMED);
+                        out.writeInt(playerIndex);
+                        out.writeByte(classOrdinal);
+                        out.flush();
+                    }
                 }
             } else {
                 if (clientOut != null) {
-                    clientOut.writeByte(PacketType.CLASS_CLAIMED);
-                    clientOut.writeInt(playerIndex);
-                    clientOut.writeByte(classOrdinal);
-                    clientOut.flush();
+                    synchronized (clientOutLock) {
+                        clientOut.writeByte(PacketType.CLASS_CLAIMED);
+                        clientOut.writeInt(playerIndex);
+                        clientOut.writeByte(classOrdinal);
+                        clientOut.flush();
+                    }
                 }
             }
         } catch (IOException e) {
@@ -886,18 +1217,24 @@ public class NetworkManager {
             byte classOrdinal = (byte) heroClass.ordinal();
 
             if (isHost) {
-                for (DataOutputStream out : outs) {
-                    out.writeByte(PacketType.CLASS_UNCLAIMED);
-                    out.writeInt(playerIndex);
-                    out.writeByte(classOrdinal);
-                    out.flush();
+                for (int i = 0; i < outs.size(); i++) {
+                    DataOutputStream out = outs.get(i);
+                    Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+                    synchronized (lock) {
+                        out.writeByte(PacketType.CLASS_UNCLAIMED);
+                        out.writeInt(playerIndex);
+                        out.writeByte(classOrdinal);
+                        out.flush();
+                    }
                 }
             } else {
                 if (clientOut != null) {
-                    clientOut.writeByte(PacketType.CLASS_UNCLAIMED);
-                    clientOut.writeInt(playerIndex);
-                    clientOut.writeByte(classOrdinal);
-                    clientOut.flush();
+                    synchronized (clientOutLock) {
+                        clientOut.writeByte(PacketType.CLASS_UNCLAIMED);
+                        clientOut.writeInt(playerIndex);
+                        clientOut.writeByte(classOrdinal);
+                        clientOut.flush();
+                    }
                 }
             }
         } catch (IOException e) {
@@ -1038,11 +1375,24 @@ public class NetworkManager {
                 while (true) { // keep reading until HANDSHAKE arrives
                     byte type = in.readByte();
                     if (type == PacketType.HANDSHAKE) {
+                    // EC-6.5: read and validate protocol version before seed
+                    int remoteVersion = in.readInt();
+                    if (remoteVersion != PROTOCOL_VERSION) {
+                        throw new IOException("Protocol version mismatch: remote=" + remoteVersion + " local=" + PROTOCOL_VERSION);
+                    }
                     long seed = in.readLong();
                     int playerCount = in.readInt();
+                    // EC-6.3: validate playerCount range
+                    if (playerCount < 1 || playerCount > MAX_PLAYERS) {
+                        throw new IOException("Invalid playerCount: " + playerCount);
+                    }
                     HeroClass[] heroClasses = new HeroClass[playerCount];
                     for (int i = 0; i < playerCount; i++) {
                         byte classOrdinal = in.readByte();
+                        // EC-6.3: validate classOrdinal range
+                        if (classOrdinal < 0 || classOrdinal >= HeroClass.values().length) {
+                            throw new IOException("Invalid classOrdinal: " + classOrdinal);
+                        }
                         heroClasses[i] = HeroClass.values()[classOrdinal];
                     }
                     handshakePayload = new HandshakePayload(seed, playerCount, heroClasses);

@@ -203,10 +203,30 @@ public class LanLobbyScene extends PixelScene {
 			slotLabels[slot].text("Slot " + (slot + 1) + ": " + name + (isLocal ? " (You)" : ""), labelWidth);
 			align(slotLabels[slot]);
 		}
+		// Clear empty slots above total
+		for (int slot = total; slot < SLOT_COUNT; slot++) {
+			slotLabels[slot].text("Slot " + (slot + 1) + ": Empty", labelWidth);
+			align(slotLabels[slot]);
+		}
 
-		// Enable Start on host when >= 2 players are present
-		if (NetworkManager.isHost() && startBtn != null && total >= 2) {
-			startBtn.enable(true);
+		if (NetworkManager.isHost() && startBtn != null) {
+			if (resumeMode && Dungeon.heroes != null) {
+				// EC-2.1: resume mode — require exact player count
+				int needed = Dungeon.heroes.size();
+				boolean canStart = total == needed;
+				startBtn.enable(canStart);
+				if (statusLabel != null) {
+					if (canStart) {
+						statusLabel.text("All " + needed + " players connected — ready to start", labelWidth);
+					} else {
+						statusLabel.text("Need " + needed + " players (have " + total + ")", labelWidth);
+					}
+					align(statusLabel);
+				}
+			} else {
+				// Normal mode — enable at >= 2 players
+				startBtn.enable(total >= 2);
+			}
 		}
 	}
 
@@ -218,6 +238,14 @@ public class LanLobbyScene extends PixelScene {
 	 * Flow: lanLobbySceneHost
 	 */
 	public void onStartTapped() {
+		// EC-2.1: defensive check — in resume mode, abort if player count doesn't match save
+		if (resumeMode && Dungeon.heroes != null &&
+				NetworkManager.getConnectedPlayerCount() != Dungeon.heroes.size()) {
+			GLog.w("LAN lobby: Start aborted — player count mismatch (connected=%d, required=%d)",
+					NetworkManager.getConnectedPlayerCount(), Dungeon.heroes.size());
+			return;
+		}
+
 		active = false;
 		NetworkManager.onPlayerJoined = null; // unregister callback
 
@@ -319,6 +347,32 @@ public class LanLobbyScene extends PixelScene {
 							}
 						});
 						break;
+					} else if (type == NetworkManager.PacketType.PLAYER_LEFT) {
+						// EC-1.1 / EC-6.10: a client was removed from the lobby
+						int newTotal = in.readInt();
+						int nameCount = in.readInt();
+						for (int k = 0; k < nameCount; k++) {
+							String name = in.readUTF();
+							NetworkManager.setPlayerName(k, name);
+						}
+						Game.runOnRenderThread(new Callback() {
+							@Override
+							public void call() {
+								if (active) onPlayerJoined(-1, newTotal);
+							}
+						});
+					} else if (type == NetworkManager.PacketType.KICK) {
+						// EC-1.3: this client was kicked by host
+						GLog.w("LAN lobby: kicked by host");
+						active = false;
+						NetworkManager.disconnect();
+						break;
+					} else if (type == NetworkManager.PacketType.HOST_DISCONNECTED) {
+						// EC-1.4: host is leaving the lobby
+						GLog.w("LAN lobby: host disconnected");
+						active = false;
+						NetworkManager.disconnect();
+						break;
 					} else {
 						GLog.w("LAN lobby: unknown packet type=%d, aborting listener", type);
 						break;
@@ -347,6 +401,10 @@ public class LanLobbyScene extends PixelScene {
 		NetworkManager.onPlayerJoined = null;
 		// If game hasn't started yet, fully close sockets so port 7777 is freed
 		if (!gameStarted) {
+			// EC-1.4: host broadcasts HOST_DISCONNECTED before disconnecting
+			if (NetworkManager.isHost()) {
+				NetworkManager.broadcastHostDisconnected();
+			}
 			NetworkManager.disconnect();
 		}
 		super.destroy();

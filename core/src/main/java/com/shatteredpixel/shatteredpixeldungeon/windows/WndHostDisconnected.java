@@ -21,36 +21,29 @@
 
 package com.shatteredpixel.shatteredpixeldungeon.windows;
 
-import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
-import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
-import com.shatteredpixel.shatteredpixeldungeon.scenes.LanLobbyScene;
-import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.TitleScene;
+import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RedButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RenderedTextBlock;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 
-import java.io.IOException;
-
 /**
- * WndPeerDisconnected — window shown when a peer disconnects during gameplay.
- * Provides options to either rejoin the room or save and exit.
+ * WndHostDisconnected — shown on the client side when the host disconnects mid-game.
+ * Clients cannot save; they can only exit.
+ * Flow: midGameDisconnectHandling (EC-3, EC-5.1)
  */
-public class WndPeerDisconnected extends Window {
+public class WndHostDisconnected extends Window {
 
 	private static final int WIDTH = 120;
 	private static final int GAP = 4;
 
-	private Hero disconnectedHero;
-
-	public WndPeerDisconnected(Hero hero) {
+	public WndHostDisconnected() {
 		super();
-		this.disconnectedHero = hero;
 
-		RenderedTextBlock title = PixelScene.renderTextBlock("Peer Disconnected", 12);
+		RenderedTextBlock title = PixelScene.renderTextBlock("Host Disconnected", 12);
 		title.hardlight(TITLE_COLOR);
 		add(title);
 		title.setPos(
@@ -61,34 +54,20 @@ public class WndPeerDisconnected extends Window {
 
 		float y = 20f;
 
-		// Message
-		String heroName = disconnectedHero.name() != null ? disconnectedHero.name() : "A player";
-		String message = heroName + " disconnected.\nGame saved.";
-
-		RenderedTextBlock msg = PixelScene.renderTextBlock(message, 6);
+		// Message: client cannot save, host has the save authority
+		RenderedTextBlock msg = PixelScene.renderTextBlock(
+				"The host disconnected.\nGame progress is saved on the host's device.", 6);
 		msg.maxWidth(WIDTH - 8);
 		msg.setPos(4, y);
 		add(msg);
 		y += msg.height() + GAP;
 
-		// Wait for Rejoin button (host only — EC-5.1 rename + host-only guard)
-		RedButton rejoinBtn = new RedButton("Wait for Rejoin") {
+		// Exit button (no save for clients)
+		RedButton exitBtn = new RedButton("Exit") {
 			@Override
 			protected void onClick() {
 				super.onClick();
-				onRejoin();
-			}
-		};
-		rejoinBtn.setRect(4, y, WIDTH - 8, 18f);
-		add(rejoinBtn);
-		y += 18f + GAP;
-
-		// Save and Exit button
-		RedButton exitBtn = new RedButton("Save and Exit") {
-			@Override
-			protected void onClick() {
-				super.onClick();
-				onQuit();
+				onExit();
 			}
 		};
 		exitBtn.setRect(4, y, WIDTH - 8, 18f);
@@ -98,35 +77,13 @@ public class WndPeerDisconnected extends Window {
 		resize(WIDTH, (int)y);
 	}
 
-	private void onRejoin() {
-		// EC-5.1: only host can open a rejoin room
-		if (!NetworkManager.isHost()) return;
-
+	private void onExit() {
 		try {
-			// Open rejoin room (host will re-open ServerSocket + broadcast)
-			NetworkManager.openRejoinRoom();
-
-			// Switch to LanLobbyScene in resume mode
-			LanLobbyScene.resumeMode = true;
-			ShatteredPixelDungeon.switchScene(LanLobbyScene.class);
-
-			hide();
-		} catch (IOException e) {
-			GLog.n("Failed to open rejoin room: %s", e.getMessage());
-		}
-	}
-
-	private void onQuit() {
-		try {
-			// Disconnect from network
 			NetworkManager.disconnect();
-
-			// Switch to title scene
 			ShatteredPixelDungeon.switchScene(TitleScene.class);
-
 			hide();
 		} catch (Exception e) {
-			GLog.n("Error during quit: %s", e.getMessage());
+			GLog.n("Error during exit: %s", e.getMessage());
 		}
 	}
 }

@@ -230,6 +230,9 @@ public class Hero extends Char {
 	// pair is race-free (no lost notifications possible).
 	public final Object lanActionLock = new Object();
 
+	// EC-6.4: counter for state-hash desync detection — host sends every 10 turns
+	private static int lanTurnHashCounter = 0;
+
 	//reference to the enemy the hero is currently in the process of attacking
 	private Char attackTarget;
 	
@@ -1006,6 +1009,15 @@ public class Hero extends Char {
 			if (NetworkManager.lanMode && lanActionQueued) {
 				lanActionQueued = false;
 				NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
+
+				// EC-6.4: host sends state hash every 10 turns for desync detection
+				if (NetworkManager.isHost()) {
+					lanTurnHashCounter++;
+					if (lanTurnHashCounter % 10 == 0) {
+						long hash = NetworkManager.computeStateHash();
+						NetworkManager.sendStateHash(lanTurnHashCounter, hash);
+					}
+				}
 			}
 
 			if (curAction instanceof HeroAction.Move) {
