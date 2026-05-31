@@ -67,3 +67,9 @@
 
 # Affected Docs Checklist (lan-hero-select-sync — lockout bug fix)
 - [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/hero-select-scene.md — updated: removed BUG annotations, updated all three flows to reflect implemented code, added isTaken()/updateFade() types and paths to lanHeroCardGrayOut
+
+# Flows Checklist (remove-HashDeterminismTest)
+- [x] HashDeterminismTest — removed (referenced deleted GameScene.computeHash() from removed hash anti-cheat system)
+
+# Affected Docs Checklist (remove-HashDeterminismTest)
+- [x] /home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-30-lan-hero-select-sync.md — updated: verification checkbox for test infra now marked done; noted HashDeterminismTest.java removed

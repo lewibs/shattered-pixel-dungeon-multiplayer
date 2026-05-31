@@ -1,7 +1,7 @@
 {
-  "docsWritten": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/toolbar-ui.md"],
-  "summary": "Updated toolbar-ui.md: removed btnFollow/followInformer from system intent, mermaid diagram, and deleted followButtonClick, followHeroMovement, and toolbarFollowLayout flow sections",
+  "docsWritten": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-30-lan-hero-select-sync.md"],
+  "summary": "Updated lan-hero-select-sync bug log: marked test-infra verification checkbox done; noted HashDeterminismTest.java removed (referenced deleted GameScene.computeHash() from removed hash anti-cheat system)",
   "artifacts": {
-    "modified": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/docs/toolbar-ui.md"]
+    "modified": ["/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-30-lan-hero-select-sync.md"]
   }
 }

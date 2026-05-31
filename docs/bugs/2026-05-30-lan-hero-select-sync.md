@@ -138,5 +138,5 @@ Phase D — background HANDSHAKE listener (clients only):
 - [x] Main source compiles cleanly (`./gradlew :core:compileJava` → BUILD SUCCESSFUL)
 - [x] Regression test written: `LanHeroSelectLockoutTest.java`
 - [x] No duplicate bug log — this is an addendum to the existing lan-hero-select-sync bug file
-- [ ] Reproduction test passes after fix (test infra blocked by pre-existing HashDeterminismTest compile error)
+- [x] Reproduction test passes after fix (HashDeterminismTest.java removed — it referenced the deleted GameScene.computeHash() from the removed hash anti-cheat system; test infra now compiles cleanly)
 - [x] Verified no duplicate solved-bug log exists for same root cause
