@@ -941,6 +941,12 @@ public class Hero extends Char {
 		// fresh every turn so the destination is always the target's CURRENT cell.
 		// No curAction == null gate; we own this turn entirely while follow is active.
 		FollowHeroBuff follow = buff(FollowHeroBuff.class);
+		// LAN: follow mode moves the hero autonomously without sending packets — desync.
+		// Detach immediately in LAN mode; player must tap manually.
+		if (follow != null && NetworkManager.lanMode) {
+			follow.detach();
+			follow = null;
+		}
 		if (follow != null) {
 			Hero followTarget = follow.getTargetHero();
 			if (followTarget == null || !followTarget.isAlive()
@@ -1127,7 +1133,7 @@ public class Hero extends Char {
 	}
 	
 	private void ready() {
-		if (sprite.looping()) sprite.idle();
+		if (sprite != null && sprite.looping()) sprite.idle();
 		curAction = null;
 		damageInterrupt = true;
 		waitOrPickup = false;
