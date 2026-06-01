@@ -1,15 +1,8 @@
 {
   "bugFiles": [
-    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-31-lan-freeze-multistep-walk-stale-reader.md"
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-31-lan-attack-action-freeze.md"
   ],
   "notes": [
-    "debugger-agent: root cause of REMAINING LAN freeze fixed in Hero.java with supporting logging in NetworkManager.java and GameScene.java",
-    "Root cause: Hero.act() called receiveActionAsync() unconditionally on EVERY act() call for remote hero, including intermediate steps of a multi-step walk where curAction was already set",
-    "During intermediate walk steps, this started a stale reader that blocked on readByte() and consumed the NEXT turn's action packet early",
-    "When the walk completed, ready() cleared curAction, losing the consumed action — next remote turn had no action to receive → permanent freeze",
-    "Fix: guard receiveActionAsync() with (curAction == null) in Hero.act() — reader only starts at the true beginning of a remote turn",
-    "Logging: added LAN_DEBUG tag logging to NetworkManager.sendAction(), receiveActionAsync(), Hero.act() LAN block, Hero.handle(), GameScene.notifyActorThread(), GameScene.update() LAN poll",
-    "Tests: 6 new tests in LanMultiStepWalkFreezeTest — 3 confirm buggy path behavior, 3 confirm fixed path behavior",
-    "All 158 LAN tests pass after fix — no regressions"
+    "debugger-agent: root cause was actAttack() returning false without clearing curAction, combined with the line-1101 LAN next() guard firing unconditionally on !actResult. Fixed in Hero.java (two surgical changes): (1) added `&& curAction == null` to line-1101 guard, (2) added `curAction = null` before `return false` after sprite.attack() in actAttack(). Test: LanAttackActionFreezeTest."
   ]
 }

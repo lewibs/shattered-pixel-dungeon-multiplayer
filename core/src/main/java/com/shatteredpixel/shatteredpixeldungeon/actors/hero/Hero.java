@@ -974,18 +974,32 @@ public class Hero extends Char {
 		if (NetworkManager.lanMode && Dungeon.heroes != null) {
 			int myIdx = Dungeon.heroes.indexOf(this);
 			if (myIdx != NetworkManager.localPlayerIndex) {
+				NetworkManager.lanLog("Hero.act | REMOTE idx=%d curAction=%s", myIdx,
+						curAction != null ? curAction.getClass().getSimpleName() : "null");
 				synchronized (lanActionLock) {
 					if (curAction == null) {
-						NetworkManager.receiveActionAsync(this); // start reader only at turn start
+						NetworkManager.lanLog("Hero.act | starting reader idx=%d", myIdx);
+						NetworkManager.receiveActionAsync(this);
+					} else {
+						NetworkManager.lanLog("Hero.act | skipping reader (mid-walk) idx=%d curAction=%s",
+								myIdx, curAction.getClass().getSimpleName());
 					}
 					while (curAction == null && NetworkManager.lanMode) {
+						NetworkManager.lanLog("Hero.act | waiting lanActionLock idx=%d", myIdx);
 						try { lanActionLock.wait(5000); } catch (InterruptedException e) { break; }
+						NetworkManager.lanLog("Hero.act | woke lanActionLock idx=%d curAction=%s", myIdx,
+								curAction != null ? curAction.getClass().getSimpleName() : "null");
 					}
 				}
 				if (curAction == null) {
-					return false; // timeout / disconnect
+					NetworkManager.lanLog("Hero.act | TIMEOUT/DISCONNECT idx=%d returning false", myIdx);
+					return false;
 				}
-				// curAction is set — fall through to execute it below
+				NetworkManager.lanLog("Hero.act | remote acting idx=%d curAction=%s", myIdx,
+						curAction.getClass().getSimpleName());
+			} else {
+				NetworkManager.lanLog("Hero.act | LOCAL idx=%d curAction=%s lanActionQueued=%b", myIdx,
+						curAction != null ? curAction.getClass().getSimpleName() : "null", lanActionQueued);
 			}
 		}
 
@@ -1081,10 +1095,21 @@ public class Hero extends Char {
 			Barkskin.conditionallyAppend(this, (lvl*pointsInTalent(Talent.BARKSKIN))/2, 1 );
 		}
 
-		// LAN remote hero: when an action finishes (actResult=false, ready() cleared curAction),
+		// LAN remote hero: when an action finishes (actResult=false, curAction cleared),
 		// call next() so Actor.processing() becomes false. Without this, current stays set to
 		// this hero and GameScene never wakes the actor loop — permanent deadlock.
-		if (!actResult && NetworkManager.lanMode && Dungeon.heroes != null) {
+		//
+		// curAction is cleared by either:
+		//   - ready() for most actions (move reaches destination, interact, etc.)
+		//   - curAction = null in actAttack() before sprite.attack() returns false
+		//     (attack animation plays async; onAttackComplete calls spend + next)
+		//
+		// Guard requires curAction == null: ensures next() fires only once the action is
+		// truly done and the hero is not mid-execution. Without this guard, actAttack()
+		// returning false without clearing curAction (pre-fix) caused next() to fire,
+		// re-entering act() with curAction still set → skipped receiveActionAsync() →
+		// infinite loop → permanent freeze.
+		if (!actResult && curAction == null && NetworkManager.lanMode && Dungeon.heroes != null) {
 			int myIdx = Dungeon.heroes.indexOf(this);
 			if (myIdx != NetworkManager.localPlayerIndex) {
 				next(); // current = null → Actor.processing() = false → GameScene wakes loop
@@ -1605,6 +1630,13 @@ public class Hero extends Char {
 			}
 			//attack target cleared on onAttackComplete
 			sprite.attack( attackTarget.pos );
+
+			// FIX (attack-action freeze): clear curAction so the next act() re-entry
+			// correctly enters the curAction == null branch and waits for the next
+			// network action. Without this, curAction stays set as HeroAction.Attack,
+			// the LAN next() guard at line ~1101 fires (actResult=false, but curAction
+			// is not null — the bug), and actAttack() is re-entered infinitely.
+			curAction = null;
 
 			return false;
 
@@ -2152,6 +2184,8 @@ public class Hero extends Char {
 
 		if (NetworkManager.lanMode) {
 			lanActionQueued = true;
+			NetworkManager.lanLog("Hero.handle | lanActionQueued=true curAction=%s",
+					curAction != null ? curAction.getClass().getSimpleName() : "null");
 		}
 		return true;
 	}
