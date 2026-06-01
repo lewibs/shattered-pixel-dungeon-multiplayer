@@ -921,7 +921,10 @@ public class Hero extends Char {
 				Dungeon.level.updateFieldOfView(this, fieldOfView);
 			}
 		}
-		
+
+		// checkVisibleMobs() handles the LAN FOV fix internally:
+		// for remote heroes it recomputes fieldOfView from their own position,
+		// preventing spurious interrupt() calls from hero[0]'s shared heroFOV.
 		checkVisibleMobs();
 		BuffIndicator.refreshHero();
 		BuffIndicator.refreshBoss();
@@ -1880,6 +1883,21 @@ public class Hero extends Char {
 	}
 	
 	public void checkVisibleMobs() {
+		// LAN: line 909 in act() sets fieldOfView = Dungeon.level.heroFOV for every hero, but
+		// heroFOV is always recomputed for Dungeon.hero (hero[0] on P1's device). A remote hero
+		// would see hero[0]'s enemies and fire interrupt(), clearing curAction and causing a
+		// deadlock wait for a packet P2 already sent. Fix: recompute fieldOfView for each remote
+		// hero from its own position so only mobs it actually encounters trigger interrupt().
+		if (NetworkManager.lanMode && Dungeon.heroes != null) {
+			int remoteIdx = Dungeon.heroes.indexOf(this);
+			if (remoteIdx != NetworkManager.localPlayerIndex) {
+				if (fieldOfView == null || fieldOfView.length != Dungeon.level.length()) {
+					fieldOfView = new boolean[Dungeon.level.length()];
+				}
+				Dungeon.level.updateFieldOfView(this, fieldOfView);
+			}
+		}
+
 		ArrayList<Mob> visible = new ArrayList<>();
 
 		boolean newMob = false;

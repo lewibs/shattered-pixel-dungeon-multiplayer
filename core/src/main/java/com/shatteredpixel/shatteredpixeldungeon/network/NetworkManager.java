@@ -37,6 +37,23 @@ import java.util.concurrent.TimeUnit;
  */
 public class NetworkManager {
 
+    // LAN_DEBUG — filter with: adb logcat -s LAN_DEBUG
+    private static final String LAN_TAG = "LAN_DEBUG";
+    private static java.lang.reflect.Method androidLog = null;
+    private static boolean androidLogChecked = false;
+
+    public static void lanLog(String fmt, Object... args) {
+        String msg = args.length == 0 ? fmt : String.format(fmt, args);
+        try { GLog.i(LAN_TAG + " | " + msg); } catch (Throwable ignored) {}
+        if (!androidLogChecked) {
+            androidLogChecked = true;
+            try { Class<?> c = Class.forName("android.util.Log");
+                  androidLog = c.getMethod("d", String.class, String.class);
+            } catch (Throwable ignored) {}
+        }
+        if (androidLog != null) try { androidLog.invoke(null, LAN_TAG, msg); } catch (Throwable ignored) {}
+    }
+
     // Static flags and configuration
     public static boolean lanMode = false;
     public static int localPlayerIndex = 0;
@@ -271,9 +288,10 @@ public class NetworkManager {
         try {
             byte actionType = encodeHeroAction(action);
             int targetPos = getActionTargetPos(action);
+            lanLog("sendAction | heroId=%d actionType=%d pos=%d isHost=%b outs=%d clientOut=%b",
+                    heroId, actionType, targetPos, isHost, outs.size(), clientOut != null);
 
             if (isHost) {
-                // Host sends to all connected clients — per-stream lock (EC-6.1)
                 for (int i = 0; i < outs.size(); i++) {
                     DataOutputStream out = outs.get(i);
                     Object lock = i < outLocks.size() ? outLocks.get(i) : out;
@@ -285,8 +303,8 @@ public class NetworkManager {
                         out.flush();
                     }
                 }
+                lanLog("sendAction | sent to %d clients", outs.size());
             } else {
-                // Client sends to host — clientOutLock (EC-6.1)
                 if (clientOut != null) {
                     synchronized (clientOutLock) {
                         clientOut.writeByte(PacketType.ACTION);
@@ -295,11 +313,14 @@ public class NetworkManager {
                         clientOut.writeInt(targetPos);
                         clientOut.flush();
                     }
+                    lanLog("sendAction | sent to host");
                 } else {
+                    lanLog("sendAction | WARN clientOut is null — packet NOT sent!");
                 }
             }
         } catch (IOException e) {
             GLog.n("Failed to send action: %s", e.getMessage());
+            lanLog("sendAction | IOException: %s", e.getMessage());
         }
     }
 
@@ -322,23 +343,24 @@ public class NetworkManager {
         synchronized (NetworkManager.class) {
             if (streamIndex >= 0 && streamIndex < actionReaderRunningPerStream.length) {
                 if (actionReaderRunningPerStream[streamIndex]) {
+                    lanLog("receiveActionAsync | guard true stream=%d heroIdx=%d — no-op", streamIndex, heroIndex);
                     return;
                 }
                 actionReaderRunningPerStream[streamIndex] = true;
             } else {
-                // Fallback to legacy global guard
                 if (actionReaderRunning) {
+                    lanLog("receiveActionAsync | global guard true heroIdx=%d — no-op", heroIndex);
                     return;
                 }
                 actionReaderRunning = true;
             }
         }
 
+        lanLog("receiveActionAsync | reader starting heroIdx=%d stream=%d isHost=%b", heroIndex, streamIndex, isHost);
         final int finalStreamIndex = streamIndex;
 
         new Thread(() -> {
             try {
-                // EC-6.7: select the correct stream based on which hero's turn it is
                 DataInputStream in;
                 if (isHost) {
                     in = (finalStreamIndex < ins.size()) ? ins.get(finalStreamIndex) : null;
@@ -346,31 +368,31 @@ public class NetworkManager {
                     in = clientIn;
                 }
                 if (in == null) {
+                    lanLog("receiveActionAsync | ERROR stream null stream=%d", finalStreamIndex);
                     return;
                 }
 
+                lanLog("receiveActionAsync | waiting on readByte stream=%d", finalStreamIndex);
                 while (lanMode && remoteHero != null) {
                     try {
                         byte type = in.readByte();
+                        lanLog("receiveActionAsync | got packet type=%d stream=%d", type, finalStreamIndex);
                         if (type == PacketType.ACTION) {
                             int heroId = in.readInt();
                             byte actionType = in.readByte();
                             int targetPos = in.readInt();
 
-                            // Decode and set the action
                             HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
-                            // Always notify under the lock — even for null (unknown action type)
-                            // so Hero.act() never waits the full 5-second timeout on a bad packet.
-                            // curAction stays null for null actions; Hero.act() will return false.
+                            lanLog("receiveActionAsync | ACTION heroId=%d actionType=%d pos=%d decoded=%s",
+                                    heroId, actionType, targetPos, decodedAction != null ? decodedAction.getClass().getSimpleName() : "null");
                             synchronized (remoteHero.lanActionLock) {
                                 if (decodedAction != null) {
                                     remoteHero.curAction = decodedAction;
                                 }
                                 remoteHero.lanActionLock.notifyAll();
+                                lanLog("receiveActionAsync | notifyAll fired curAction=%s",
+                                        remoteHero.curAction != null ? remoteHero.curAction.getClass().getSimpleName() : "null");
                             }
-                            // Exit after delivering ONE action packet so the guard resets.
-                            // Reader is one-shot per turn: receiveActionAsync() is called again
-                            // at the start of each remote turn via the idempotent guard check.
                             break;
                         } else if (type == PacketType.STATE_HASH) {
                             // EC-6.4: desync detection
@@ -421,13 +443,13 @@ public class NetworkManager {
                     Thread.currentThread().interrupt();
                 }
             } finally {
-                // Release the per-stream guard so reconnect or level transition can start fresh
                 synchronized (NetworkManager.class) {
                     if (finalStreamIndex >= 0 && finalStreamIndex < actionReaderRunningPerStream.length) {
                         actionReaderRunningPerStream[finalStreamIndex] = false;
                     }
                     actionReaderRunning = false;
                 }
+                lanLog("receiveActionAsync | guard reset stream=%d — reader done", finalStreamIndex);
             }
         }, "net-reader-action").start();
     }
