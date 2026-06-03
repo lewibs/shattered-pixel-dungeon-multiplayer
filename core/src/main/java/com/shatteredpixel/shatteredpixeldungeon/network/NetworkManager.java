@@ -385,6 +385,18 @@ public class NetworkManager {
                             HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
                             lanLog("receiveActionAsync | ACTION heroId=%d actionType=%d pos=%d decoded=%s",
                                     heroId, actionType, targetPos, decodedAction != null ? decodedAction.getClass().getSimpleName() : "null");
+
+                            // Reset guard BEFORE notifyAll so that any thread woken by notifyAll
+                            // can immediately call receiveActionAsync for the next turn without
+                            // seeing a stale guard=true (the race: guard was only cleared in the
+                            // finally block, which runs after break — too late).
+                            synchronized (NetworkManager.class) {
+                                if (finalStreamIndex >= 0 && finalStreamIndex < actionReaderRunningPerStream.length) {
+                                    actionReaderRunningPerStream[finalStreamIndex] = false;
+                                }
+                                actionReaderRunning = false;
+                            }
+
                             synchronized (remoteHero.lanActionLock) {
                                 if (decodedAction != null) {
                                     remoteHero.curAction = decodedAction;
@@ -773,8 +785,18 @@ public class NetworkManager {
             if (Dungeon.heroes != null) {
                 for (Hero h : Dungeon.heroes) {
                     if (h != null) {
-                        hash ^= (long) h.pos * 0x9e3779b97f4a7c15L;
-                        hash ^= (long) h.HP * 0x6c62272e07bb0142L;
+                        hash ^= (long) h.pos  * 0x9e3779b97f4a7c15L;
+                        hash ^= (long) h.HP   * 0x6c62272e07bb0142L;
+                        hash ^= (long) h.exp  * 0x517cc1b727220a95L;
+                        hash ^= (long) h.lvl  * 0xd2a98b26625eee7bL;
+                    }
+                }
+            }
+            if (Dungeon.level != null && Dungeon.level.mobs != null) {
+                for (com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob m : Dungeon.level.mobs) {
+                    if (m != null) {
+                        hash ^= (long) m.pos * 0xbf58476d1ce4e5b9L;
+                        hash ^= (long) m.HP  * 0x94d049bb133111ebL;
                     }
                 }
             }

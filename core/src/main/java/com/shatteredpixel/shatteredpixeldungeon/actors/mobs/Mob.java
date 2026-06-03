@@ -125,7 +125,11 @@ public abstract class Mob extends Char {
 	
 	public int EXP = 1;
 	public int maxLvl = Hero.MAX_LEVEL-1;
-	
+
+	// Resolved in die() from the cause parameter; used by destroy(), lootChance(),
+	// and rollToDropLoot() so all per-hero checks use the same hero on every LAN device.
+	protected transient Hero killerHero = null;
+
 	protected Char enemy;
 	protected int enemyID = -1; //used for save/restore
 	protected boolean enemySeen;
@@ -850,8 +854,11 @@ public abstract class Mob extends Char {
 			GameScene.updateFog(pos, 2);
 		}
 
-		if (Dungeon.hero.isAlive()) {
-			
+		// Use killerHero (set in die()) so the same hero gets EXP/talents on every LAN device.
+		Hero expRecipient = killerHero != null ? killerHero : Dungeon.hero;
+
+		if (expRecipient.isAlive()) {
+
 			if (alignment == Alignment.ENEMY) {
 				Statistics.enemiesSlain++;
 				Badges.validateMonstersSlain();
@@ -860,24 +867,24 @@ public abstract class Mob extends Char {
 				Bestiary.countEncounter(getClass());
 
 				AscensionChallenge.processEnemyKill(this);
-				
-				int exp = Dungeon.hero.lvl <= maxLvl ? EXP : 0;
+
+				int exp = expRecipient.lvl <= maxLvl ? EXP : 0;
 
 				//during ascent, under-levelled enemies grant 10 xp each until level 30
 				// after this enemy kills which reduce the amulet curse still grant 10 effective xp
 				// for the purposes of on-exp effects, see AscensionChallenge.processEnemyKill
-				if (Dungeon.hero.buff(AscensionChallenge.class) != null &&
-						exp == 0 && maxLvl > 0 && EXP > 0 && Dungeon.hero.lvl < Hero.MAX_LEVEL){
+				if (expRecipient.buff(AscensionChallenge.class) != null &&
+						exp == 0 && maxLvl > 0 && EXP > 0 && expRecipient.lvl < Hero.MAX_LEVEL){
 					exp = Math.round(10 * spawningWeight());
 				}
 
-				if (exp > 0) {
-					Dungeon.hero.sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(exp), FloatingText.EXPERIENCE);
+				if (exp > 0 && expRecipient.sprite != null) {
+					expRecipient.sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(exp), FloatingText.EXPERIENCE);
 				}
-				Dungeon.hero.earnExp(exp, getClass());
+				expRecipient.earnExp(exp, getClass());
 
-				if (Dungeon.hero.subClass == HeroSubClass.MONK){
-					Buff.affect(Dungeon.hero, MonkEnergy.class).gainEnergy(this);
+				if (expRecipient.subClass == HeroSubClass.MONK){
+					Buff.affect(expRecipient, MonkEnergy.class).gainEnergy(this);
 				}
 			}
 		}
@@ -885,6 +892,15 @@ public abstract class Mob extends Char {
 	
 	@Override
 	public void die( Object cause ) {
+
+		// Resolve the killer hero once here so destroy(), lootChance(), and
+		// rollToDropLoot() all use the same hero on every LAN device — not Dungeon.hero
+		// (which is always the LOCAL player's hero and differs between devices).
+		if (cause instanceof Hero) {
+			killerHero = (Hero) cause;
+		} else {
+			killerHero = Dungeon.hero;
+		}
 
 		if (cause == Chasm.class){
 			//50% chance to round up, 50% to round down
@@ -900,16 +916,16 @@ public abstract class Mob extends Char {
 
 			rollToDropLoot();
 
-			if (cause == Dungeon.hero || cause instanceof Weapon || cause instanceof Weapon.Enchantment){
-				if (Dungeon.hero.hasTalent(Talent.LETHAL_MOMENTUM)
-						&& Random.Float() < 0.34f + 0.33f* Dungeon.hero.pointsInTalent(Talent.LETHAL_MOMENTUM)){
-					Buff.affect(Dungeon.hero, Talent.LethalMomentumTracker.class, 0f);
+			if (cause instanceof Hero || cause instanceof Weapon || cause instanceof Weapon.Enchantment){
+				if (killerHero.hasTalent(Talent.LETHAL_MOMENTUM)
+						&& Random.Float() < 0.34f + 0.33f* killerHero.pointsInTalent(Talent.LETHAL_MOMENTUM)){
+					Buff.affect(killerHero, Talent.LethalMomentumTracker.class, 0f);
 				}
-				if (Dungeon.hero.heroClass != HeroClass.DUELIST
-						&& Dungeon.hero.hasTalent(Talent.LETHAL_HASTE)
-						&& Dungeon.hero.buff(Talent.LethalHasteCooldown.class) == null){
-					Buff.affect(Dungeon.hero, Talent.LethalHasteCooldown.class, 100f);
-					Buff.affect(Dungeon.hero, GreaterHaste.class).set(2 + 2*Dungeon.hero.pointsInTalent(Talent.LETHAL_HASTE));
+				if (killerHero.heroClass != HeroClass.DUELIST
+						&& killerHero.hasTalent(Talent.LETHAL_HASTE)
+						&& killerHero.buff(Talent.LethalHasteCooldown.class) == null){
+					Buff.affect(killerHero, Talent.LethalHasteCooldown.class, 100f);
+					Buff.affect(killerHero, GreaterHaste.class).set(2 + 2*killerHero.pointsInTalent(Talent.LETHAL_HASTE));
 				}
 			}
 
@@ -925,7 +941,7 @@ public abstract class Mob extends Char {
 
 		if (!(this instanceof Wraith)
 				&& soulMarked
-				&& Random.Float() < (0.4f*Dungeon.hero.pointsInTalent(Talent.NECROMANCERS_MINIONS)/3f)){
+				&& Random.Float() < (0.4f*killerHero.pointsInTalent(Talent.NECROMANCERS_MINIONS)/3f)){
 			Wraith w = Wraith.spawnAt(pos, Wraith.class);
 			if (w != null) {
 				Buff.affect(w, Corruption.class);
@@ -938,17 +954,18 @@ public abstract class Mob extends Char {
 	}
 
 	public float lootChance(){
+		Hero h = killerHero != null ? killerHero : Dungeon.hero;
 		float lootChance = this.lootChance;
 
-		float dropBonus = RingOfWealth.dropChanceMultiplier( Dungeon.hero );
+		float dropBonus = RingOfWealth.dropChanceMultiplier( h );
 
-		Talent.BountyHunterTracker bhTracker = Dungeon.hero.buff(Talent.BountyHunterTracker.class);
+		Talent.BountyHunterTracker bhTracker = h.buff(Talent.BountyHunterTracker.class);
 		if (bhTracker != null){
-			Preparation prep = Dungeon.hero.buff(Preparation.class);
+			Preparation prep = h.buff(Preparation.class);
 			if (prep != null){
 				// 2/4/8/16% per prep level, multiplied by talent points
 				float bhBonus = 0.02f * (float)Math.pow(2, prep.attackLevel()-1);
-				bhBonus *= Dungeon.hero.pointsInTalent(Talent.BOUNTY_HUNTER);
+				bhBonus *= h.pointsInTalent(Talent.BOUNTY_HUNTER);
 				dropBonus += bhBonus;
 			}
 		}
@@ -957,9 +974,10 @@ public abstract class Mob extends Char {
 
 		return lootChance * dropBonus;
 	}
-	
+
 	public void rollToDropLoot(){
-		if (Dungeon.hero.lvl > maxLvl + 2) return;
+		Hero h = killerHero != null ? killerHero : Dungeon.hero;
+		if (h.lvl > maxLvl + 2) return;
 
 		MasterThievesArmband.StolenTracker stolen = buff(MasterThievesArmband.StolenTracker.class);
 		if (stolen == null || !stolen.itemWasStolen()) {
@@ -970,19 +988,19 @@ public abstract class Mob extends Char {
 				}
 			}
 		}
-		
+
 		//ring of wealth logic
-		if (Ring.getBuffedBonus(Dungeon.hero, RingOfWealth.Wealth.class) > 0) {
+		if (Ring.getBuffedBonus(h, RingOfWealth.Wealth.class) > 0) {
 			int rolls = 1;
 			if (properties.contains(Property.BOSS)) rolls = 15;
 			else if (properties.contains(Property.MINIBOSS)) rolls = 5;
-			ArrayList<Item> bonus = RingOfWealth.tryForBonusDrop(Dungeon.hero, rolls);
+			ArrayList<Item> bonus = RingOfWealth.tryForBonusDrop(h, rolls);
 			if (bonus != null && !bonus.isEmpty()) {
 				for (Item b : bonus) Dungeon.level.drop(b, pos).sprite.drop();
 				RingOfWealth.showFlareForBonusDrop(sprite);
 			}
 		}
-		
+
 		//lucky enchant logic
 		if (buff(Lucky.LuckProc.class) != null){
 			Dungeon.level.drop(buff(Lucky.LuckProc.class).genLoot(), pos).sprite.drop();
@@ -991,8 +1009,8 @@ public abstract class Mob extends Char {
 
 		//soul eater talent
 		if (buff(SoulMark.class) != null &&
-				Random.Int(10) < Dungeon.hero.pointsInTalent(Talent.SOUL_EATER)){
-			Talent.onFoodEaten(Dungeon.hero, 0, null);
+				Random.Int(10) < h.pointsInTalent(Talent.SOUL_EATER)){
+			Talent.onFoodEaten(h, 0, null);
 		}
 
 	}
