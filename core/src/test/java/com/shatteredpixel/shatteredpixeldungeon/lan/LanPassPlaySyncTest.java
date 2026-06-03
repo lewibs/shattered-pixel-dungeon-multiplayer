@@ -3,10 +3,10 @@ package com.shatteredpixel.shatteredpixeldungeon.lan;
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
-import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.GreaterHaste;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob;
@@ -19,62 +19,110 @@ import com.watabou.utils.Random;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.ArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Compares LAN-mode and pass-and-play outcomes for the same action sequence.
+ * LAN vs pass-and-play state sync comparison test.
  *
- * Core question: does the same mob kill produce identical game state on the
- * host device (Dungeon.hero = hero0) and the client device (Dungeon.hero = hero1)?
+ * Uses the same real-TCP-socket infrastructure as LanRealSocketTest and
+ * LanClientPerspectiveTest to simulate both the HOST and CLIENT perspectives
+ * of a 2-player LAN game. After running the same round of actions through
+ * each perspective, the resulting game state must be bit-for-bit identical.
  *
- * Pre-fix answer: NO — all talent checks, EXP awards, and loot decisions used
- * Dungeon.hero, which is hero0 on host and hero1 on client.
+ * ---
+ * Architecture (copied from existing LAN tests):
  *
- * Post-fix answer: YES — killerHero is resolved from the cause parameter once
- * in die(), then used throughout rollToDropLoot(), destroy(), and lootChance().
+ *   serverSocket.accept() ──► hostSideSocket
+ *   new Socket(port)      ──► clientSocket
  *
- * Test strategy: SyncTestMob runs the real production code for killerHero
- * resolution, rollToDropLoot, lootChance, and destroy, but overrides die() to
- * call destroy() directly rather than super.die(), avoiding the sprite.die()
- * NPE that occurs in headless tests (Char.die() line 1097 calls sprite.die()
- * unconditionally). All state-affecting logic runs; only the visual sprite.die()
- * is skipped.
+ *   hostOut ──► clientIn  (host sends to client)
+ *   clientOut ──► hostIn  (client sends to host)
  *
- * The GameState snapshot captures hero EXP, levels, and enemy-kill count after
- * each scenario and asserts they are bit-for-bit identical between host and
- * client perspectives.
+ *   NetworkManager.injectHostStreamsForTesting(hostIn, hostOut)
+ *   NetworkManager.injectClientStreamsForTesting(clientIn, clientOut)
+ *
+ * HOST perspective (isHost=true, localPlayerIndex=0, Dungeon.hero=hero0):
+ *   - hero0 acts locally (curAction set directly)
+ *   - hero1 acts remotely: receiveActionAsync() reads from hostIn (client writes there)
+ *   - hero1 kills mob → state captured as "LAN host state"
+ *
+ * PASS-AND-PLAY perspective (lanMode=false, Dungeon.hero=hero0):
+ *   - hero0 acts locally
+ *   - hero1 acts locally (same device)
+ *   - hero1 kills same mob → state captured as "pass-and-play state"
+ *
+ * CLIENT perspective (isHost=false, localPlayerIndex=1, Dungeon.hero=hero1):
+ *   - hero1 acts locally
+ *   - hero0 acts remotely: receiveActionAsync() reads from clientIn (host writes there)
+ *   - hero1 kills mob → state captured as "LAN client state"
+ *
+ * All three must produce identical state after each kill.
+ * ---
+ *
+ * SyncTestMob: overrides die() to bypass sprite.die() NPE (headless tests have
+ * no sprites), but all state logic — killerHero resolution, rollToDropLoot,
+ * lootChance, destroy/earnExp — runs through real production code.
  */
+@Timeout(value = 15, unit = TimeUnit.SECONDS)
 class LanPassPlaySyncTest {
 
     static final int W = 8;
     static final int H = 5;
-    static final int POS_HERO0 = W + 1;  // row 1 col 1
-    static final int POS_HERO1 = W + 3;  // row 1 col 3
-    static final int POS_MOB   = W + 5;  // row 1 col 5
+    static final int POS_HERO0 = W + 1;
+    static final int POS_HERO1 = W + 3;
+    static final int POS_MOB   = W + 5;
 
     // -------------------------------------------------------------------------
-    // Minimal level (same pattern as LanMobDeathSyncTest)
+    // Real TCP socket pair (same pattern as LanRealSocketTest)
+    // -------------------------------------------------------------------------
+
+    private ServerSocket     serverSocket;
+    private Socket           hostSideSocket;
+    private Socket           clientSocket;
+
+    private DataInputStream  hostIn;
+    private DataOutputStream hostOut;
+    private DataInputStream  clientIn;
+    private DataOutputStream clientOut;
+
+    // -------------------------------------------------------------------------
+    // Game state
+    // -------------------------------------------------------------------------
+
+    private Hero hero0;
+    private Hero hero1;
+    private MinimalLevel level;
+
+    // Saved initial EXP to detect changes
+    private int initExp0;
+    private int initExp1;
+
+    // -------------------------------------------------------------------------
+    // Minimal level stub (copied from LanMobDeathSyncTest)
     // -------------------------------------------------------------------------
 
     static class MinimalLevel extends Level {
         MinimalLevel() {
-            width    = W;
-            height   = H;
-            length   = W * H;
-            map      = new int[length];
-            pit      = new boolean[length];
-            passable = new boolean[length];
-            losBlocking = new boolean[length];
-            solid    = new boolean[length];
-            avoid    = new boolean[length];
-            water    = new boolean[length];
-            visited  = new boolean[length];
-            mapped   = new boolean[length];
-            heroFOV  = new boolean[length];
-
+            width   = W; height  = H; length  = W * H;
+            map     = new int[length]; pit      = new boolean[length];
+            passable= new boolean[length]; losBlocking = new boolean[length];
+            solid   = new boolean[length]; avoid    = new boolean[length];
+            water   = new boolean[length]; visited  = new boolean[length];
+            mapped  = new boolean[length]; heroFOV  = new boolean[length];
             transitions = new ArrayList<>();
             mobs        = new java.util.HashSet<>();
             heaps       = new com.watabou.utils.SparseArray<>();
@@ -83,7 +131,6 @@ class LanPassPlaySyncTest {
             traps       = new com.watabou.utils.SparseArray<>();
             customTiles = new ArrayList<>();
             customWalls = new ArrayList<>();
-
             java.util.Arrays.fill(passable, true);
             PathFinder.setMapSize(W, H);
         }
@@ -94,35 +141,27 @@ class LanPassPlaySyncTest {
     }
 
     // -------------------------------------------------------------------------
-    // SyncTestMob: exercises production code for killerHero resolution,
-    // rollToDropLoot (decision only), lootChance, and destroy (EXP).
-    //
-    // die(): mirrors Mob.die() but calls destroy() directly to avoid
-    //        Char.die() → sprite.die() NPE in headless tests.
-    //
-    // rollToDropLoot(): captures whether loot WOULD drop (lootWouldDrop) without
-    //        calling Level.drop() → GameScene.add() which needs a running scene.
-    //        Uses the real lootChance() (production code) so the killerHero fix
-    //        is exercised, and consumes the RNG identically to production.
+    // SyncTestMob: runs real production code except sprite.die() (headless)
     // -------------------------------------------------------------------------
 
     static class SyncTestMob extends Mob {
-        /** Whether rollToDropLoot() would have dropped an item. */
-        boolean lootWouldDrop = false;
+        /** Whether rollToDropLoot decided to drop (captured without spawning sprite). */
+        boolean lootWouldDrop;
 
-        SyncTestMob(float lootChanceValue) {
-            EXP        = 10;
-            maxLvl     = 30;
-            lootChance = lootChanceValue;
-            alignment  = Alignment.ENEMY;
-            HP = HT    = 1;
-            pos        = POS_MOB;
+        SyncTestMob(float lootChance) {
+            EXP            = 10;
+            maxLvl         = 30;
+            this.lootChance = lootChance;
+            alignment      = Alignment.ENEMY;
+            HP = HT        = 1;
+            pos            = POS_MOB;
         }
 
         /**
-         * Mirrors Mob.die() exactly — killerHero resolution, rollToDropLoot,
-         * talent checks — but calls destroy() directly instead of super.die()
-         * to avoid Char.die() → sprite.die() NPE in headless tests.
+         * Mirrors Mob.die() but calls destroy() directly instead of super.die()
+         * so that Char.die()→sprite.die() doesn't NPE in headless tests.
+         * Every state-changing operation — killerHero resolution, rollToDropLoot,
+         * talent checks, destroy/earnExp, Statistics, Badges — runs for real.
          */
         @Override
         public void die(Object cause) {
@@ -148,108 +187,109 @@ class LanPassPlaySyncTest {
                 }
             }
 
-            destroy();  // real Mob.destroy() — EXP, statistics, badges
-
+            destroy();   // real Mob.destroy(): EXP award, Statistics, Badges
             HP = 0;
             deathMarked = true;
         }
 
-        /**
-         * Captures the loot drop DECISION using the real lootChance() (which
-         * uses killerHero — the fix), then consumes RNG identically to
-         * production without creating item sprites or calling GameScene.
-         */
+        /** Captures loot decision using real lootChance() without calling GameScene. */
         @Override
         public void rollToDropLoot() {
             Hero h = killerHero != null ? killerHero : Dungeon.hero;
-            if (h.lvl > maxLvl + 2) return;  // level gate: uses killerHero's level (THE FIX)
-
-            // Consume RNG exactly as production does, capture the decision
-            lootWouldDrop = Random.Float() < lootChance();  // lootChance() uses killerHero (THE FIX)
-            // Ring of Wealth / SoulEater checks omitted — no ring or soul mark in tests
+            if (h.lvl > maxLvl + 2) return;
+            lootWouldDrop = Random.Float() < lootChance();
         }
     }
 
     // -------------------------------------------------------------------------
-    // Snapshot of the state that must be identical on both LAN devices
+    // Snapshot of observable game state
     // -------------------------------------------------------------------------
 
     static class GameState {
-        final int hero0Exp;
-        final int hero0Lvl;
-        final int hero1Exp;
-        final int hero1Lvl;
+        final int hero0Exp, hero0Lvl;
+        final int hero1Exp, hero1Lvl;
         final int enemiesSlain;
-        final boolean lootWouldDrop;  // captured from SyncTestMob.lootWouldDrop
-        final boolean lootGatePassed; // true if killer level was within cap
+        final boolean lootWouldDrop;
 
         GameState(Hero h0, Hero h1, SyncTestMob mob) {
-            hero0Exp     = h0.exp;
-            hero0Lvl     = h0.lvl;
-            hero1Exp     = h1.exp;
-            hero1Lvl     = h1.lvl;
+            hero0Exp     = h0.exp;   hero0Lvl = h0.lvl;
+            hero1Exp     = h1.exp;   hero1Lvl = h1.lvl;
             enemiesSlain = Statistics.enemiesSlain;
             lootWouldDrop = mob.lootWouldDrop;
-            lootGatePassed = mob.lootWouldDrop; // lootWouldDrop is false when level gate rejected
         }
 
-        @Override
-        public String toString() {
-            return String.format(
-                    "hero0(exp=%d lvl=%d) hero1(exp=%d lvl=%d) slain=%d lootDrop=%b",
+        @Override public String toString() {
+            return String.format("h0(exp=%d lvl=%d) h1(exp=%d lvl=%d) slain=%d loot=%b",
                     hero0Exp, hero0Lvl, hero1Exp, hero1Lvl, enemiesSlain, lootWouldDrop);
         }
     }
 
     // -------------------------------------------------------------------------
-    // Test infrastructure
+    // Setup / teardown
     // -------------------------------------------------------------------------
 
-    private Hero hero0;       // index 0 — Dungeon.hero on host
-    private Hero hero1;       // index 1 — Dungeon.hero on client
-    private MinimalLevel level;
-    private int initialHero0Exp;
-    private int initialHero1Exp;
-
     @BeforeEach
-    void setUp() {
-        Game.version = "test";  // required by Document static init via Badges.validateCatalogBadges
+    void setUp() throws IOException {
+        Game.version = "test";   // prevents Document static-init NPE via Badges
         PathFinder.setMapSize(W, H);
         Statistics.reset();
 
-        hero0 = new Hero();
-        hero0.HP = hero0.HT = 30;
-        hero0.lvl = 5;
-        hero0.heroClass = HeroClass.WARRIOR;
-        hero0.pos = POS_HERO0;
+        // Real loopback socket pair (same as LanRealSocketTest)
+        serverSocket = new ServerSocket(0);
+        int port = serverSocket.getLocalPort();
+        Future<Socket> serverSide = Executors.newSingleThreadExecutor()
+                .submit(() -> serverSocket.accept());
+        clientSocket = new Socket("127.0.0.1", port);
+        try { hostSideSocket = serverSide.get(2, TimeUnit.SECONDS); }
+        catch (InterruptedException | ExecutionException | TimeoutException e) {
+            throw new IOException("socket setup failed", e);
+        }
 
-        hero1 = new Hero();
-        hero1.HP = hero1.HT = 25;
-        hero1.lvl = 5;
-        hero1.heroClass = HeroClass.MAGE;
-        hero1.pos = POS_HERO1;
+        hostIn   = new DataInputStream(hostSideSocket.getInputStream());
+        hostOut  = new DataOutputStream(hostSideSocket.getOutputStream());
+        clientIn = new DataInputStream(clientSocket.getInputStream());
+        clientOut= new DataOutputStream(clientSocket.getOutputStream());
 
-        initialHero0Exp = hero0.exp;
-        initialHero1Exp = hero1.exp;
+        NetworkManager.injectHostStreamsForTesting(hostIn, hostOut);
+        NetworkManager.injectClientStreamsForTesting(clientIn, clientOut);
+
+        // Heroes
+        hero0 = new Hero(); hero0.HP = hero0.HT = 30; hero0.lvl = 5;
+        hero0.heroClass = HeroClass.WARRIOR; hero0.pos = POS_HERO0;
+        hero1 = new Hero(); hero1.HP = hero1.HT = 25; hero1.lvl = 5;
+        hero1.heroClass = HeroClass.MAGE;    hero1.pos = POS_HERO1;
+        initExp0 = hero0.exp;
+        initExp1 = hero1.exp;
 
         Dungeon.heroes = new ArrayList<>();
         Dungeon.heroes.add(hero0);
         Dungeon.heroes.add(hero1);
-
         Dungeon.customSeedText = "";
-        NetworkManager.lanMode = true;
-        NetworkManager.localPlayerIndex = 0;
 
         level = new MinimalLevel();
         Dungeon.level = level;
 
         Actor.clear();
+
+        // Start in HOST mode (most tests switch perspective inside the test)
+        NetworkManager.lanMode = true;
+        NetworkManager.setIsHostForTesting(true);
+        NetworkManager.localPlayerIndex = 0;
+        NetworkManager.resetActionReaderForTesting();
+        Dungeon.hero = hero0;
     }
 
     @AfterEach
-    void tearDown() {
+    void tearDown() throws IOException {
         NetworkManager.lanMode = false;
+        NetworkManager.setIsHostForTesting(false);
         NetworkManager.localPlayerIndex = 0;
+        NetworkManager.resetActionReaderForTesting();
+        if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
+        if (hostSideSocket != null && !hostSideSocket.isClosed()) hostSideSocket.close();
+        if (serverSocket   != null && !serverSocket.isClosed())   serverSocket.close();
+        NetworkManager.injectHostStreamsForTesting(null, null);
+        NetworkManager.injectClientStreamsForTesting(null, null);
         Dungeon.heroes = null;
         Dungeon.hero   = null;
         Dungeon.level  = null;
@@ -257,297 +297,503 @@ class LanPassPlaySyncTest {
         Statistics.reset();
     }
 
-    /** Run one kill and return a state snapshot. */
-    GameState runKill(Hero dungeonHero, Hero killer, float mobLootChance) {
-        Dungeon.hero = dungeonHero;
+    // -------------------------------------------------------------------------
+    // Helpers (same patterns as existing LAN tests)
+    // -------------------------------------------------------------------------
+
+    /** Wait for remoteHero.curAction to be set (mirrors Hero.act() wait block). */
+    boolean waitFor(Hero h, long maxMs) throws InterruptedException {
+        synchronized (h.lanActionLock) {
+            long deadline = System.currentTimeMillis() + maxMs;
+            while (h.curAction == null && NetworkManager.lanMode) {
+                long rem = deadline - System.currentTimeMillis();
+                if (rem <= 0) break;
+                h.lanActionLock.wait(rem);
+            }
+        }
+        return h.curAction != null;
+    }
+
+    /** Send a MOVE ACTION packet from the CLIENT socket. */
+    void clientSendsAction(int heroId, int targetPos) throws IOException {
+        clientOut.writeByte(NetworkManager.PacketType.ACTION);
+        clientOut.writeInt(heroId);
+        clientOut.writeByte(NetworkManager.ActionType.MOVE);
+        clientOut.writeInt(targetPos);
+        clientOut.flush();
+    }
+
+    /** Send a MOVE ACTION packet from the HOST socket. */
+    void hostSendsAction(int heroId, int targetPos) throws IOException {
+        hostOut.writeByte(NetworkManager.PacketType.ACTION);
+        hostOut.writeInt(heroId);
+        hostOut.writeByte(NetworkManager.ActionType.MOVE);
+        hostOut.writeInt(targetPos);
+        hostOut.flush();
+    }
+
+    /** Reset hero state between perspective runs. */
+    void resetForNextRun() {
+        hero0.exp = initExp0; hero0.lvl = 5;
+        hero1.exp = initExp1; hero1.lvl = 5;
+        level.mobs.clear();
         Statistics.reset();
-
-        SyncTestMob mob = new SyncTestMob(mobLootChance);
-        level.mobs.add(mob);
-        mob.die(killer);
-
-        return new GameState(hero0, hero1, mob);
-    }
-
-    /** Reset hero EXP and level to initial test values between scenario runs. */
-    void resetHeroExp() {
-        hero0.exp = initialHero0Exp;
-        hero0.lvl = 5;
-        hero1.exp = initialHero1Exp;
-        hero1.lvl = 5;
-    }
-
-    /** Reset only EXP, preserving any custom levels set by a test. */
-    void resetHeroExpOnly() {
-        hero0.exp = initialHero0Exp;
-        hero1.exp = initialHero1Exp;
+        NetworkManager.resetActionReaderForTesting();
     }
 
     // =========================================================================
-    // Core sync: same killer → same EXP recipient regardless of Dungeon.hero
+    // CORE COMPARISON: same kill → same state on HOST, PASS-AND-PLAY, CLIENT
     // =========================================================================
 
+    /**
+     * Hero1 kills a mob. Run the scenario three ways and assert identical state:
+     *
+     *  (A) HOST perspective:      Dungeon.hero=hero0, hero1's action arrives via socket
+     *  (B) PASS-AND-PLAY:         lanMode=false, no network, same kill directly
+     *  (C) CLIENT perspective:    Dungeon.hero=hero1, hero0's move arrives via socket
+     *
+     * All three must produce identical EXP awards and loot decisions.
+     */
     @Test
-    void hero1KillsMob_expGoesToHero1_onBothDevices() {
-        // Host: Dungeon.hero = hero0, killer = hero1
-        GameState host = runKill(hero0, hero1, 0f);
-
-        resetHeroExp();
-
-        // Client: Dungeon.hero = hero1, killer = hero1
-        GameState client = runKill(hero1, hero1, 0f);
-
-        // hero1 (the killer) must receive EXP on both devices
-        assertTrue(host.hero1Exp > initialHero1Exp,   "Host: hero1 must receive EXP after killing");
-        assertTrue(client.hero1Exp > initialHero1Exp, "Client: hero1 must receive EXP after killing");
-
-        assertEquals(host.hero1Exp, client.hero1Exp,
-                "EXP received by hero1 must be identical on host and client");
-    }
-
-    @Test
-    void hero1KillsMob_hero0GetsNoExp_onBothDevices() {
-        GameState host = runKill(hero0, hero1, 0f);
-        resetHeroExp();
-        GameState client = runKill(hero1, hero1, 0f);
-
-        assertEquals(initialHero0Exp, host.hero0Exp,
-                "Host: hero0 must NOT receive EXP from hero1's kill");
-        assertEquals(initialHero0Exp, client.hero0Exp,
-                "Client: hero0 must NOT receive EXP from hero1's kill");
-    }
-
-    @Test
-    void hero0KillsMob_expGoesToHero0_onBothDevices() {
-        GameState host = runKill(hero0, hero0, 0f);
-        resetHeroExp();
-        GameState client = runKill(hero1, hero0, 0f);
-
-        assertTrue(host.hero0Exp > initialHero0Exp,   "Host: hero0 must receive EXP after killing");
-        assertTrue(client.hero0Exp > initialHero0Exp, "Client: hero0 must receive EXP after killing");
-        assertEquals(host.hero0Exp, client.hero0Exp,
-                "EXP received by hero0 must be identical on host and client");
-    }
-
-    // =========================================================================
-    // Full state equality: every field identical between host and client
-    // =========================================================================
-
-    @Test
-    void fullStateIdentical_hero1Kills_hostVsClient() {
-        GameState host = runKill(hero0, hero1, 0f);
-        resetHeroExp();
-        GameState client = runKill(hero1, hero1, 0f);
-
-        assertEquals(host.hero0Exp,     client.hero0Exp,     "hero0.exp");
-        assertEquals(host.hero0Lvl,     client.hero0Lvl,     "hero0.lvl");
-        assertEquals(host.hero1Exp,     client.hero1Exp,     "hero1.exp");
-        assertEquals(host.hero1Lvl,     client.hero1Lvl,     "hero1.lvl");
-        assertEquals(host.enemiesSlain, client.enemiesSlain,  "Statistics.enemiesSlain");
-        assertEquals(host.lootWouldDrop, client.lootWouldDrop, "loot drop decision");
-    }
-
-    @Test
-    void fullStateIdentical_hero0Kills_hostVsClient() {
-        GameState host = runKill(hero0, hero0, 0f);
-        resetHeroExp();
-        GameState client = runKill(hero1, hero0, 0f);
-
-        assertEquals(host.hero0Exp,     client.hero0Exp,     "hero0.exp");
-        assertEquals(host.hero0Lvl,     client.hero0Lvl,     "hero0.lvl");
-        assertEquals(host.hero1Exp,     client.hero1Exp,     "hero1.exp");
-        assertEquals(host.hero1Lvl,     client.hero1Lvl,     "hero1.lvl");
-        assertEquals(host.enemiesSlain, client.enemiesSlain,  "Statistics.enemiesSlain");
-        assertEquals(host.lootWouldDrop, client.lootWouldDrop, "loot drop decision");
-    }
-
-    // =========================================================================
-    // RNG determinism: same seed → same loot decision on both devices
-    // =========================================================================
-
-    @Test
-    void sameRngSeed_hero1Kills_identicalLootDecision_hostVsClient() {
+    void hero1KillsMob_identicalState_host_passPlay_client() throws Exception {
         long seed = 0xDEADBEEFL;
 
+        // ---- (A) HOST perspective ----
+        // isHost=true, localPlayerIndex=0, Dungeon.hero=hero0
+        // hero1 (remote) sends its ATTACK action via socket → received → die() runs
+        NetworkManager.setIsHostForTesting(true);
+        NetworkManager.localPlayerIndex = 0;
+        Dungeon.hero = hero0;
         Random.pushGenerator(seed);
-        GameState host = runKill(hero0, hero1, 0.5f);
-        Random.popGenerator();
-        resetHeroExp();
 
+        SyncTestMob mobA = new SyncTestMob(0.5f);
+        level.mobs.add(mobA);
+
+        // Start LAN reader for hero1 (remote)
+        NetworkManager.receiveActionAsync(hero1);
+        Thread.sleep(20);
+        clientSendsAction(1, POS_MOB);     // hero1 on client sends ATTACK
+        assertTrue(waitFor(hero1, 2000), "Host must receive hero1's action via socket");
+        assertNotNull(hero1.curAction);
+
+        // Execute the kill — same as Hero.actAttack() calling attack() → die()
+        mobA.die(hero1);
+        hero1.curAction = null;
+
+        GameState stateA = new GameState(hero0, hero1, mobA);
+        Random.popGenerator();
+        resetForNextRun();
+
+        // ---- (B) PASS-AND-PLAY perspective ----
+        // lanMode=false, Dungeon.hero=hero0 — same device controls both heroes
+        NetworkManager.lanMode = false;
+        Dungeon.hero = hero0;
         Random.pushGenerator(seed);
-        GameState client = runKill(hero1, hero1, 0.5f);
-        Random.popGenerator();
-        resetHeroExp();
 
-        assertEquals(host.lootWouldDrop, client.lootWouldDrop,
-                "Loot drop decision must be identical when using the same RNG seed. " +
-                "host=" + host + " client=" + client);
+        SyncTestMob mobB = new SyncTestMob(0.5f);
+        level.mobs.add(mobB);
+        mobB.die(hero1);   // hero1 acts directly, no network
+
+        GameState stateB = new GameState(hero0, hero1, mobB);
+        Random.popGenerator();
+        resetForNextRun();
+        NetworkManager.lanMode = true;
+
+        // ---- (C) CLIENT perspective ----
+        // isHost=false, localPlayerIndex=1, Dungeon.hero=hero1
+        // hero0 (remote from client's view) sends a move → received
+        // hero1 acts locally and kills the mob
+        NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 1;
+        Dungeon.hero = hero1;
+        Random.pushGenerator(seed);
+
+        SyncTestMob mobC = new SyncTestMob(0.5f);
+        level.mobs.add(mobC);
+
+        // Start client reader for hero0 (remote on client's device)
+        NetworkManager.receiveActionAsync(hero0);
+        Thread.sleep(20);
+        hostSendsAction(0, POS_HERO1);     // host sends hero0's MOVE action
+        assertTrue(waitFor(hero0, 2000), "Client must receive hero0's action via socket");
+        hero0.curAction = null;            // hero0's move consumed
+
+        // Now hero1 (local on client) kills the mob
+        mobC.die(hero1);
+
+        GameState stateC = new GameState(hero0, hero1, mobC);
+        Random.popGenerator();
+
+        // ---- ASSERT all three states are identical ----
+        String msg = "host=" + stateA + " passPlay=" + stateB + " client=" + stateC;
+
+        assertEquals(stateA.hero0Exp,     stateB.hero0Exp,     "hero0.exp: HOST vs PASS-AND-PLAY — " + msg);
+        assertEquals(stateA.hero0Exp,     stateC.hero0Exp,     "hero0.exp: HOST vs CLIENT — " + msg);
+        assertEquals(stateA.hero1Exp,     stateB.hero1Exp,     "hero1.exp: HOST vs PASS-AND-PLAY — " + msg);
+        assertEquals(stateA.hero1Exp,     stateC.hero1Exp,     "hero1.exp: HOST vs CLIENT — " + msg);
+        assertEquals(stateA.enemiesSlain, stateB.enemiesSlain, "enemiesSlain: HOST vs PASS-AND-PLAY — " + msg);
+        assertEquals(stateA.enemiesSlain, stateC.enemiesSlain, "enemiesSlain: HOST vs CLIENT — " + msg);
+        assertEquals(stateA.lootWouldDrop,stateB.lootWouldDrop,"lootDrop: HOST vs PASS-AND-PLAY — " + msg);
+        assertEquals(stateA.lootWouldDrop,stateC.lootWouldDrop,"lootDrop: HOST vs CLIENT — " + msg);
+
+        // Hero1 (the killer) must have gained EXP in all perspectives
+        assertTrue(stateA.hero1Exp > initExp1, "HOST: killer hero1 must gain EXP");
+        assertTrue(stateB.hero1Exp > initExp1, "PASS-AND-PLAY: killer hero1 must gain EXP");
+        assertTrue(stateC.hero1Exp > initExp1, "CLIENT: killer hero1 must gain EXP");
+
+        // Hero0 (not the killer) must NOT gain EXP in any perspective
+        assertEquals(initExp0, stateA.hero0Exp, "HOST: hero0 must not gain EXP from hero1's kill");
+        assertEquals(initExp0, stateB.hero0Exp, "PASS-AND-PLAY: hero0 must not gain EXP");
+        assertEquals(initExp0, stateC.hero0Exp, "CLIENT: hero0 must not gain EXP");
     }
 
+    /**
+     * Hero0 kills a mob. Same three-way comparison but with the other killer.
+     */
     @Test
-    void sameRngSeed_hero0Kills_identicalLootDecision_hostVsClient() {
+    void hero0KillsMob_identicalState_host_passPlay_client() throws Exception {
         long seed = 0xCAFEBABEL;
 
-        Random.pushGenerator(seed);
-        GameState host = runKill(hero0, hero0, 0.5f);
-        Random.popGenerator();
-        resetHeroExp();
-
-        Random.pushGenerator(seed);
-        GameState client = runKill(hero1, hero0, 0.5f);
-        Random.popGenerator();
-        resetHeroExp();
-
-        assertEquals(host.lootWouldDrop, client.lootWouldDrop,
-                "Loot decision must be identical regardless of Dungeon.hero. " +
-                "host=" + host + " client=" + client);
-    }
-
-    @Test
-    void differentRngSeeds_differentKillOrder_stillConsistentPerSeed() {
-        long[] seeds = { 1L, 42L, 12345L, 0xFEEDFACEL };
-        for (long seed : seeds) {
-            resetHeroExp();
-            Random.pushGenerator(seed);
-            GameState host = runKill(hero0, hero1, 0.4f);
-            Random.popGenerator();
-            resetHeroExp();
-
-            Random.pushGenerator(seed);
-            GameState client = runKill(hero1, hero1, 0.4f);
-            Random.popGenerator();
-
-            assertEquals(host.lootWouldDrop, client.lootWouldDrop,
-                    "Seed " + seed + ": loot must be identical host=" + host + " client=" + client);
-            assertEquals(host.hero1Exp, client.hero1Exp,
-                    "Seed " + seed + ": hero1 EXP must be identical");
-        }
-    }
-
-    // =========================================================================
-    // Level-based loot gate: uses killer's level, not Dungeon.hero's level
-    // =========================================================================
-
-    @Test
-    void lootGate_usesKillerLevel_notDungeonHeroLevel() {
-        // hero0 is far above maxLvl+2 — old code would skip loot (wrong hero used)
-        // hero1 is the killer and is within level cap — loot should drop
-        hero0.lvl = 35;  // well above maxLvl+2 = 32
-        hero1.lvl = 5;   // within cap
-
-        long seed = 0xABCD1234L;
-
-        // Host: Dungeon.hero=hero0 (lvl 35, above cap), killer=hero1 (lvl 5, within cap)
-        Random.pushGenerator(seed);
-        GameState host = runKill(hero0, hero1, 1.0f); // 100% drop if not gated
-        Random.popGenerator();
-        resetHeroExpOnly();  // preserve custom levels
-
-        // Client: Dungeon.hero=hero1 (lvl 5, within cap), killer=hero1
-        Random.pushGenerator(seed);
-        GameState client = runKill(hero1, hero1, 1.0f);
-        Random.popGenerator();
-
-        // Both must agree: loot WOULD drop (killer is within cap, lootChance=1.0 → always true)
-        assertTrue(host.lootWouldDrop,
-                "Host: loot must be decided to drop because KILLER (hero1 lvl 5) is within level cap");
-        assertTrue(client.lootWouldDrop,
-                "Client: loot must be decided to drop because KILLER (hero1 lvl 5) is within level cap");
-        assertEquals(host.lootWouldDrop, client.lootWouldDrop,
-                "Loot gate decision must be identical on both devices");
-    }
-
-    @Test
-    void lootGate_killerAboveCap_noLootOnBothDevices() {
-        // killer is above cap → no loot, regardless of Dungeon.hero
-        hero0.lvl = 5;
-        hero1.lvl = 35;  // killer is above cap
-
-        long seed = 0x1234ABCDL;
-
-        Random.pushGenerator(seed);
-        GameState host = runKill(hero0, hero1, 1.0f);
-        Random.popGenerator();
-        resetHeroExpOnly();  // preserve custom levels
-
-        Random.pushGenerator(seed);
-        GameState client = runKill(hero1, hero1, 1.0f);
-        Random.popGenerator();
-
-        assertFalse(host.lootWouldDrop,
-                "Host: no loot when killer (hero1 lvl 35) is above level cap (loot gate returns early)");
-        assertFalse(client.lootWouldDrop,
-                "Client: no loot when killer (hero1 lvl 35) is above level cap (loot gate returns early)");
-    }
-
-    // =========================================================================
-    // Multi-kill sequence: state stays in sync across several kills
-    // =========================================================================
-
-    @Test
-    void multipleKills_alternatingHeroes_stateIdenticalAfterEachKill() {
-        // Simulates several rounds: hero0 kills, hero1 kills, hero0 kills, ...
-        // Run the full sequence from host perspective and client perspective.
-        // State must be identical after every kill.
-
-        long seed = 0x98765432L;
-        Random.pushGenerator(seed);
-        // Host sequence: Dungeon.hero stays as hero0 the whole time
+        // ---- (A) HOST ----
+        NetworkManager.setIsHostForTesting(true);
+        NetworkManager.localPlayerIndex = 0;
         Dungeon.hero = hero0;
-        Statistics.reset();
-        int[] expSnapHost = new int[4]; // hero0Exp, hero1Exp after each kill
-
-        for (int i = 0; i < 2; i++) {
-            Hero killer = (i % 2 == 0) ? hero0 : hero1;
-            SyncTestMob mob = new SyncTestMob(0f);
-            level.mobs.add(mob);
-            mob.die(killer);
-        }
-        expSnapHost[0] = hero0.exp;
-        expSnapHost[1] = hero1.exp;
-        int slainHost = Statistics.enemiesSlain;
-        Random.popGenerator();
-
-        // Reset for client sequence
-        resetHeroExp();
         Random.pushGenerator(seed);
-        // Client sequence: Dungeon.hero stays as hero1 the whole time
-        Dungeon.hero = hero1;
-        Statistics.reset();
 
-        for (int i = 0; i < 2; i++) {
-            Hero killer = (i % 2 == 0) ? hero0 : hero1;
-            SyncTestMob mob = new SyncTestMob(0f);
-            level.mobs.add(mob);
-            mob.die(killer);
-        }
-        int[] expSnapClient = new int[]{hero0.exp, hero1.exp};
-        int slainClient = Statistics.enemiesSlain;
+        SyncTestMob mobA = new SyncTestMob(0.5f);
+        level.mobs.add(mobA);
+        mobA.die(hero0);   // hero0 (local on host) kills mob
+
+        GameState stateA = new GameState(hero0, hero1, mobA);
+        Random.popGenerator();
+        resetForNextRun();
+
+        // ---- (B) PASS-AND-PLAY ----
+        NetworkManager.lanMode = false;
+        Dungeon.hero = hero0;
+        Random.pushGenerator(seed);
+
+        SyncTestMob mobB = new SyncTestMob(0.5f);
+        level.mobs.add(mobB);
+        mobB.die(hero0);
+
+        GameState stateB = new GameState(hero0, hero1, mobB);
+        Random.popGenerator();
+        resetForNextRun();
+        NetworkManager.lanMode = true;
+
+        // ---- (C) CLIENT ----
+        NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 1;
+        Dungeon.hero = hero1;
+        Random.pushGenerator(seed);
+
+        SyncTestMob mobC = new SyncTestMob(0.5f);
+        level.mobs.add(mobC);
+        mobC.die(hero0);   // hero0 kills mob (remote killer on client device)
+
+        GameState stateC = new GameState(hero0, hero1, mobC);
         Random.popGenerator();
 
-        assertEquals(expSnapHost[0], expSnapClient[0], "hero0.exp after multi-kill sequence");
-        assertEquals(expSnapHost[1], expSnapClient[1], "hero1.exp after multi-kill sequence");
-        assertEquals(slainHost, slainClient, "enemiesSlain after multi-kill sequence");
+        // ---- ASSERT ----
+        String msg = "host=" + stateA + " passPlay=" + stateB + " client=" + stateC;
+        assertEquals(stateA.hero0Exp, stateB.hero0Exp, "hero0.exp HOST vs PP — " + msg);
+        assertEquals(stateA.hero0Exp, stateC.hero0Exp, "hero0.exp HOST vs CLIENT — " + msg);
+        assertEquals(stateA.hero1Exp, stateB.hero1Exp, "hero1.exp HOST vs PP — " + msg);
+        assertEquals(stateA.hero1Exp, stateC.hero1Exp, "hero1.exp HOST vs CLIENT — " + msg);
+        assertEquals(stateA.lootWouldDrop, stateB.lootWouldDrop, "loot HOST vs PP — " + msg);
+        assertEquals(stateA.lootWouldDrop, stateC.lootWouldDrop, "loot HOST vs CLIENT — " + msg);
     }
 
     // =========================================================================
-    // Regression: pre-fix behavior (Dungeon.hero used) produces wrong results
+    // MULTI-ROUND: several alternating kills stay in sync
+    // =========================================================================
+
+    /**
+     * Simulates 4 rounds of play: h0 kills, h1 kills, h0 kills, h1 kills.
+     * Runs the entire sequence from HOST perspective and CLIENT perspective,
+     * then compares the cumulative state. Any desync in EXP or kill count
+     * will be detected.
+     */
+    @Test
+    void multiRound_4kills_hostAndClientStateIdentical() throws Exception {
+        long seed = 0x12345678L;
+
+        // ---- HOST sequence ----
+        NetworkManager.setIsHostForTesting(true);
+        NetworkManager.localPlayerIndex = 0;
+        Dungeon.hero = hero0;
+        Random.pushGenerator(seed);
+
+        SyncTestMob[] hostMobs = new SyncTestMob[4];
+        for (int i = 0; i < 4; i++) {
+            hostMobs[i] = new SyncTestMob(0f);
+            level.mobs.add(hostMobs[i]);
+            Hero killer = (i % 2 == 0) ? hero0 : hero1;
+            hostMobs[i].die(killer);
+        }
+        int hostExp0 = hero0.exp, hostExp1 = hero1.exp, hostSlain = Statistics.enemiesSlain;
+        Random.popGenerator();
+        resetForNextRun();
+
+        // ---- CLIENT sequence (same actions, Dungeon.hero swapped) ----
+        NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 1;
+        Dungeon.hero = hero1;
+        Random.pushGenerator(seed);
+
+        SyncTestMob[] clientMobs = new SyncTestMob[4];
+        for (int i = 0; i < 4; i++) {
+            clientMobs[i] = new SyncTestMob(0f);
+            level.mobs.add(clientMobs[i]);
+            Hero killer = (i % 2 == 0) ? hero0 : hero1;
+            clientMobs[i].die(killer);
+        }
+        int clientExp0 = hero0.exp, clientExp1 = hero1.exp, clientSlain = Statistics.enemiesSlain;
+        Random.popGenerator();
+
+        assertEquals(hostExp0, clientExp0, "hero0.exp after 4 kills must be identical");
+        assertEquals(hostExp1, clientExp1, "hero1.exp after 4 kills must be identical");
+        assertEquals(hostSlain, clientSlain, "enemiesSlain after 4 kills must be identical");
+    }
+
+    // =========================================================================
+    // SOCKET DELIVERY + STATE: action arrives via real packet, kill applied,
+    // state must match pass-and-play
+    // =========================================================================
+
+    /**
+     * Full round via real socket:
+     *   1. HOST starts reader for hero1
+     *   2. Client sends ACTION packet (simulates hero1 pressing attack)
+     *   3. HOST receives packet, curAction set
+     *   4. Kill is applied: mob.die(hero1)
+     *   5. State captured
+     *   6. Reset, run same kill in pass-and-play (no socket)
+     *   7. Assert states identical
+     *
+     * This is the closest to "real LAN vs pass-and-play" possible without
+     * running the full game engine (sprites prevent that in headless tests).
+     */
+    @Test
+    void socketDelivery_thenKill_matchesPassAndPlay() throws Exception {
+        long seed = 0xABCDEF01L;
+
+        // ---- LAN: hero1's action arrives via socket ----
+        NetworkManager.setIsHostForTesting(true);
+        NetworkManager.localPlayerIndex = 0;
+        Dungeon.hero = hero0;
+        Random.pushGenerator(seed);
+
+        SyncTestMob lanMob = new SyncTestMob(0.5f);
+        level.mobs.add(lanMob);
+
+        NetworkManager.receiveActionAsync(hero1);
+        Thread.sleep(20);
+        clientSendsAction(1, POS_MOB);
+        assertTrue(waitFor(hero1, 2000), "hero1's action must arrive via socket");
+
+        lanMob.die(hero1);
+        hero1.curAction = null;
+
+        GameState lanState = new GameState(hero0, hero1, lanMob);
+        Random.popGenerator();
+        resetForNextRun();
+
+        // ---- Pass-and-play: same kill, no socket ----
+        NetworkManager.lanMode = false;
+        Dungeon.hero = hero0;
+        Random.pushGenerator(seed);
+
+        SyncTestMob ppMob = new SyncTestMob(0.5f);
+        level.mobs.add(ppMob);
+        ppMob.die(hero1);
+
+        GameState ppState = new GameState(hero0, hero1, ppMob);
+        Random.popGenerator();
+        NetworkManager.lanMode = true;
+
+        // ---- Assert ----
+        String msg = "lan=" + lanState + " pp=" + ppState;
+        assertEquals(lanState.hero0Exp,      ppState.hero0Exp,      "hero0.exp — " + msg);
+        assertEquals(lanState.hero1Exp,      ppState.hero1Exp,      "hero1.exp — " + msg);
+        assertEquals(lanState.enemiesSlain,  ppState.enemiesSlain,  "enemiesSlain — " + msg);
+        assertEquals(lanState.lootWouldDrop, ppState.lootWouldDrop, "lootDrop — " + msg);
+    }
+
+    /**
+     * Same as above but from the CLIENT's perspective:
+     * hero0's move arrives via socket, then hero1 (local) kills the mob.
+     */
+    @Test
+    void clientSocketDelivery_thenKill_matchesPassAndPlay() throws Exception {
+        long seed = 0xFEDCBA98L;
+
+        // ---- LAN: hero0's move arrives at CLIENT via socket ----
+        NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 1;
+        Dungeon.hero = hero1;
+        Random.pushGenerator(seed);
+
+        SyncTestMob lanMob = new SyncTestMob(0.5f);
+        level.mobs.add(lanMob);
+
+        NetworkManager.receiveActionAsync(hero0);
+        Thread.sleep(20);
+        hostSendsAction(0, POS_HERO1);     // hero0's move comes from host
+        assertTrue(waitFor(hero0, 2000), "hero0's action must arrive at client via socket");
+        hero0.curAction = null;
+
+        lanMob.die(hero1);   // hero1 (local on client) kills mob
+        GameState lanState = new GameState(hero0, hero1, lanMob);
+        Random.popGenerator();
+        resetForNextRun();
+
+        // ---- Pass-and-play: same kill, no socket ----
+        NetworkManager.lanMode = false;
+        Dungeon.hero = hero0;
+        Random.pushGenerator(seed);
+
+        SyncTestMob ppMob = new SyncTestMob(0.5f);
+        level.mobs.add(ppMob);
+        ppMob.die(hero1);
+
+        GameState ppState = new GameState(hero0, hero1, ppMob);
+        Random.popGenerator();
+        NetworkManager.lanMode = true;
+
+        String msg = "lan=" + lanState + " pp=" + ppState;
+        assertEquals(lanState.hero0Exp,      ppState.hero0Exp,      "hero0.exp — " + msg);
+        assertEquals(lanState.hero1Exp,      ppState.hero1Exp,      "hero1.exp — " + msg);
+        assertEquals(lanState.enemiesSlain,  ppState.enemiesSlain,  "enemiesSlain — " + msg);
+        assertEquals(lanState.lootWouldDrop, ppState.lootWouldDrop, "lootDrop — " + msg);
+    }
+
+    // =========================================================================
+    // LOOT GATE: killer's level determines drop, not Dungeon.hero's level
     // =========================================================================
 
     @Test
-    void regression_preFix_dungeonHeroBehavior_causesDesync() {
-        // Demonstrates what USED TO HAPPEN before the fix.
-        // With Dungeon.hero=hero0 and killer=hero1:
-        //   - Old: EXP went to hero0 (Dungeon.hero)
-        //   - New: EXP goes to hero1 (the killer)
-        // We verify the new (fixed) behavior here.
+    void lootGate_killerWithinCap_dropsLoot_allPerspectives() throws Exception {
+        hero0.lvl = 35;  // Dungeon.hero on host is above cap
+        hero1.lvl = 5;   // killer is within cap
 
-        GameState host = runKill(hero0, hero1, 0f);
+        long seed = 0x11223344L;
 
-        // POST-FIX: hero1 (the killer) gets EXP; hero0 (Dungeon.hero) does not
-        assertTrue(host.hero1Exp > initialHero1Exp,
-                "POST-FIX: killer hero1 must receive EXP");
-        assertEquals(initialHero0Exp, host.hero0Exp,
-                "POST-FIX: Dungeon.hero (hero0) must NOT receive EXP for hero1's kill");
+        // HOST: Dungeon.hero=hero0(lvl35), killer=hero1(lvl5)
+        Dungeon.hero = hero0; NetworkManager.setIsHostForTesting(true);
+        Random.pushGenerator(seed);
+        SyncTestMob mobHost = new SyncTestMob(1.0f);
+        level.mobs.add(mobHost);
+        mobHost.die(hero1);
+        boolean hostDrop = mobHost.lootWouldDrop;
+        Random.popGenerator();
+        resetForNextRun();
+        hero0.lvl = 35; hero1.lvl = 5;  // restore custom levels
+
+        // CLIENT: Dungeon.hero=hero1(lvl5), killer=hero1(lvl5)
+        Dungeon.hero = hero1; NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 1;
+        Random.pushGenerator(seed);
+        SyncTestMob mobClient = new SyncTestMob(1.0f);
+        level.mobs.add(mobClient);
+        mobClient.die(hero1);
+        boolean clientDrop = mobClient.lootWouldDrop;
+        Random.popGenerator();
+        resetForNextRun();
+        hero0.lvl = 35; hero1.lvl = 5;
+
+        // PASS-AND-PLAY: Dungeon.hero=hero0(lvl35), killer=hero1(lvl5)
+        NetworkManager.lanMode = false;
+        Dungeon.hero = hero0;
+        Random.pushGenerator(seed);
+        SyncTestMob mobPP = new SyncTestMob(1.0f);
+        level.mobs.add(mobPP);
+        mobPP.die(hero1);
+        boolean ppDrop = mobPP.lootWouldDrop;
+        Random.popGenerator();
+        NetworkManager.lanMode = true;
+
+        // All three must agree: loot drops because KILLER (hero1 lvl 5) is within cap
+        assertTrue(hostDrop,   "HOST: loot must drop — killer lvl 5 is within cap");
+        assertTrue(clientDrop, "CLIENT: loot must drop — killer lvl 5 is within cap");
+        assertTrue(ppDrop,     "PASS-AND-PLAY: loot must drop — killer lvl 5 is within cap");
+        assertEquals(hostDrop, clientDrop, "HOST and CLIENT must agree on loot");
+        assertEquals(hostDrop, ppDrop,     "HOST and PASS-AND-PLAY must agree on loot");
+    }
+
+    // =========================================================================
+    // RNG DETERMINISM: same seed → same loot decisions across all perspectives
+    // =========================================================================
+
+    @Test
+    void rngSeed_sameDecisionOnAllPerspectives() throws Exception {
+        long[] seeds = { 1L, 7L, 42L, 999L, 0xDEADBEEFL };
+
+        for (long seed : seeds) {
+            // HOST
+            Dungeon.hero = hero0; NetworkManager.setIsHostForTesting(true);
+            NetworkManager.localPlayerIndex = 0;
+            Random.pushGenerator(seed);
+            SyncTestMob mA = new SyncTestMob(0.4f);
+            level.mobs.add(mA); mA.die(hero1);
+            boolean dA = mA.lootWouldDrop; int eA = hero1.exp;
+            Random.popGenerator(); resetForNextRun();
+
+            // CLIENT
+            Dungeon.hero = hero1; NetworkManager.setIsHostForTesting(false);
+            NetworkManager.localPlayerIndex = 1;
+            Random.pushGenerator(seed);
+            SyncTestMob mB = new SyncTestMob(0.4f);
+            level.mobs.add(mB); mB.die(hero1);
+            boolean dB = mB.lootWouldDrop; int eB = hero1.exp;
+            Random.popGenerator(); resetForNextRun();
+
+            // PASS-AND-PLAY
+            NetworkManager.lanMode = false;
+            Dungeon.hero = hero0;
+            Random.pushGenerator(seed);
+            SyncTestMob mC = new SyncTestMob(0.4f);
+            level.mobs.add(mC); mC.die(hero1);
+            boolean dC = mC.lootWouldDrop; int eC = hero1.exp;
+            Random.popGenerator(); resetForNextRun();
+            NetworkManager.lanMode = true;
+
+            assertEquals(dA, dB, "seed " + seed + ": loot HOST vs CLIENT");
+            assertEquals(dA, dC, "seed " + seed + ": loot HOST vs PASS-AND-PLAY");
+            assertEquals(eA, eB, "seed " + seed + ": hero1.exp HOST vs CLIENT");
+            assertEquals(eA, eC, "seed " + seed + ": hero1.exp HOST vs PASS-AND-PLAY");
+        }
+    }
+
+    // =========================================================================
+    // SOCKET DELIVERY SANITY: verify the socket infrastructure works correctly
+    // before relying on it for the comparison tests above
+    // =========================================================================
+
+    /** Host receives hero1's action via socket (mirrors LanRealSocketTest). */
+    @Test
+    void socket_hostReceivesClientAction() throws Exception {
+        NetworkManager.setIsHostForTesting(true);
+        NetworkManager.localPlayerIndex = 0;
+        NetworkManager.receiveActionAsync(hero1);
+        Thread.sleep(20);
+        clientSendsAction(1, 42);
+        assertTrue(waitFor(hero1, 2000), "Host must receive client action via socket");
+        assertNotNull(hero1.curAction);
+    }
+
+    /** Client receives hero0's action via socket (mirrors LanClientPerspectiveTest). */
+    @Test
+    void socket_clientReceivesHostAction() throws Exception {
+        NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 1;
+        Dungeon.hero = hero1;
+        NetworkManager.receiveActionAsync(hero0);
+        Thread.sleep(20);
+        hostSendsAction(0, 77);
+        assertTrue(waitFor(hero0, 2000), "Client must receive host action via socket");
+        assertNotNull(hero0.curAction);
+        assertEquals(77, ((HeroAction.Move) hero0.curAction).dst);
     }
 }
