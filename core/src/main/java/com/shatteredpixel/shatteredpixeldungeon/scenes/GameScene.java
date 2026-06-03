@@ -1666,6 +1666,7 @@ public class GameScene extends PixelScene {
 	}
 	
 	public static void selectCell( CellSelector.Listener listener ) {
+		if (cellSelector == null) return;
 		if (cellSelector.listener != null && cellSelector.listener != defaultCellListener){
 			cellSelector.listener.onSelect(null);
 		}
@@ -1757,6 +1758,7 @@ public class GameScene extends PixelScene {
 	}
 	
 	public static void ready() {
+		if (scene == null) return;
 		selectCell( defaultCellListener );
 		QuickSlotButton.cancel();
 		InventoryPane.cancelTargeting();

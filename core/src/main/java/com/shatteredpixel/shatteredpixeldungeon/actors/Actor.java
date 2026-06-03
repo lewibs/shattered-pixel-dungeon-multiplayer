@@ -402,4 +402,7 @@ public abstract class Actor implements Bundlable {
 	}
 
 	public static synchronized HashSet<Char> chars() { return new HashSet<>(chars); }
+
+	public float getTimeForTesting() { return time; }
+	public void  setTimeForTesting(float t) { time = t; }
 }
