@@ -26,6 +26,7 @@ import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.SPDAction;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.effects.CircleArc;
 import com.shatteredpixel.shatteredpixeldungeon.effects.Speck;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
@@ -56,6 +57,7 @@ public class StatusPane extends Component {
 	public static final float FLASH_RATE = (float)(Math.PI*1.5f); //1.5 blinks per second
 
 	private int lastTier = 0;
+	private Hero lastHero = null;
 
 	private Image shieldHP;
 	private Image hp;
@@ -289,7 +291,19 @@ public class StatusPane extends Component {
 	@Override
 	public void update() {
 		super.update();
-		
+
+		// when the active hero changes, rebuild cached UI components
+		if (Dungeon.hero != lastHero) {
+			lastHero = Dungeon.hero;
+			lastTier = 0;
+			lastLvl = -1;
+			avatar.copy(HeroSprite.avatar(Dungeon.hero));
+			remove(buffs);
+			buffs = new BuffIndicator(Dungeon.hero, large);
+			add(buffs);
+			layout();
+		}
+
 		int health = Dungeon.hero.HP;
 		int shield = Dungeon.hero.shielding();
 		int max = Dungeon.hero.HT;

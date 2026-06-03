@@ -26,6 +26,7 @@ import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.files.FileHandle;
 import com.badlogic.gdx.utils.GdxRuntimeException;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -221,6 +222,33 @@ public class FileUtils {
 	private static void bundleToStream( OutputStream output, Bundle bundle ) throws IOException{
 		Bundle.write( bundle, output );
 		output.close();
+	}
+
+	/**
+	 * Serializes a Bundle to a byte array in-memory.
+	 * Useful for sending bundle data over the network as binary payload.
+	 *
+	 * @param bundle the Bundle to serialize
+	 * @return byte array containing the serialized bundle
+	 * @throws IOException if serialization fails
+	 */
+	public static byte[] bundleToBytes( Bundle bundle ) throws IOException {
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		Bundle.write( bundle, baos );
+		return baos.toByteArray();
+	}
+
+	/**
+	 * Deserializes a Bundle from a byte array.
+	 * Inverse operation of bundleToBytes().
+	 *
+	 * @param bytes the byte array containing the serialized bundle
+	 * @return the deserialized Bundle
+	 * @throws IOException if deserialization fails
+	 */
+	public static Bundle bundleFromBytes( byte[] bytes ) throws IOException {
+		java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(bytes);
+		return Bundle.read(bais);
 	}
 
 }

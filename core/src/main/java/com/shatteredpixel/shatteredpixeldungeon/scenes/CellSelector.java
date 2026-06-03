@@ -28,6 +28,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob;
 import com.shatteredpixel.shatteredpixeldungeon.items.Heap;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.tiles.DungeonTilemap;
 import com.watabou.input.ControllerHandler;
 import com.watabou.input.GameAction;
@@ -150,7 +151,13 @@ public class CellSelector extends ScrollArea {
 	}
 	
 	public void select( int cell, int button ) {
-		if (enabled && Dungeon.hero.ready && !GameScene.interfaceBlockingHero()
+		// In LAN mode the cell selector is kept enabled (isAlive()) so players can
+		// queue their next action while the current action is still executing.
+		// Relax the ready check here to match — a queued tap sets curAction and the
+		// actor loop will pick it up once the current action completes.
+		boolean readyOrLan = Dungeon.hero.ready
+				|| (NetworkManager.lanMode && Dungeon.hero.isAlive());
+		if (enabled && readyOrLan && !GameScene.interfaceBlockingHero()
 				&& listener != null && cell != -1) {
 
 			switch (button){

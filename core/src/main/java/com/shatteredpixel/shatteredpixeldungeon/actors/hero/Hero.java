@@ -45,6 +45,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Charm;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Combo;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Drowsy;
+import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.FollowHeroBuff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Foresight;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.GreaterHaste;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.HeroDisguise;
@@ -160,6 +161,7 @@ import com.shatteredpixel.shatteredpixeldungeon.levels.traps.Trap;
 import com.shatteredpixel.shatteredpixeldungeon.mechanics.Ballistica;
 import com.shatteredpixel.shatteredpixeldungeon.mechanics.ShadowCaster;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.AlchemyScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
@@ -167,12 +169,15 @@ import com.shatteredpixel.shatteredpixeldungeon.sprites.CharSprite;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.HeroSprite;
 import com.shatteredpixel.shatteredpixeldungeon.ui.AttackIndicator;
 import com.shatteredpixel.shatteredpixeldungeon.ui.BuffIndicator;
+import com.shatteredpixel.shatteredpixeldungeon.ui.InventoryPane;
 import com.shatteredpixel.shatteredpixeldungeon.ui.QuickSlotButton;
+import com.shatteredpixel.shatteredpixeldungeon.QuickSlot;
 import com.shatteredpixel.shatteredpixeldungeon.ui.StatusPane;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndHero;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndResurrect;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndTradeItem;
+import com.watabou.noosa.Camera;
 import com.watabou.noosa.Game;
 import com.watabou.noosa.audio.Sample;
 import com.watabou.noosa.tweeners.Delayer;
@@ -217,6 +222,16 @@ public class Hero extends Char {
 	public boolean damageInterrupt = true;
 	public HeroAction curAction = null;
 	public HeroAction lastAction = null;
+	// LAN: true only for the single act() call where curAction was just set by player input.
+	// Prevents sendAction from firing on every step of a multi-step move.
+	private boolean lanActionQueued = false;
+	// LAN: lock used to atomically wait for a remote action packet. The network
+	// reader thread holds this lock when setting curAction, so the wait/notify
+	// pair is race-free (no lost notifications possible).
+	public final Object lanActionLock = new Object();
+
+	// EC-6.4: counter for state-hash desync detection — host sends every 10 turns
+	private static int lanTurnHashCounter = 0;
 
 	//reference to the enemy the hero is currently in the process of attacking
 	private Char attackTarget;
@@ -224,6 +239,7 @@ public class Hero extends Char {
 	public boolean resting = false;
 	
 	public Belongings belongings;
+	public QuickSlot quickslot;
 	
 	public int STR;
 	
@@ -247,7 +263,8 @@ public class Hero extends Char {
 		STR = STARTING_STR;
 		
 		belongings = new Belongings( this );
-		
+		quickslot = new QuickSlot();
+
 		visibleEnemies = new ArrayList<>();
 	}
 	
@@ -296,6 +313,8 @@ public class Hero extends Char {
 	private static final String EXPERIENCE	= "exp";
 	private static final String HTBOOST     = "htboost";
 	
+	private static final String QUICKSLOT = "quickslot";
+
 	@Override
 	public void storeInBundle( Bundle bundle ) {
 
@@ -305,20 +324,31 @@ public class Hero extends Char {
 		bundle.put( SUBCLASS, subClass );
 		bundle.put( ABILITY, armorAbility );
 		Talent.storeTalentsInBundle( bundle, this );
-		
+
 		bundle.put( ATTACK, attackSkill );
 		bundle.put( DEFENSE, defenseSkill );
-		
+
 		bundle.put( STRENGTH, STR );
-		
+
 		bundle.put( LEVEL, lvl );
 		bundle.put( EXPERIENCE, exp );
-		
+
 		bundle.put( HTBOOST, HTBoost );
 
+		// Point the global quickslot at this hero's quickslot so that
+		// Item.storeInBundle() can correctly detect and save each item's slot position.
+		// Without this, non-active heroes' items never see themselves as "in a quickslot"
+		// because Dungeon.quickslot points to whichever hero last called activate().
+		QuickSlot prevQuickslot = Dungeon.quickslot;
+		Dungeon.quickslot = this.quickslot;
 		belongings.storeInBundle( bundle );
+		Dungeon.quickslot = prevQuickslot;
+
+		Bundle qsBundle = new Bundle();
+		quickslot.storePlaceholders( qsBundle );
+		bundle.put( QUICKSLOT, qsBundle );
 	}
-	
+
 	@Override
 	public void restoreFromBundle( Bundle bundle ) {
 
@@ -333,11 +363,18 @@ public class Hero extends Char {
 		subClass = bundle.getEnum( SUBCLASS, HeroSubClass.class );
 		armorAbility = (ArmorAbility)bundle.get( ABILITY );
 		Talent.restoreTalentsFromBundle( bundle, this );
-		
+
 		attackSkill = bundle.getInt( ATTACK );
 		defenseSkill = bundle.getInt( DEFENSE );
-		
+
 		STR = bundle.getInt( STRENGTH );
+
+		// Restore placeholders BEFORE belongings so Bag.grab's replacePlaceholder calls land correctly.
+		// Also point Dungeon.quickslot at this hero's QuickSlot so replacePlaceholder targets the right instance.
+		Dungeon.quickslot = this.quickslot;
+		if (bundle.contains( QUICKSLOT )) {
+			quickslot.restorePlaceholders( bundle.getBundle( QUICKSLOT ) );
+		}
 
 		belongings.restoreFromBundle( bundle );
 	}
@@ -827,9 +864,46 @@ public class Hero extends Char {
 		next();
 	}
 	
+	// Called whenever this hero becomes the active player. Updates all singletons and UI to reflect this hero.
+	public void activate() {
+		if (NetworkManager.lanMode && Dungeon.heroes != null) {
+			int myIdx = Dungeon.heroes.indexOf(this);
+			if (myIdx != NetworkManager.localPlayerIndex) return; // remote hero — don't update singletons
+		}
+		Dungeon.hero      = this;
+		Dungeon.quickslot = this.quickslot;
+		InventoryPane.lastBag = this.belongings.backpack;
+		// UI updates must run on the render thread — activate() is called from the actor thread
+		if (Game.instance != null) {
+			final Hero self = this;
+			Game.runOnRenderThread(new Callback() {
+				@Override
+				public void call() {
+					if (self.sprite != null) Camera.main.panTo(self.sprite.center(), 5f);
+					QuickSlotButton.refresh();
+					InventoryPane.refresh();
+				}
+			});
+		}
+	}
+
 	@Override
 	public boolean act() {
-		Dungeon.hero = this; // swap singleton to this hero before any logic
+		// Dead hero — should not be in the queue but guard here as well
+		if (!isAlive()) {
+			spendAndNext( TICK );
+			return false;
+		}
+
+		// Hero is falling into a pit and waiting for the party — skip turn, stay non-existent
+		if (buff(Chasm.WaitingToFall.class) != null) {
+			pos = -1;
+			if (sprite != null) sprite.visible = false;
+			curAction = null;
+			spendAndNext( TICK );
+			return false;
+		}
+		activate();
 
 		//calls to dungeon.observe will also update hero's local FOV.
 		fieldOfView = Dungeon.level.heroFOV;
@@ -847,22 +921,100 @@ public class Hero extends Char {
 				Dungeon.level.updateFieldOfView(this, fieldOfView);
 			}
 		}
-		
+
+		// checkVisibleMobs() handles the LAN FOV fix internally:
+		// for remote heroes it recomputes fieldOfView from their own position,
+		// preventing spurious interrupt() calls from hero[0]'s shared heroFOV.
 		checkVisibleMobs();
 		BuffIndicator.refreshHero();
 		BuffIndicator.refreshBoss();
-		
+
 		if (paralysed > 0) {
-			
+
 			curAction = null;
-			
+
 			spendAndNext( TICK );
 			return false;
 		}
-		
+
+		// Follow mode: mirrors DirectableAlly.Wandering.act() — call getCloser(target.pos)
+		// fresh every turn so the destination is always the target's CURRENT cell.
+		// No curAction == null gate; we own this turn entirely while follow is active.
+		FollowHeroBuff follow = buff(FollowHeroBuff.class);
+		// LAN: follow mode moves the hero autonomously without sending packets — desync.
+		// Detach immediately in LAN mode; player must tap manually.
+		if (follow != null && NetworkManager.lanMode) {
+			follow.detach();
+			follow = null;
+		}
+		if (follow != null) {
+			Hero followTarget = follow.getTargetHero();
+			if (followTarget == null || !followTarget.isAlive()
+					|| followTarget.ready          // target reached destination or is idle
+					|| visibleEnemies.size() > 0) {// follower spotted an enemy
+				// Target stopped or is gone / we're in combat — give control back
+				follow.detach();
+			} else {
+				int targetPos = followTarget.pos;
+				curAction = null; // clear any stale action
+				if (pos != targetPos && !Dungeon.level.adjacent(pos, targetPos)) {
+					// Not yet adjacent — move one step (getCloser handles sprite + time)
+					if (getCloser(targetPos)) {
+						return true;
+					}
+				}
+				// Adjacent, at target, or pathfinding blocked — idle one tick
+				spendAndNext(TICK);
+				return false;
+			}
+		}
+
+		// LAN remote hero: block until the action packet arrives.
+		// Uses a synchronized lock so notify() from the reader thread can never
+		// be lost — the wait/notify pair is race-free by construction.
+		//
+		// FIX (multi-step walk stale reader): only start the reader when curAction
+		// is null (i.e. the start of a new remote turn). During intermediate steps
+		// of a multi-step walk, curAction is already set — calling receiveActionAsync()
+		// unconditionally would start a stale reader that blocks on readByte() and
+		// consumes the NEXT turn's action packet early. When the walk finishes and
+		// ready() clears curAction, the next turn has no action left to receive —
+		// permanent freeze. Guarding with curAction == null prevents stale readers.
+		if (NetworkManager.lanMode && Dungeon.heroes != null) {
+			int myIdx = Dungeon.heroes.indexOf(this);
+			if (myIdx != NetworkManager.localPlayerIndex) {
+				NetworkManager.lanLog("Hero.act | REMOTE idx=%d curAction=%s", myIdx,
+						curAction != null ? curAction.getClass().getSimpleName() : "null");
+				synchronized (lanActionLock) {
+					if (curAction == null) {
+						NetworkManager.lanLog("Hero.act | starting reader idx=%d", myIdx);
+						NetworkManager.receiveActionAsync(this);
+					} else {
+						NetworkManager.lanLog("Hero.act | skipping reader (mid-walk) idx=%d curAction=%s",
+								myIdx, curAction.getClass().getSimpleName());
+					}
+					while (curAction == null && NetworkManager.lanMode) {
+						NetworkManager.lanLog("Hero.act | waiting lanActionLock idx=%d", myIdx);
+						try { lanActionLock.wait(5000); } catch (InterruptedException e) { break; }
+						NetworkManager.lanLog("Hero.act | woke lanActionLock idx=%d curAction=%s", myIdx,
+								curAction != null ? curAction.getClass().getSimpleName() : "null");
+					}
+				}
+				if (curAction == null) {
+					NetworkManager.lanLog("Hero.act | TIMEOUT/DISCONNECT idx=%d returning false", myIdx);
+					return false;
+				}
+				NetworkManager.lanLog("Hero.act | remote acting idx=%d curAction=%s", myIdx,
+						curAction.getClass().getSimpleName());
+			} else {
+				NetworkManager.lanLog("Hero.act | LOCAL idx=%d curAction=%s lanActionQueued=%b", myIdx,
+						curAction != null ? curAction.getClass().getSimpleName() : "null", lanActionQueued);
+			}
+		}
+
 		boolean actResult;
 		if (curAction == null) {
-			
+
 			if (resting) {
 				spendConstant( TIME_TO_REST );
 				next();
@@ -878,15 +1030,31 @@ public class Hero extends Char {
 					buff(TalismanOfForesight.Foresight.class).checkAwareness();
 				}
 			}
-			
+
 			actResult = false;
-			
+
 		} else {
-			
+
 			resting = false;
-			
+
 			ready = false;
-			
+
+			// LAN: send action once per player tap (lanActionQueued prevents re-sending
+			// on every step of a multi-step move).
+			if (NetworkManager.lanMode && lanActionQueued) {
+				lanActionQueued = false;
+				NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
+
+				// EC-6.4: host sends state hash every 10 turns for desync detection
+				if (NetworkManager.isHost()) {
+					lanTurnHashCounter++;
+					if (lanTurnHashCounter % 10 == 0) {
+						long hash = NetworkManager.computeStateHash();
+						NetworkManager.sendStateHash(lanTurnHashCounter, hash);
+					}
+				}
+			}
+
 			if (curAction instanceof HeroAction.Move) {
 				actResult = actMove( (HeroAction.Move)curAction );
 				
@@ -922,10 +1090,41 @@ public class Hero extends Char {
 			}
 		}
 		
+		// If WaitingToFall was attached during this turn (hero just jumped into a pit),
+		// end the turn immediately — the hero no longer exists on this floor.
+		if (buff(Chasm.WaitingToFall.class) != null) {
+			pos = -1;
+			if (sprite != null) sprite.visible = false;
+			curAction = null;
+			spendAndNext( TICK );
+			return false;
+		}
+
 		if(hasTalent(Talent.BARKSKIN) && Dungeon.level.map[pos] == Terrain.FURROWED_GRASS){
 			Barkskin.conditionallyAppend(this, (lvl*pointsInTalent(Talent.BARKSKIN))/2, 1 );
 		}
-		
+
+		// LAN remote hero: when an action finishes (actResult=false, curAction cleared),
+		// call next() so Actor.processing() becomes false. Without this, current stays set to
+		// this hero and GameScene never wakes the actor loop — permanent deadlock.
+		//
+		// curAction is cleared by either:
+		//   - ready() for most actions (move reaches destination, interact, etc.)
+		//   - curAction = null in actAttack() before sprite.attack() returns false
+		//     (attack animation plays async; onAttackComplete calls spend + next)
+		//
+		// Guard requires curAction == null: ensures next() fires only once the action is
+		// truly done and the hero is not mid-execution. Without this guard, actAttack()
+		// returning false without clearing curAction (pre-fix) caused next() to fire,
+		// re-entering act() with curAction still set → skipped receiveActionAsync() →
+		// infinite loop → permanent freeze.
+		if (!actResult && curAction == null && NetworkManager.lanMode && Dungeon.heroes != null) {
+			int myIdx = Dungeon.heroes.indexOf(this);
+			if (myIdx != NetworkManager.localPlayerIndex) {
+				next(); // current = null → Actor.processing() = false → GameScene wakes loop
+			}
+		}
+
 		return actResult;
 	}
 	
@@ -934,7 +1133,7 @@ public class Hero extends Char {
 	}
 	
 	private void ready() {
-		if (sprite.looping()) sprite.idle();
+		if (sprite != null && sprite.looping()) sprite.idle();
 		curAction = null;
 		damageInterrupt = true;
 		waitOrPickup = false;
@@ -996,6 +1195,8 @@ public class Hero extends Char {
 	private boolean actInteract( HeroAction.Interact action ) {
 		
 		Char ch = action.ch;
+
+		if (ch == null) { ready(); return false; }
 
 		if (ch.isAlive() && ch.canInteract(this)) {
 			
@@ -1411,6 +1612,13 @@ public class Hero extends Char {
 
 		attackTarget = action.target;
 
+		// In LAN mode the target is resolved by position at decode time; it may be null
+		// if the mob died or moved before this device processed the action.
+		if (attackTarget == null) {
+			ready();
+			return false;
+		}
+
 		if (isCharmedBy(attackTarget)){
 			GLog.w( Messages.get(Charm.class, "cant_attack"));
 			ready();
@@ -1431,6 +1639,13 @@ public class Hero extends Char {
 			}
 			//attack target cleared on onAttackComplete
 			sprite.attack( attackTarget.pos );
+
+			// FIX (attack-action freeze): clear curAction so the next act() re-entry
+			// correctly enters the curAction == null branch and waits for the next
+			// network action. Without this, curAction stays set as HeroAction.Attack,
+			// the LAN next() guard at line ~1101 fires (actResult=false, but curAction
+			// is not null — the bug), and actAttack() is re-entered infinitely.
+			curAction = null;
 
 			return false;
 
@@ -1579,6 +1794,9 @@ public class Hero extends Char {
 
 	@Override
 	public void damage( int dmg, Object src ) {
+		// Hero is mid-fall — they are not on this floor and cannot be hurt
+		if (buff(Chasm.WaitingToFall.class) != null) return;
+
 		if (buff(TimekeepersHourglass.timeStasis.class) != null
 				|| buff(TimeStasis.class) != null) {
 			return;
@@ -1671,6 +1889,21 @@ public class Hero extends Char {
 	}
 	
 	public void checkVisibleMobs() {
+		// LAN: line 909 in act() sets fieldOfView = Dungeon.level.heroFOV for every hero, but
+		// heroFOV is always recomputed for Dungeon.hero (hero[0] on P1's device). A remote hero
+		// would see hero[0]'s enemies and fire interrupt(), clearing curAction and causing a
+		// deadlock wait for a packet P2 already sent. Fix: recompute fieldOfView for each remote
+		// hero from its own position so only mobs it actually encounters trigger interrupt().
+		if (NetworkManager.lanMode && Dungeon.heroes != null) {
+			int remoteIdx = Dungeon.heroes.indexOf(this);
+			if (remoteIdx != NetworkManager.localPlayerIndex) {
+				if (fieldOfView == null || fieldOfView.length != Dungeon.level.length()) {
+					fieldOfView = new boolean[Dungeon.level.length()];
+				}
+				Dungeon.level.updateFieldOfView(this, fieldOfView);
+			}
+		}
+
 		ArrayList<Mob> visible = new ArrayList<>();
 
 		boolean newMob = false;
@@ -1811,8 +2044,19 @@ public class Hero extends Char {
 				boolean[] v = Dungeon.level.visited;
 				boolean[] m = Dungeon.level.mapped;
 				boolean[] passable = new boolean[len];
+				// In LAN mode, the remote hero executes actions commanded by its owner on
+				// the other device. The owner already validated the path on their own screen,
+				// so any dungeon-passable tile is a legal step candidate regardless of whether
+				// the peer's device has "visited" that tile yet. Without this exception the
+				// remote hero's getCloser() returns false for targets in unexplored fog,
+				// ready() clears curAction, and the hero re-enters the LAN wait indefinitely —
+				// causing the permanent freeze described in
+				// docs/bugs/2026-05-31-lan-freeze-remote-hero-unvisited-path.md.
+				boolean remoteLanHero = NetworkManager.lanMode
+						&& Dungeon.heroes != null
+						&& Dungeon.heroes.indexOf(this) != NetworkManager.localPlayerIndex;
 				for (int i = 0; i < len; i++) {
-					passable[i] = p[i] && (v[i] || m[i]);
+					passable[i] = p[i] && (remoteLanHero || v[i] || m[i]);
 				}
 
 				PathFinder.Path newpath = Dungeon.findPath(this, target, passable, fieldOfView, true);
@@ -1844,7 +2088,7 @@ public class Hero extends Char {
 				} else {
 					flying = false;
 					remove(buff(Levitation.class)); //directly remove to prevent cell pressing
-					Chasm.heroFall(target);
+					Chasm.heroFall(this, step);
 				}
 				canSelfTrample = false;
 				return false;
@@ -1962,9 +2206,14 @@ public class Hero extends Char {
 			
 		}
 
+		if (NetworkManager.lanMode) {
+			lanActionQueued = true;
+			NetworkManager.lanLog("Hero.handle | lanActionQueued=true curAction=%s",
+					curAction != null ? curAction.getClass().getSimpleName() : "null");
+		}
 		return true;
 	}
-	
+
 	public void earnExp( int exp, Class source ) {
 
 		//xp granted by ascension challenge is only for on-exp gain effects
@@ -2193,6 +2442,28 @@ public class Hero extends Char {
 		
 		Actor.fixTime();
 		super.die( cause );
+
+		// Count living heroes other than this one
+		int livingOthers = 0;
+		if (Dungeon.heroes != null) {
+			for (Hero h : Dungeon.heroes) {
+				if (h != this && h.isAlive()) livingOthers++;
+			}
+		}
+
+		if (livingOthers > 0) {
+			// Leave this dead hero in Dungeon.heroes so Rankings.submit() sees the full party.
+			// The hero is already inert: HP <= 0 (isAlive()==false) and removed from the Actor
+			// system via super.die() / Actor.remove(), so it will never act again.
+			// Switch active hero to next living one.
+			Hero next = null;
+			for (Hero h : Dungeon.heroes) {
+				if (h != this && h.isAlive()) { next = h; break; }
+			}
+			if (next != null) next.activate(); // sets Dungeon.hero, Dungeon.quickslot, pans camera
+			return;
+		}
+		// Fall through to reallyDie() — this was the last hero
 		reallyDie( cause );
 	}
 	

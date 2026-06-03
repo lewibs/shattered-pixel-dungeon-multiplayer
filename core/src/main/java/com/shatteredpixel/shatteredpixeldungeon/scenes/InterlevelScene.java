@@ -29,7 +29,9 @@ import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.effects.ShadowBox;
 import com.shatteredpixel.shatteredpixeldungeon.items.Item;
 import com.shatteredpixel.shatteredpixeldungeon.items.LostBackpack;
@@ -66,6 +68,8 @@ import com.watabou.utils.Signal;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 public class InterlevelScene extends PixelScene {
 	
@@ -276,7 +280,7 @@ public class InterlevelScene extends PixelScene {
 		align(loadingText);
 		add(loadingText);
 
-		if (mode == Mode.DESCEND && lastRegion <= 5 && !DeviceCompat.isDebug()){
+		if (mode == Mode.DESCEND && lastRegion <= 5 && !DeviceCompat.isDebug() && !NetworkManager.lanMode){
 			if (Dungeon.hero == null || (loadingDepth > Statistics.deepestFloor && loadingDepth % 5 == 1)){
 					storyMessage = PixelScene.renderTextBlock(Document.INTROS.pageBody(region), 6);
 					storyMessage.maxWidth( PixelScene.landscape() ? 180 : 125);
@@ -626,6 +630,11 @@ public class InterlevelScene extends PixelScene {
 			Dungeon.init();
 			GameLog.wipe();
 
+			// LAN mode: set local hero after all heroes have been spawned
+			if (NetworkManager.lanMode) {
+				Dungeon.hero = Dungeon.heroes.get(NetworkManager.localPlayerIndex);
+			}
+
 			//When debugging, we may start a game at a later depth to quickly test something
 			// if this happens, the games quickly generates all prior levels on branch 0 first,
 			// which ensures levelgen consistency with a regular game that was played to that depth.
@@ -667,17 +676,57 @@ public class InterlevelScene extends PixelScene {
 
 			LevelTransition destTransition = level.getTransition(curTransition.destType);
 			curTransition = null;
+			if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+				Dungeon.heroesNeedInitialPlacement = true;
+			}
+
+			// Collect any heroes waiting to fall before switchLevel so their buff state is readable
+			HashMap<Hero, Integer> fallPlacements = new HashMap<>();
+			if (Dungeon.heroes != null) {
+				for (Hero h : Dungeon.heroes) {
+					Chasm.WaitingToFall w = h.buff(Chasm.WaitingToFall.class);
+					if (w != null) {
+						fallPlacements.put(h, level.fallCell(w.fallIntoPit));
+						w.detach();
+						Buff.affect(h, Chasm.Falling.class);
+					}
+				}
+			}
+
 			Dungeon.switchLevel( level, destTransition.cell() );
+
+			// Override positions for heroes that were waiting to fall
+			for (Map.Entry<Hero, Integer> e : fallPlacements.entrySet()) {
+				e.getKey().pos = e.getValue();
+			}
 		}
 
 	}
 
 	//TODO atm falling always just increments depth by 1, do we eventually want to roll it into the transition system?
 	private void fall() throws IOException {
-		
+
 		Mob.holdAllies( Dungeon.level );
-		
-		Buff.affect( Dungeon.hero, Chasm.Falling.class );
+
+		// Collect WaitingToFall heroes (including the hero who triggered the fall) before level load
+		HashMap<Hero, Boolean> fallingHeroes = new HashMap<>();
+		if (Dungeon.heroes != null) {
+			for (Hero h : Dungeon.heroes) {
+				Chasm.WaitingToFall w = h.buff(Chasm.WaitingToFall.class);
+				if (w != null) {
+					fallingHeroes.put(h, w.fallIntoPit);
+					w.detach();
+				}
+			}
+		}
+		// The hero who triggered the scene switch is the main faller (not yet in WaitingToFall)
+		if (!fallingHeroes.containsKey(Dungeon.hero)) {
+			fallingHeroes.put(Dungeon.hero, fallIntoPit);
+		}
+		for (Hero h : fallingHeroes.keySet()) {
+			Buff.affect(h, Chasm.Falling.class);
+		}
+
 		Dungeon.saveAll();
 
 		Level level;
@@ -687,7 +736,23 @@ public class InterlevelScene extends PixelScene {
 		} else {
 			level = Dungeon.newLevel();
 		}
-		Dungeon.switchLevel( level, level.fallCell( fallIntoPit ));
+
+		// Place each falling hero at the correct fall cell
+		HashMap<Hero, Integer> fallPlacements = new HashMap<>();
+		for (Map.Entry<Hero, Boolean> e : fallingHeroes.entrySet()) {
+			fallPlacements.put(e.getKey(), level.fallCell(e.getValue()));
+		}
+
+		int mainFallCell = fallPlacements.get(Dungeon.hero);
+		if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+			Dungeon.heroesNeedInitialPlacement = true;
+		}
+		Dungeon.switchLevel( level, mainFallCell );
+
+		// Override positions for all falling heroes (hero[1..N] were placed near mainFallCell)
+		for (Map.Entry<Hero, Integer> e : fallPlacements.entrySet()) {
+			e.getKey().pos = e.getValue();
+		}
 	}
 
 	private void ascend() throws IOException {
@@ -711,9 +776,12 @@ public class InterlevelScene extends PixelScene {
 
 		LevelTransition destTransition = level.getTransition(curTransition.destType);
 		curTransition = null;
+		if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+			Dungeon.heroesNeedInitialPlacement = true;
+		}
 		Dungeon.switchLevel( level, destTransition.cell() );
 	}
-	
+
 	private void returnTo() throws IOException {
 		Mob.holdAllies( Dungeon.level );
 		Dungeon.saveAll();

@@ -43,6 +43,7 @@ import com.shatteredpixel.shatteredpixeldungeon.ui.StyledButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.TitleBackground;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndOptions;
+import com.shatteredpixel.shatteredpixeldungeon.windows.WndPlayerCount;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndSettings;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndVictoryCongrats;
 import com.watabou.glwrap.Blending;
@@ -142,6 +143,14 @@ public class TitleScene extends PixelScene {
 		signs.y = title.y;
 		add( signs );
 
+		BitmapText subtitle = new BitmapText( "Multiplayer", pixelFont);
+		subtitle.measure();
+		subtitle.hardlight( 0xFFD700 );
+		subtitle.x = insets.left + (w - subtitle.width()) / 2f;
+		subtitle.y = title.y + title.height() - 4;
+		align(subtitle);
+		add(subtitle);
+
 		final Chrome.Type GREY_TR = Chrome.Type.GREY_BUTTON_TR;
 		
 		btnPlay = new StyledButton(GREY_TR, Messages.get(this, "enter")){
@@ -150,19 +159,19 @@ public class TitleScene extends PixelScene {
 				if (GamesInProgress.checkAll().size() == 0){
 					GamesInProgress.selectedClass = null;
 					GamesInProgress.curSlot = 1;
-					ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
+					ShatteredPixelDungeon.scene().addToFront(new WndPlayerCount());
 				} else {
 					ShatteredPixelDungeon.switchNoFade( StartScene.class );
 				}
 			}
-			
+
 			@Override
 			protected boolean onLongClick() {
 				//making it easier to start runs quickly while debugging
 				if (DeviceCompat.isDebug()) {
 					GamesInProgress.selectedClass = null;
 					GamesInProgress.curSlot = 1;
-					ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
+					ShatteredPixelDungeon.scene().addToFront(new WndPlayerCount());
 					return true;
 				}
 				return super.onLongClick();

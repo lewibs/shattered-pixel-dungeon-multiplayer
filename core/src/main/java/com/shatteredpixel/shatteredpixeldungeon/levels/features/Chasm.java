@@ -46,6 +46,7 @@ import com.shatteredpixel.shatteredpixeldungeon.windows.WndOptions;
 import com.watabou.noosa.Game;
 import com.watabou.noosa.Image;
 import com.watabou.noosa.audio.Sample;
+import com.watabou.utils.Bundle;
 import com.watabou.utils.Callback;
 import com.watabou.utils.Random;
 
@@ -53,6 +54,10 @@ public class Chasm implements Hero.Doom {
 
 	public static boolean jumpConfirmed = false;
 	private static int heroPos;
+
+	// Overridable in tests to intercept the scene switch without a running libGDX context.
+	// Production code leaves this null.
+	static Runnable sceneSwitchOverride = null;
 	
 	public static void heroJump( final Hero hero ) {
 		heroPos = hero.pos;
@@ -96,28 +101,59 @@ public class Chasm implements Hero.Doom {
 		});
 	}
 	
-	public static void heroFall( int pos ) {
-		
+	public static void heroFall( Hero hero, int pos ) {
+
 		jumpConfirmed = false;
-				
-		Sample.INSTANCE.play( Assets.Sounds.FALLING );
 
-		Level.beforeTransition();
+		if (Sample.INSTANCE != null) Sample.INSTANCE.play( Assets.Sounds.FALLING );
 
-		if (Dungeon.hero.isAlive()) {
-			Dungeon.hero.interrupt();
-			InterlevelScene.mode = InterlevelScene.Mode.FALL;
-			if (Dungeon.level instanceof RegularLevel &&
-						((RegularLevel)Dungeon.level).room( pos ) instanceof WeakFloorRoom){
-				InterlevelScene.fallIntoPit = true;
-				Notes.remove(Notes.Landmark.DISTANT_WELL);
-			} else {
-				InterlevelScene.fallIntoPit = false;
-			}
-			Game.switchScene( InterlevelScene.class );
-		} else {
-			Dungeon.hero.sprite.visible = false;
+		if (!hero.isAlive()) {
+			if (hero.sprite != null) hero.sprite.visible = false;
+			return;
 		}
+
+		hero.interrupt();
+
+		if (shouldWaitForParty(hero)) {
+			boolean fallIntoPit = isFallIntoPit(pos);
+			if (fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
+			WaitingToFall w = Buff.affect(hero, WaitingToFall.class);
+			w.fallIntoPit = fallIntoPit;
+			// Move hero off the map so they don't block any cell or appear in sight checks.
+			hero.pos = -1;
+			if (hero.sprite != null) hero.sprite.visible = false;
+			// Tell the remaining players what happened and what they need to do
+			if (com.badlogic.gdx.Gdx.app != null) {
+				GLog.w( Messages.get(Chasm.class, "waiting_to_fall",
+						hero.heroClass.title()) );
+			}
+			return;
+		}
+
+		// Single player, or all other alive heroes are also waiting — fall now
+		Level.beforeTransition();
+		InterlevelScene.mode = InterlevelScene.Mode.FALL;
+		InterlevelScene.fallIntoPit = isFallIntoPit(pos);
+		if (InterlevelScene.fallIntoPit) Notes.remove(Notes.Landmark.DISTANT_WELL);
+		if (sceneSwitchOverride != null) sceneSwitchOverride.run();
+		else Game.switchScene( InterlevelScene.class );
+	}
+
+	// Package-private: true when at least one other alive, non-waiting hero exists (used in tests)
+	static boolean shouldWaitForParty( Hero hero ) {
+		if (Dungeon.heroes == null || Dungeon.heroes.size() <= 1) return false;
+		for (Hero h : Dungeon.heroes) {
+			if (h == hero) continue;
+			if (!h.isAlive()) continue;
+			if (h.buff(WaitingToFall.class) != null) continue;
+			return true;
+		}
+		return false;
+	}
+
+	private static boolean isFallIntoPit( int pos ) {
+		return Dungeon.level instanceof RegularLevel
+				&& ((RegularLevel) Dungeon.level).room(pos) instanceof WeakFloorRoom;
 	}
 
 	@Override
@@ -128,10 +164,8 @@ public class Chasm implements Hero.Doom {
 		GLog.n( Messages.get(Chasm.class, "ondeath") );
 	}
 
-	public static void heroLand() {
-		
-		Hero hero = Dungeon.hero;
-		
+	public static void heroLand( Hero hero ) {
+
 		ElixirOfFeatherFall.FeatherBuff b = hero.buff(ElixirOfFeatherFall.FeatherBuff.class);
 		
 		if (b != null){
@@ -161,16 +195,51 @@ public class Chasm implements Hero.Doom {
 	}
 	
 	public static class Falling extends Buff {
-		
+
 		{
 			actPriority = VFX_PRIO;
 		}
-		
+
 		@Override
 		public boolean act() {
-			heroLand();
+			heroLand((Hero) target);
 			detach();
 			return true;
+		}
+	}
+
+	// Marks a hero who fell into a pit while other party members are still on this floor.
+	// The scene switch is deferred until the rest of the party descends stairs (or also falls).
+	// InterlevelScene.descend()/fall() detects this buff and places the hero at the pit landing
+	// cell with a Chasm.Falling buff instead of at the stair entrance.
+	public static class WaitingToFall extends Buff {
+
+		public boolean fallIntoPit = false;
+
+		{ actPriority = VFX_PRIO; }
+
+		@Override
+		public boolean act() {
+			// Re-enforce the non-existent state every tick so it survives save/load.
+			Hero h = (Hero) target;
+			h.pos = -1;
+			if (h.sprite != null) h.sprite.visible = false;
+			spend(TICK);
+			return true;
+		}
+
+		private static final String FALL_INTO_PIT = "fallIntoPit";
+
+		@Override
+		public void storeInBundle( Bundle bundle ) {
+			super.storeInBundle(bundle);
+			bundle.put(FALL_INTO_PIT, fallIntoPit);
+		}
+
+		@Override
+		public void restoreFromBundle( Bundle bundle ) {
+			super.restoreFromBundle(bundle);
+			fallIntoPit = bundle.getBoolean(FALL_INTO_PIT);
 		}
 	}
 

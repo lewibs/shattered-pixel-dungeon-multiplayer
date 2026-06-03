@@ -24,6 +24,7 @@ package com.shatteredpixel.shatteredpixeldungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroSubClass;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.watabou.utils.Bundle;
 import com.watabou.utils.FileUtils;
 
@@ -43,6 +44,11 @@ public class GamesInProgress {
 	
 	public static HeroClass selectedClass;
 	public static boolean randomizedClass = false;
+
+	// Multiplayer support
+	public static int playerCount = 1;
+	public static ArrayList<HeroClass> selectedClasses = new ArrayList<>();
+	public static int currentPlayerSelecting = 0;
 	
 	private static final String GAME_FOLDER = "game%d";
 	private static final String GAME_FILE	= "game.dat";
@@ -140,7 +146,7 @@ public class GamesInProgress {
 		info.slot = slot;
 
 		info.lastPlayed = Dungeon.lastPlayed;
-		
+
 		info.depth = Dungeon.depth;
 		info.challenges = Dungeon.challenges;
 
@@ -148,7 +154,7 @@ public class GamesInProgress {
 		info.customSeed = Dungeon.customSeedText;
 		info.daily = Dungeon.daily;
 		info.dailyReplay = Dungeon.dailyReplay;
-		
+
 		info.level = Dungeon.hero.lvl;
 		info.str = Dungeon.hero.STR;
 		info.strBonus = Dungeon.hero.STR() - Dungeon.hero.STR;
@@ -159,9 +165,26 @@ public class GamesInProgress {
 		info.heroClass = Dungeon.hero.heroClass;
 		info.subClass = Dungeon.hero.subClass;
 		info.armorTier = Dungeon.hero.tier();
-		
+
+		info.heroClasses = new ArrayList<>();
+		info.armorTiers = new ArrayList<>();
+		info.heroLevels = new ArrayList<>();
+		for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : Dungeon.heroes) {
+			info.heroClasses.add(h.heroClass);
+			info.armorTiers.add(h.tier());
+			info.heroLevels.add(h.lvl);
+		}
+		if (info.heroClasses.isEmpty()) {
+			info.heroClasses.add(info.heroClass);
+			info.armorTiers.add(info.armorTier);
+			info.heroLevels.add(info.level);
+		}
+
 		info.goldCollected = Statistics.goldCollected;
 		info.maxDepth = Statistics.deepestFloor;
+
+		// LAN save flag: set when in LAN mode and this player is the host
+		info.isMultiplayerSave = NetworkManager.lanMode && NetworkManager.isHostMode();
 
 		slotStates.put( slot, info );
 	}
@@ -197,9 +220,17 @@ public class GamesInProgress {
 		public HeroClass heroClass;
 		public HeroSubClass subClass;
 		public int armorTier;
-		
+
+		// multiplayer: all hero classes, armor tiers, and levels in order (size >= 1)
+		public ArrayList<HeroClass> heroClasses = new ArrayList<>();
+		public ArrayList<Integer> armorTiers = new ArrayList<>();
+		public ArrayList<Integer> heroLevels = new ArrayList<>();
+
 		public int goldCollected;
 		public int maxDepth;
+
+		// LAN save flag: true if this save is from a multiplayer LAN session
+		public boolean isMultiplayerSave = false;
 	}
 	
 	public static final Comparator<GamesInProgress.Info> levelComparator = new Comparator<GamesInProgress.Info>() {

@@ -26,13 +26,16 @@ import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.QuickSlot;
 import com.shatteredpixel.shatteredpixeldungeon.SPDAction;
 import com.shatteredpixel.shatteredpixeldungeon.SPDSettings;
+import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.HoldFast;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Belongings;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
 import com.shatteredpixel.shatteredpixeldungeon.items.Item;
 import com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
@@ -228,6 +231,7 @@ public class Toolbar extends Component {
 			}
 		});
 		btnWait.icon( 176, 0, 16, 16 );
+
 
 		//hidden button for rest keybind
 		add(new Button(){
@@ -650,20 +654,25 @@ public class Toolbar extends Component {
 	@Override
 	public void update() {
 		super.update();
-		
-		if (lastEnabled != (Dungeon.hero.ready && Dungeon.hero.isAlive())) {
-			lastEnabled = (Dungeon.hero.ready && Dungeon.hero.isAlive());
-			
+
+		if (lastEnabled != (NetworkManager.lanMode
+				? Dungeon.hero.isAlive()
+				: Dungeon.hero.ready && Dungeon.hero.isAlive())) {
+			lastEnabled = NetworkManager.lanMode
+					? Dungeon.hero.isAlive()
+					: Dungeon.hero.ready && Dungeon.hero.isAlive();
+
 			for (Gizmo tool : members.toArray(new Gizmo[0])) {
 				if (tool instanceof Tool) {
 					((Tool)tool).enable( lastEnabled );
 				}
 			}
 		}
-		
+
 		if (!Dungeon.hero.isAlive()) {
 			btnInventory.enable(true);
 		}
+
 	}
 
 	public void alpha( float value ){
@@ -696,7 +705,8 @@ public class Toolbar extends Component {
 			return Messages.get(Toolbar.class, "examine_prompt");
 		}
 	};
-	
+
+
 	private static class Tool extends Button {
 		
 		private static final int BGCOLOR = 0x7B8073;

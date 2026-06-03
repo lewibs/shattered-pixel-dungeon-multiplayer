@@ -68,12 +68,14 @@ import com.shatteredpixel.shatteredpixeldungeon.journal.Document;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Journal;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Notes;
 import com.shatteredpixel.shatteredpixeldungeon.levels.Level;
+import com.shatteredpixel.shatteredpixeldungeon.levels.features.Chasm;
 import com.shatteredpixel.shatteredpixeldungeon.levels.RegularLevel;
 import com.shatteredpixel.shatteredpixeldungeon.levels.Terrain;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.Room;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.secret.SecretRoom;
 import com.shatteredpixel.shatteredpixeldungeon.levels.traps.Trap;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.plants.Plant;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.CharSprite;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.DiscardedItemSprite;
@@ -121,9 +123,12 @@ import com.shatteredpixel.shatteredpixeldungeon.windows.WndInfoTrap;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndKeyBindings;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndMessage;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndOptions;
+import com.shatteredpixel.shatteredpixeldungeon.windows.WndPeerDisconnected;
+import com.shatteredpixel.shatteredpixeldungeon.windows.WndPlayerCount;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndResurrect;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndUpgrade;
 import com.watabou.gltextures.TextureCache;
+import com.watabou.utils.Signal;
 import com.watabou.glwrap.Blending;
 import com.watabou.input.ControllerHandler;
 import com.watabou.input.KeyBindings;
@@ -223,8 +228,37 @@ public class GameScene extends PixelScene {
 		Dungeon.level.playLevelMusic();
 
 		SPDSettings.lastClass(Dungeon.hero.heroClass.ordinal());
-		
+
 		super.create();
+
+		// Register disconnect signal listener for LAN multiplayer
+		if (NetworkManager.lanMode) {
+			NetworkManager.peerDisconnectSignal.add(new Signal.Listener<NetworkManager.PeerDisconnected>() {
+				@Override
+				public boolean onSignal(NetworkManager.PeerDisconnected event) {
+					ShatteredPixelDungeon.runOnRenderThread(() -> {
+						// Pause actor thread
+						Actor.keepActorThreadAlive = false;
+
+						if (NetworkManager.isHostMode()) {
+							// EC-3 / EC-4: host saves and shows waiting room with rejoin/exit options
+							try {
+								Dungeon.saveAll();
+							} catch (IOException e) {
+								GLog.n("Failed to auto-save: %s", e.getMessage());
+							}
+							// Show disconnect dialog — host gets "Wait for Rejoin" + "Save and Exit"
+							addToFront(new WndPeerDisconnected(event.hero));
+						} else {
+							// EC-3 / EC-5.1: client — do NOT save; show simpler host-disconnected dialog
+							addToFront(new com.shatteredpixel.shatteredpixeldungeon.windows.WndHostDisconnected());
+						}
+					});
+					return true;
+				}
+			});
+		}
+
 		Camera.main.zoom( GameMath.gate(minZoom, defaultZoom + SPDSettings.zoom(), maxZoom));
 		Camera.main.edgeScroll.set(1);
 
@@ -308,10 +342,12 @@ public class GameScene extends PixelScene {
 		mobs = new Group();
 		add( mobs );
 
-		hero = new HeroSprite();
-		hero.place( Dungeon.hero.pos );
-		hero.updateArmor();
-		mobs.add( hero );
+		for (Hero h : Dungeon.heroes) {
+			if (!h.isAlive()) continue;
+			HeroSprite hs = createHeroSprite( h );
+			int localIdx = Math.min(NetworkManager.localPlayerIndex, Dungeon.heroes.size() - 1);
+			if (h == Dungeon.heroes.get(localIdx)) hero = hs;
+		}
 		
 		for (Mob mob : Dungeon.level.mobs) {
 			addMobSprite( mob );
@@ -747,6 +783,15 @@ public class GameScene extends PixelScene {
 		if (!invVisible) toggleInvPane();
 		fadeIn();
 
+		// LAN: pre-initialize default cell listener so non-host players can
+		// queue their first action while waiting for the remote hero's turn.
+		// Without this, cellSelector.listener stays null until the local hero's
+		// first act() call, which only happens after the remote hero finishes —
+		// making P2's taps silently ignored at game start.
+		if (NetworkManager.lanMode && Dungeon.hero != null && Dungeon.hero.isAlive()) {
+			selectCell(defaultCellListener);
+		}
+
 		//re-show WndResurrect if needed
 		if (!Dungeon.hero.isAlive()){
 			//check if hero has an unblessed ankh
@@ -766,7 +811,7 @@ public class GameScene extends PixelScene {
 	}
 	
 	public void destroy() {
-		
+
 		//tell the actor thread to finish, then wait for it to complete any actions it may be doing.
 		if (!waitForActorThread( 4500, true )){
 			Throwable t = new Throwable();
@@ -775,11 +820,14 @@ public class GameScene extends PixelScene {
 		}
 
 		Emitter.freezeEmitters = false;
-		
+
+		// Clean up disconnect signal listener
+		NetworkManager.peerDisconnectSignal.removeAll();
+
 		scene = null;
 		Badges.saveGlobal();
 		Journal.saveGlobal();
-		
+
 		super.destroy();
 	}
 	
@@ -818,7 +866,15 @@ public class GameScene extends PixelScene {
 	}
 
 	private static Thread actorThread;
-	
+
+	public static void notifyActorThread() {
+		if (actorThread != null && actorThread.isAlive()) {
+			synchronized (actorThread) {
+				actorThread.notify();
+			}
+		}
+	}
+
 	//sometimes UI changes can be prompted by the actor thread.
 	// We queue any removed element destruction, rather than destroying them in the actor thread.
 	private ArrayList<Gizmo> toDestroy = new ArrayList<>();
@@ -862,13 +918,49 @@ public class GameScene extends PixelScene {
 			waterOfs = water.offsetY(); //re-assign to account for auto adjust
 		}
 
+		// In multiplayer, Dungeon.hero may be a dead hero while other heroes are still
+		// alive. Rotate the singleton to the first living hero so the game continues.
+		if (!Actor.processing() && !Dungeon.hero.isAlive() && Dungeon.heroes != null) {
+			for (Hero h : Dungeon.heroes) {
+				if (h.isAlive()) {
+					Dungeon.hero = h;
+					break;
+				}
+			}
+		}
+
+		// LAN: the actor thread waits for a remote hero's action packet. If the packet
+		// arrived before the thread reached wait() the notification was lost (race).
+		// Poll every frame: if any remote hero already has a pending action, wake the
+		// thread so it can process it. This is safe — a spurious notify is harmless.
+		if (Actor.processing() && NetworkManager.lanMode
+				&& actorThread != null && actorThread.isAlive()
+				&& Dungeon.heroes != null) {
+			for (Hero h : Dungeon.heroes) {
+				if (h != Dungeon.hero && h.curAction != null) {
+					notifyActorThread();
+					break;
+				}
+			}
+		}
+
 		if (!Actor.processing() && Dungeon.hero.isAlive()) {
 			if (actorThread == null || !actorThread.isAlive()) {
 				
 				actorThread = new Thread() {
 					@Override
 					public void run() {
-						Actor.process();
+						try {
+							Actor.process();
+						} catch (Throwable t) {
+							// Actor thread crash — report with full stack trace so it
+							// surfaces via the platform's uncaught-exception handler
+							// (DesktopLauncher dialog / Android next-launch dialog).
+							Game.reportException(t);
+							throw t instanceof RuntimeException
+									? (RuntimeException) t
+									: new RuntimeException(t);
+						}
 					}
 				};
 
@@ -922,7 +1014,7 @@ public class GameScene extends PixelScene {
 
 		}
 
-		cellSelector.enable(Dungeon.hero.ready);
+		cellSelector.enable(NetworkManager.lanMode ? Dungeon.hero.isAlive() : Dungeon.hero.ready);
 
 		if (!toDestroy.isEmpty()) {
 			for (Gizmo g : toDestroy) {
@@ -1051,6 +1143,28 @@ public class GameScene extends PixelScene {
 		}
 	}
 	
+	// Creates and registers a sprite for the given hero.
+	// Temporarily sets Dungeon.hero so HeroSprite's constructor links to the right hero.
+	private HeroSprite createHeroSprite( Hero h ) {
+		Hero previous = Dungeon.hero;
+		Dungeon.hero = h;
+		HeroSprite hs = new HeroSprite();
+
+		// Hero is mid-fall (WaitingToFall): they don't exist on this floor.
+		// Ensure pos=-1 and sprite invisible before the first render frame.
+		if (h.buff(Chasm.WaitingToFall.class) != null) {
+			h.pos = -1;
+			hs.visible = false;
+		} else {
+			hs.place( h.pos );
+		}
+
+		hs.updateArmor();
+		mobs.add( hs );
+		Dungeon.hero = previous;
+		return hs;
+	}
+
 	private synchronized void addMobSprite( Mob mob ) {
 		CharSprite sprite = mob.sprite();
 		sprite.visible = Dungeon.level.heroFOV[mob.pos];
@@ -1489,9 +1603,12 @@ public class GameScene extends PixelScene {
 		StyledButton restart = new StyledButton(Chrome.Type.GREY_BUTTON_TR, Messages.get(StartScene.class, "new"), 9){
 			@Override
 			protected void onClick() {
-				GamesInProgress.selectedClass = Dungeon.hero.heroClass;
+				GamesInProgress.selectedClass = null;
 				GamesInProgress.curSlot = GamesInProgress.firstEmpty();
-				ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
+				GamesInProgress.playerCount = 1;
+				GamesInProgress.selectedClasses = new ArrayList<>();
+				GamesInProgress.currentPlayerSelecting = 0;
+				GameScene.show(new WndPlayerCount());
 			}
 
 			@Override
@@ -1553,7 +1670,7 @@ public class GameScene extends PixelScene {
 			cellSelector.listener.onSelect(null);
 		}
 		cellSelector.listener = listener;
-		cellSelector.enabled = Dungeon.hero.ready;
+		cellSelector.enabled = NetworkManager.lanMode ? Dungeon.hero.isAlive() : Dungeon.hero.ready;
 		if (scene != null) {
 			scene.prompt(listener.prompt());
 		}
@@ -1655,7 +1772,7 @@ public class GameScene extends PixelScene {
 	}
 	
 	public static void resetKeyHold(){
-		cellSelector.resetKeyHold();
+		if (cellSelector != null) cellSelector.resetKeyHold();
 	}
 
 	public static void examineCell( Integer cell ) {
@@ -1691,12 +1808,21 @@ public class GameScene extends PixelScene {
 	private static ArrayList<Object> getObjectsAtCell( int cell ){
 		ArrayList<Object> objects = new ArrayList<>();
 
-		if (cell == Dungeon.hero.pos) {
+		// Check all party heroes at this cell (not just the active one)
+		if (Dungeon.heroes != null) {
+			for (Hero h : Dungeon.heroes) {
+				if (h.isAlive() && h.pos == cell) {
+					objects.add(h);
+				}
+			}
+		} else if (cell == Dungeon.hero.pos) {
 			objects.add(Dungeon.hero);
+		}
 
-		} else if (Dungeon.level.heroFOV[cell]) {
-			Mob mob = (Mob) Actor.findChar(cell);
-			if (mob != null) objects.add(mob);
+		if (objects.isEmpty() && Dungeon.level.heroFOV[cell]) {
+			Char ch = Actor.findChar(cell);
+			// Only add mobs — heroes are already handled above
+			if (ch instanceof Mob) objects.add(ch);
 		}
 
 		Heap heap = Dungeon.level.heaps.get(cell);
@@ -1724,8 +1850,12 @@ public class GameScene extends PixelScene {
 	}
 
 	public static void examineObject(Object o){
-		if (o == Dungeon.hero){
+		if (o instanceof Hero){
+			// In multiplayer, temporarily swap Dungeon.hero so WndHero shows the right hero
+			Hero previous = Dungeon.hero;
+			Dungeon.hero = (Hero) o;
 			GameScene.show( new WndHero() );
+			Dungeon.hero = previous;
 		} else if ( o instanceof Mob && ((Mob) o).isActive() ){
 			GameScene.show(new WndInfoMob((Mob) o));
 			if (o instanceof Snake && !Document.ADVENTURERS_GUIDE.isPageRead(Document.GUIDE_SURPRISE_ATKS)){
@@ -1862,4 +1992,5 @@ public class GameScene extends PixelScene {
 			return null;
 		}
 	};
+
 }

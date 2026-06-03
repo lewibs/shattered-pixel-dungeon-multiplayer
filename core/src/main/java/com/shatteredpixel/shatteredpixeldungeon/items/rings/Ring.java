@@ -38,6 +38,7 @@ import com.shatteredpixel.shatteredpixeldungeon.items.KindofMisc;
 import com.shatteredpixel.shatteredpixeldungeon.items.trinkets.ShardOfOblivion;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Catalog;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.ItemSpriteSheet;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.watabou.utils.Bundle;
@@ -159,6 +160,9 @@ public class Ring extends KindofMisc {
 		if (!anonymous) {
 			if (!isKnown()) {
 				handler.know(this);
+				if (NetworkManager.lanMode) {
+					NetworkManager.sendItemIdentified(getClass().getName());
+				}
 			}
 
 			if (Dungeon.hero.isAlive()) {

@@ -1,6 +1,8 @@
-# Shattered Pixel Dungeon
+# Pixel Dungeon Multiplayer
 
-[Shattered Pixel Dungeon](https://shatteredpixel.com/shatteredpd/) is an open-source traditional roguelike dungeon crawler with randomized levels and enemies, and hundreds of items to collect and use. It's based on the [source code of Pixel Dungeon](https://github.com/00-Evan/pixel-dungeon-gradle), by [Watabou](https://watabou.itch.io/).
+Pixel Dungeon Multiplayer is [Shattered Pixel Dungeon](https://shatteredpixel.com/shatteredpd/) with pass-and-play multiplayer support for up to 4 players on a single device. Each player controls their own hero — warrior, mage, rogue, or huntress — taking turns exploring randomized dungeons, fighting enemies, and collecting hundreds of items together.
+
+Shattered Pixel Dungeon is an open-source traditional roguelike dungeon crawler based on the [source code of Pixel Dungeon](https://github.com/00-Evan/pixel-dungeon-gradle), by [Watabou](https://watabou.itch.io/).
 
 Shattered Pixel Dungeon currently compiles for Android, iOS, and Desktop platforms. You can find official releases of the game on:
 

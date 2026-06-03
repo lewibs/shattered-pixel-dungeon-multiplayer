@@ -32,6 +32,8 @@ import com.shatteredpixel.shatteredpixeldungeon.ShatteredPixelDungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Journal;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
+import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.shatteredpixel.shatteredpixeldungeon.ui.ActionIndicator;
 import com.shatteredpixel.shatteredpixeldungeon.ui.CheckBox;
 import com.shatteredpixel.shatteredpixeldungeon.ui.ExitButton;
@@ -71,6 +73,7 @@ import com.watabou.utils.RectF;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
@@ -83,6 +86,7 @@ public class HeroSelectScene extends PixelScene {
 
 	//fading UI elements
 	private RenderedTextBlock title;
+	private RenderedTextBlock subtitle;
 	private ArrayList<StyledButton> heroBtns = new ArrayList<>();
 	private RenderedTextBlock heroName; //only on landscape
 	private RenderedTextBlock heroDesc; //only on landscape
@@ -97,11 +101,31 @@ public class HeroSelectScene extends PixelScene {
 	private static boolean heroWasRandomized = true;
 	private static boolean chalWasRandomized = false;
 
+	// Stored during layout so repositionStartBtn() can re-center without a full re-layout
+	private float startBtnLandscapeLeftArea = 0;
+	private float startBtnLandscapeUiHeight = 0;
+
+	// LAN state — tracks async hero selection flow
+	private boolean lanHeroConfirmed  = false;  // local player pressed Select
+	private boolean lanReadyToStart   = false;  // host: all HERO_READY received
+	private boolean lanHandshakeReady = false;  // client: HANDSHAKE received
+
 	@Override
 	public void create() {
 		super.create();
 
 		Dungeon.hero = null;
+
+		// LAN mode: set up single-hero selection for this device
+		if (NetworkManager.lanMode) {
+			GamesInProgress.playerCount = 1;
+			GamesInProgress.currentPlayerSelecting = 0;
+			GamesInProgress.selectedClasses = new ArrayList<>();
+			lanHeroConfirmed  = false;
+			lanReadyToStart   = false;
+			lanHandshakeReady = false;
+
+		}
 
 		Badges.loadGlobal();
 		Journal.loadGlobal();
@@ -147,6 +171,13 @@ public class HeroSelectScene extends PixelScene {
 		PixelScene.align(title);
 		add(title);
 
+		if (GamesInProgress.playerCount > 1) {
+			subtitle = PixelScene.renderTextBlock(Messages.get(this, "player_selecting", GamesInProgress.currentPlayerSelecting + 1), 9);
+			subtitle.hardlight(Window.TITLE_COLOR);
+			PixelScene.align(subtitle);
+			add(subtitle);
+		}
+
 		startBtn = new StyledButton(Chrome.Type.GREY_BUTTON_TR, ""){
 			@Override
 			protected void onClick() {
@@ -154,13 +185,54 @@ public class HeroSelectScene extends PixelScene {
 
 				if (GamesInProgress.selectedClass == null) return;
 
-				Dungeon.hero = null;
-				Dungeon.daily = Dungeon.dailyReplay = false;
-				Dungeon.initSeed();
-				ActionIndicator.clearAction();
-				InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+				if (NetworkManager.lanMode) {
+					// Host tapping "Start Game" after all players confirmed
+					if (lanReadyToStart && NetworkManager.isHost()) {
+						launchLanGame();
+						return;
+					}
+					// LAN mode: lock in local selection, send HERO_READY, wait async
+					lanHeroConfirmed = true;
+					// Disable ALL hero buttons so nobody can change after confirming
+					for (StyledButton b : heroBtns) b.active = false;
 
-				Game.switchScene( InterlevelScene.class );
+					// Disable the Select button — can't change after confirming
+					startBtn.enable(false);
+					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "waiting")));
+					repositionStartBtn();
+
+					// Send HERO_READY asynchronously — never block the render thread
+					NetworkManager.sendHeroReady(GamesInProgress.selectedClass);
+
+					if (NetworkManager.isHost()) {
+						// Host: start background wait for all HERO_READY; update() shows Start when done
+						int expected = NetworkManager.getConnectedPlayerCount();
+						NetworkManager.waitForAllHeroReady(expected);
+					} else {
+						// Client: start background wait for HANDSHAKE; update() fires switchScene when done
+						NetworkManager.waitForHandshake();
+					}
+					return; // update() handles the rest
+				} else {
+					// Solo mode: pass-and-play for multiple heroes
+					GamesInProgress.selectedClasses.add(GamesInProgress.selectedClass);
+					GamesInProgress.currentPlayerSelecting++;
+
+					if (GamesInProgress.currentPlayerSelecting < GamesInProgress.playerCount) {
+						// More players to select — loop back
+						GamesInProgress.selectedClass = null;
+						ShatteredPixelDungeon.switchScene(HeroSelectScene.class);
+					} else {
+						// All players selected — start game
+						Dungeon.hero = null;
+						Dungeon.daily = Dungeon.dailyReplay = false;
+						Dungeon.initSeed();
+						ActionIndicator.clearAction();
+						InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+
+						Game.switchScene( InterlevelScene.class );
+					}
+				}
 			}
 		};
 		startBtn.icon(Icons.get(Icons.ENTER));
@@ -242,6 +314,8 @@ public class HeroSelectScene extends PixelScene {
 		if (landscape()){
 			float leftArea = Math.max(100, w/3f);
 			float uiHeight = Math.min(h-20, 300);
+			startBtnLandscapeLeftArea = leftArea;
+			startBtnLandscapeUiHeight = uiHeight;
 			float uiSpacing = (uiHeight-120)/2f;
 
 			if (uiHeight >= 160) uiSpacing -= 5;
@@ -252,8 +326,15 @@ public class HeroSelectScene extends PixelScene {
 			float fadeLeftScale = 47 * (leftArea - background.x)/leftArea;
 			fadeLeft.scale = new PointF(3 + Math.max(0, fadeLeftScale), background.height());
 
-			title.setPos(insets.left + (leftArea - title.width())/2f, (h-uiHeight)/2f);
+			float titleY = (h-uiHeight)/2f;
+			if (subtitle != null) titleY -= (subtitle.height() + 2) / 2f;
+			title.setPos(insets.left + (leftArea - title.width())/2f, titleY);
 			align(title);
+
+			if (subtitle != null) {
+				subtitle.setPos(insets.left + (leftArea - subtitle.width())/2f, title.bottom() + 2);
+				align(subtitle);
+			}
 
 			int btnWidth = HeroBtn.MIN_WIDTH + 15;
 			int btnHeight = HeroBtn.HEIGHT;
@@ -295,9 +376,7 @@ public class HeroSelectScene extends PixelScene {
 			add(heroDesc);
 
 			startBtn.text(Messages.titleCase(Messages.get(this, "start")));
-			startBtn.setSize(startBtn.reqWidth()+8, 21);
-			startBtn.setPos(insets.left + (leftArea - startBtn.width())/2f, title.top() + uiHeight - startBtn.height());
-			align(startBtn);
+			repositionStartBtn();
 
 			btnFade = new IconButton(Icons.CHEVRON.get()){
 				@Override
@@ -349,7 +428,14 @@ public class HeroSelectScene extends PixelScene {
 				add(blocker);
 			}
 
-			title.setPos(insets.left + (w - title.width()) / 2f, insets.top + (h - HeroBtn.HEIGHT - title.height() - 4));
+			float portraitTitleY = insets.top + (h - HeroBtn.HEIGHT - title.height() - 4);
+			if (subtitle != null) portraitTitleY -= (subtitle.height() + 2) / 2f;
+			title.setPos(insets.left + (w - title.width()) / 2f, portraitTitleY);
+
+			if (subtitle != null) {
+				subtitle.setPos(insets.left + (w - subtitle.width()) / 2f, title.bottom() + 2);
+				align(subtitle);
+			}
 
 			btnOptions.setRect(heroBtns.get(0).left() + 16, Camera.main.height-HeroBtn.HEIGHT-16, 20, 21);
 			optionsPane.setPos(heroBtns.get(0).left(), 0);
@@ -399,6 +485,25 @@ public class HeroSelectScene extends PixelScene {
 
 		fadeIn();
 
+	}
+
+	/** Called on host when all HERO_READY received — broadcasts HANDSHAKE and switches scene. */
+	private void launchLanGame() {
+		HeroClass[] collectedClasses = NetworkManager.getCollectedClasses();
+		if (collectedClasses == null) return;
+		collectedClasses[0] = GamesInProgress.selectedClass;
+
+		// Validate no two players chose the same class
+		long seed = Dungeon.seed;
+		if (seed == 0) { Dungeon.initSeed(); seed = Dungeon.seed; }
+		NetworkManager.sendHandshake(seed, collectedClasses);
+		Dungeon.seed = seed;
+		GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(collectedClasses));
+		Dungeon.daily = Dungeon.dailyReplay = false;
+		ActionIndicator.clearAction();
+		NetworkManager.startPingSender(); // keep connections alive; detect real disconnects
+		InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+		Game.switchScene(InterlevelScene.class);
 	}
 
 	private void updateOptionsColor(){
@@ -458,13 +563,11 @@ public class HeroSelectScene extends PixelScene {
 
 		} else {
 			title.visible = false;
+			if (subtitle != null) subtitle.visible = false;
 
 			startBtn.visible = startBtn.active = true;
 			startBtn.text(Messages.titleCase(cl.title()));
-			startBtn.setSize(startBtn.reqWidth() + 8, 21);
-
-			startBtn.setPos((Camera.main.width - startBtn.width())/2f, (Camera.main.height - insets.bottom - HeroBtn.HEIGHT + 2 - startBtn.height()));
-			PixelScene.align(startBtn);
+			repositionStartBtn();
 
 			infoButton.visible = infoButton.active = true;
 			infoButton.setPos(startBtn.right(), startBtn.top());
@@ -479,11 +582,67 @@ public class HeroSelectScene extends PixelScene {
 		updateOptionsColor();
 	}
 
+	/**
+	 * Resize startBtn to fit its current text, then re-centre it and reposition
+	 * btnFade / btnOptions / infoButton so nothing overlaps.
+	 * Called whenever the button label changes (hero name → waiting → lan_start → start).
+	 */
+	private void repositionStartBtn() {
+		startBtn.setSize(startBtn.reqWidth() + 8, 21);
+		if (landscape()) {
+			startBtn.setPos(
+					insets.left + (startBtnLandscapeLeftArea - startBtn.width()) / 2f,
+					title.top() + startBtnLandscapeUiHeight - startBtn.height());
+			align(startBtn);
+			if (btnFade != null)    btnFade.setRect(startBtn.left() - 20, startBtn.top(), 20, 21);
+			if (btnOptions != null) btnOptions.setRect(startBtn.right(), startBtn.top(), 20, 21);
+			if (optionsPane != null)
+				optionsPane.setPos(btnOptions.right(), btnOptions.top() - optionsPane.height() - 2);
+		} else {
+			startBtn.setPos(
+					(Camera.main.width - startBtn.width()) / 2f,
+					Camera.main.height - insets.bottom - HeroBtn.HEIGHT + 2 - startBtn.height());
+			align(startBtn);
+			if (infoButton != null) infoButton.setPos(startBtn.right(), startBtn.top());
+			if (btnOptions != null) btnOptions.setPos(startBtn.left() - btnOptions.width(), startBtn.top());
+			if (optionsPane != null)
+				optionsPane.setPos(heroBtns.isEmpty() ? startBtn.left() : heroBtns.get(0).left(),
+						startBtn.top() - optionsPane.height() - 2);
+		}
+	}
+
 	private float uiAlpha;
 
 	@Override
 	public void update() {
 		super.update();
+
+		// LAN async polling — runs every frame without blocking the render thread
+		if (NetworkManager.lanMode && lanHeroConfirmed) {
+			if (NetworkManager.isHost() && !lanReadyToStart) {
+				if (NetworkManager.isHeroReadyReceived()) {
+					lanReadyToStart = true;
+					// Reuse startBtn: change text to "Start Game" and re-enable for host
+					startBtn.text(Messages.titleCase(Messages.get(HeroSelectScene.class, "lan_start")));
+					startBtn.enable(true);
+					repositionStartBtn();
+					startBtn.visible = true;
+				}
+			} else if (!NetworkManager.isHost() && !lanHandshakeReady) {
+				if (NetworkManager.isHandshakeReceived()) {
+					lanHandshakeReady = true;
+					NetworkManager.HandshakePayload payload = NetworkManager.getHandshakePayload();
+					Dungeon.seed = payload.seed;
+					GamesInProgress.selectedClasses = new ArrayList<>(java.util.Arrays.asList(payload.heroClasses));
+					Dungeon.daily = Dungeon.dailyReplay = false;
+					ActionIndicator.clearAction();
+					NetworkManager.startPingSender();
+					InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+					Game.switchScene(InterlevelScene.class);
+				}
+			}
+		}
+
 		if (SPDSettings.intro() && Rankings.INSTANCE.totalNumber > 0){
 			SPDSettings.intro(false);
 		}
@@ -503,6 +662,7 @@ public class HeroSelectScene extends PixelScene {
 	private void updateFade(){
 		float alpha = GameMath.gate(0f, uiAlpha, 1f);
 		title.alpha(alpha);
+		if (subtitle != null) subtitle.alpha(alpha);
 		for (StyledButton b : heroBtns){
 			b.enable(alpha != 0);
 			b.alpha(alpha);
@@ -556,6 +716,9 @@ public class HeroSelectScene extends PixelScene {
 	@Override
 	protected void onBackPressed() {
 		if (btnExit.active){
+			GamesInProgress.playerCount = 1;
+			GamesInProgress.selectedClasses = new ArrayList<>();
+			GamesInProgress.currentPlayerSelecting = 0;
 			ShatteredPixelDungeon.switchScene(TitleScene.class);
 		} else {
 			super.onBackPressed();
@@ -581,8 +744,8 @@ public class HeroSelectScene extends PixelScene {
 		@Override
 		public void update() {
 			super.update();
-			if (cl != GamesInProgress.selectedClass){
-				if (!cl.isUnlocked()){
+			if (cl != GamesInProgress.selectedClass) {
+				if (!cl.isUnlocked()) {
 					icon.brightness(0.1f);
 				} else {
 					icon.brightness(0.6f);

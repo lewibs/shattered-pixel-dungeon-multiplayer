@@ -33,6 +33,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.MindVision;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.RevealedArea;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Terror;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.cleric.PowerOfMany;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.huntress.SpiritHawk;
@@ -70,11 +71,14 @@ import com.shatteredpixel.shatteredpixeldungeon.levels.RegularLevel;
 import com.shatteredpixel.shatteredpixeldungeon.levels.SewerBossLevel;
 import com.shatteredpixel.shatteredpixeldungeon.levels.SewerLevel;
 import com.shatteredpixel.shatteredpixeldungeon.levels.VaultLevel;
+import com.shatteredpixel.shatteredpixeldungeon.levels.features.Chasm;
 import com.shatteredpixel.shatteredpixeldungeon.levels.features.LevelTransition;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.secret.SecretRoom;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.special.SpecialRoom;
 import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene;
+import com.shatteredpixel.shatteredpixeldungeon.QuickSlot;
 import com.shatteredpixel.shatteredpixeldungeon.ui.QuickSlotButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Toolbar;
 import com.shatteredpixel.shatteredpixeldungeon.utils.DungeonSeed;
@@ -214,6 +218,8 @@ public class Dungeon {
 	public static long seed;
 	public static long lastPlayed;
 
+	public static boolean heroesNeedInitialPlacement = false;
+
 	//we initialize the seed separately so that things like interlevelscene can access it early
 	public static void initSeed(){
 		if (daily) {
@@ -284,9 +290,34 @@ public class Dungeon {
 
 		Badges.reset();
 
-		GamesInProgress.selectedClass.initHero( hero );
 		heroes = new ArrayList<>();
-		heroes.add(hero);
+
+		if (GamesInProgress.selectedClasses != null && !GamesInProgress.selectedClasses.isEmpty()) {
+			for (HeroClass cls : GamesInProgress.selectedClasses) {
+				spawnHero(cls);
+			}
+		} else {
+			// Fallback: single-player using legacy selectedClass
+			spawnHero(GamesInProgress.selectedClass);
+		}
+
+		if (heroes.size() > 1) {
+			heroesNeedInitialPlacement = true;
+		}
+	}
+
+	// Creates, initializes, and registers a new hero of the given class.
+	// Temporarily points Dungeon.quickslot at the new hero so initHero's slot assignments go to the right place.
+	public static Hero spawnHero( HeroClass heroClass ) {
+		Hero h = new Hero();
+		h.live();
+		QuickSlot savedSlot = quickslot;
+		quickslot = h.quickslot;
+		heroClass.initHero( h );
+		quickslot = savedSlot;
+		heroes.add( h );
+		if (heroes.size() == 1) hero = h; // first hero is the active singleton
+		return h;
 	}
 
 	public static boolean isChallenged( int mask ) {
@@ -479,9 +510,20 @@ public class Dungeon {
 		}
 		
 		PathFinder.setMapSize(level.width(), level.height());
-		
+
 		Dungeon.level = level;
 		hero.pos = pos;
+
+		if (heroesNeedInitialPlacement) {
+			heroesNeedInitialPlacement = false;
+			// In LAN mode always place heroes[0] at the entrance so positions are
+			// identical on both screens regardless of which device is the host.
+			if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode
+					&& heroes != null && !heroes.isEmpty()) {
+				heroes.get(0).pos = pos;
+			}
+			placeHeroesNearEntrance(level, pos, heroes);
+		}
 
 		if (hero.buff(AscensionChallenge.class) != null){
 			hero.buff(AscensionChallenge.class).onLevelSwitch();
@@ -517,6 +559,37 @@ public class Dungeon {
 			ShatteredPixelDungeon.reportException(e);
 			/*This only catches IO errors. Yes, this means things can go wrong, and they can go wrong catastrophically.
 			But when they do the user will get a nice 'report this issue' dialogue, and I can fix the bug.*/
+		}
+	}
+
+	// Package-private for testing. Places heroes[1..N] adjacent to entrancePos.
+	// heroes[0] is always placed at the entrance (by switchLevel or LAN override)
+	// so both screens have identical hero positions regardless of localPlayerIndex.
+	// Uses a local occupied set because Actor.init() has not run yet —
+	// Actor.findChar() would return null for every cell at this point.
+	static void placeHeroesNearEntrance(Level level, int entrancePos,
+	                                    ArrayList<Hero> heroes) {
+		HashSet<Integer> occupied = new HashSet<>();
+		occupied.add(entrancePos); // heroes[0] is at the entrance
+		for (int i = 1; i < heroes.size(); i++) {
+			Hero h = heroes.get(i);
+			// Falling heroes keep their fall-cell — don't overwrite or claim a stair slot
+			if (h.buff(Chasm.WaitingToFall.class) != null
+					|| h.buff(Chasm.Falling.class) != null) continue;
+
+			int placed = -1;
+			for (int offset : PathFinder.NEIGHBOURS8) {
+				int candidate = entrancePos + offset;
+				if (candidate >= 0 && candidate < level.length()
+						&& level.passable[candidate]
+						&& !occupied.contains(candidate)) {
+					placed = candidate;
+					break;
+				}
+			}
+			int heroPos = (placed != -1) ? placed : entrancePos;
+			h.pos = heroPos;
+			occupied.add(heroPos);
 		}
 	}
 
@@ -639,6 +712,18 @@ public class Dungeon {
 			bundle.put( MOBS_TO_CHAMPION, mobsToChampion );
 			bundle.put( HERO, hero );
 			bundle.put( "heroes", heroes ); // serialize all heroes; HERO kept for Hero.preview() compat
+			String[] heroClassNames = new String[heroes.size()];
+			int[] heroArmorTiers = new int[heroes.size()];
+			int[] heroLevels = new int[heroes.size()];
+			for (int i = 0; i < heroes.size(); i++) {
+				heroClassNames[i] = heroes.get(i).heroClass.name();
+				heroArmorTiers[i] = heroes.get(i).tier();
+				heroLevels[i] = heroes.get(i).lvl;
+			}
+			bundle.put( "heroClassNames", heroClassNames );
+			bundle.put( "heroArmorTiers", heroArmorTiers );
+			bundle.put( "heroLevels", heroLevels );
+			bundle.put( "isMultiplayerSave", NetworkManager.lanMode && NetworkManager.isHostMode() );
 			bundle.put( DEPTH, depth );
 			bundle.put( BRANCH, branch );
 
@@ -709,7 +794,12 @@ public class Dungeon {
 	
 	public static void saveAll() throws IOException {
 		if (hero != null && (hero.isAlive() || WndResurrect.instance != null)) {
-			
+
+			// In LAN mode, only the host saves; clients skip this entirely
+			if (NetworkManager.lanMode && !NetworkManager.isHostMode()) {
+				return;
+			}
+
 			Actor.fixTime();
 			updateLevelExplored();
 			saveGame( GamesInProgress.curSlot );
@@ -723,10 +813,22 @@ public class Dungeon {
 	public static void loadGame( int save ) throws IOException {
 		loadGame( save, true );
 	}
-	
+
+	public static void loadGame( Bundle bundle ) throws IOException {
+		loadGameFromBundle( bundle, true );
+	}
+
+	public static void loadGame( Bundle bundle, boolean fullLoad ) throws IOException {
+		loadGameFromBundle( bundle, fullLoad );
+	}
+
 	public static void loadGame( int save, boolean fullLoad ) throws IOException {
-		
+
 		Bundle bundle = FileUtils.bundleFromFile( GamesInProgress.gameFile( save ) );
+		loadGameFromBundle( bundle, fullLoad );
+	}
+
+	private static void loadGameFromBundle( Bundle bundle, boolean fullLoad ) throws IOException {
 
 		initialVersion = bundle.getInt( INIT_VER );
 		version = bundle.getInt( VERSION );
@@ -892,6 +994,29 @@ public class Dungeon {
 
 		Hero.preview( info, bundle.getBundle( HERO ) );
 		Statistics.preview( info, bundle );
+
+		info.heroClasses = new ArrayList<>();
+		info.armorTiers = new ArrayList<>();
+		info.heroLevels = new ArrayList<>();
+		if (bundle.contains("heroClassNames")) {
+			String[] names  = bundle.getStringArray("heroClassNames");
+			int[]    tiers  = bundle.getIntArray("heroArmorTiers");
+			int[]    levels = bundle.contains("heroLevels") ? bundle.getIntArray("heroLevels") : new int[names.length];
+			for (int i = 0; i < names.length; i++) {
+				try {
+					info.heroClasses.add(HeroClass.valueOf(names[i]));
+					info.armorTiers.add(tiers[i]);
+					info.heroLevels.add(i < levels.length ? levels[i] : info.level);
+				} catch (IllegalArgumentException ignored) {}
+			}
+		}
+		if (info.heroClasses.isEmpty()) {
+			info.heroClasses.add(info.heroClass);
+			info.armorTiers.add(info.armorTier);
+			info.heroLevels.add(info.level);
+		}
+
+		info.isMultiplayerSave = bundle.getBoolean("isMultiplayerSave");
 	}
 	
 	public static void fail( Object cause ) {
@@ -937,6 +1062,28 @@ public class Dungeon {
 		}
 		
 		level.updateFieldOfView(hero, level.heroFOV);
+		if (heroes != null) {
+			if (heroes.size() > 1) {
+				// Pass-and-play: only the active hero's FOV is visible.
+				// Dungeon.hero is already the active hero via Hero.activate().
+				// Still refresh fog rendering at other heroes' positions.
+				for (Hero h : heroes) {
+					if (h == hero) continue;
+					// Skip heroes that are mid-fall (their pos may be invalid / off-map)
+					if (h.buff(Chasm.WaitingToFall.class) != null) continue;
+					GameScene.updateFog(h.pos, h.viewDistance + 1);
+				}
+			} else {
+				// Single player — union loop (no-op: only one hero exists)
+				boolean[] tmpFOV = new boolean[level.heroFOV.length];
+				for (Hero h : heroes) {
+					if (h == hero) continue;
+					level.updateFieldOfView(h, tmpFOV);
+					BArray.or(level.heroFOV, tmpFOV, level.heroFOV);
+					GameScene.updateFog(h.pos, h.viewDistance + 1);
+				}
+			}
+		}
 
 		int x = hero.pos % level.width();
 		int y = hero.pos / level.width();
@@ -1073,7 +1220,7 @@ public class Dungeon {
 
 		if (chars) {
 			for (Char c : Actor.chars()) {
-				if (vis[c.pos]) {
+				if (c.pos >= 0 && c.pos < passable.length && vis[c.pos]) {
 					passable[c.pos] = false;
 				}
 			}

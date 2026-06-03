@@ -22,6 +22,7 @@
 package com.shatteredpixel.shatteredpixeldungeon.items;
 
 import com.shatteredpixel.shatteredpixeldungeon.Assets;
+import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
@@ -42,6 +43,14 @@ import com.watabou.noosa.audio.Sample;
 import java.util.ArrayList;
 
 public class KingsCrown extends Item {
+
+	public static ArrayList<Hero> pendingHeroes = new ArrayList<>();
+
+	public static void showNextPending() {
+		if (pendingHeroes.isEmpty()) return;
+		Hero next = pendingHeroes.remove(0);
+		GameScene.show(new WndChooseAbility(new KingsCrown(), next.belongings.armor(), next));
+	}
 	
 	private static final String AC_WEAR = "WEAR";
 	
@@ -68,12 +77,22 @@ public class KingsCrown extends Item {
 		if (action.equals(AC_WEAR)) {
 
 			curUser = hero;
+
 			if (hero.belongings.armor() != null){
+				// Populate pendingHeroes with all other heroes
+				pendingHeroes.clear();
+				for (Hero h : Dungeon.heroes) {
+					if (h != hero && h.isAlive()) {
+						pendingHeroes.add(h);
+					}
+				}
 				GameScene.show( new WndChooseAbility(this, hero.belongings.armor(), hero));
 			} else {
+				// Clear any stale entries from previous activation
+				pendingHeroes.clear();
 				GLog.w( Messages.get(this, "naked"));
 			}
-			
+
 		}
 	}
 	
@@ -124,6 +143,8 @@ public class KingsCrown extends Item {
 
 		hero.sprite.operate( hero.pos );
 		Sample.INSTANCE.play( Assets.Sounds.MASTERY );
+
+		showNextPending();
 	}
 
 }

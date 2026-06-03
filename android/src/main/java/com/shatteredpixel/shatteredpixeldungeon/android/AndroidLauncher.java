@@ -22,14 +22,19 @@
 package com.shatteredpixel.shatteredpixeldungeon.android;
 
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.ViewConfiguration;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
 
 import com.badlogic.gdx.Files;
 import com.badlogic.gdx.Gdx;
@@ -73,6 +78,45 @@ public class AndroidLauncher extends AndroidApplication {
 			finish();
 			//let initialization continue for a moment so that we can set up things libGDX expects to be set up
 		}
+
+		// Show crash report from previous session if one was saved
+		android.content.SharedPreferences crashPrefs = getSharedPreferences("PDMultiplayerCrash", MODE_PRIVATE);
+		String savedCrash = crashPrefs.getString("crash_report", null);
+		if (savedCrash != null) {
+			crashPrefs.edit().remove("crash_report").apply();
+			final String crashReport = savedCrash;
+			runOnUiThread(new Runnable() {
+				@Override
+				public void run() {
+					new AlertDialog.Builder(AndroidLauncher.this)
+							.setTitle("Pixel Dungeon Multiplayer Has Crashed!")
+							.setMessage("The game crashed since you last played. " +
+									"If you could, please email this info to benjaminsl2000@gmail.com:\n\n" +
+									crashReport)
+							.setPositiveButton("OK", null)
+							.show();
+				}
+			});
+		}
+
+		// Catch crashes on any thread and save the report for display on next launch
+		final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+		Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+			@Override
+			public void uncaughtException(Thread thread, Throwable throwable) {
+				try {
+					StringWriter sw = new StringWriter();
+					throwable.printStackTrace(new PrintWriter(sw));
+					String version = Game.version != null ? Game.version : "unknown";
+					String report = "version: " + version + "\n" + sw.toString();
+					if (report.length() > 2000) report = report.substring(0, 2000) + "...";
+					getSharedPreferences("PDMultiplayerCrash", MODE_PRIVATE).edit()
+							.putString("crash_report", report)
+							.apply();
+				} catch (Throwable ignored) {}
+				if (defaultHandler != null) defaultHandler.uncaughtException(thread, throwable);
+			}
+		});
 
 		//there are some things we only need to set up on first launch
 		if (instance == null) {

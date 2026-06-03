@@ -42,6 +42,7 @@ import com.shatteredpixel.shatteredpixeldungeon.windows.WndError;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndHardNotification;
 import com.watabou.glwrap.Blending;
 import com.watabou.input.ControllerHandler;
+import com.watabou.noosa.BitmapText;
 import com.watabou.noosa.Camera;
 import com.watabou.noosa.ColorBlock;
 import com.watabou.noosa.Game;
@@ -142,7 +143,15 @@ public class WelcomeScene extends PixelScene {
 		signs.x = title.x + (title.width() - signs.width())/2f;
 		signs.y = title.y;
 		add( signs );
-		
+
+		BitmapText subtitle = new BitmapText( "Multiplayer", pixelFont);
+		subtitle.measure();
+		subtitle.hardlight( 0xFFD700 );
+		subtitle.x = insets.left + (w - subtitle.width()) / 2f;
+		subtitle.y = title.y + title.height() - 4;
+		align(subtitle);
+		add(subtitle);
+
 		StyledButton okay = new StyledButton(Chrome.Type.GREY_BUTTON_TR, Messages.get(this, "continue")){
 			@Override
 			protected void onClick() {

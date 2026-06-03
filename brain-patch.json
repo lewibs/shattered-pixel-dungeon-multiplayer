@@ -1,0 +1,8 @@
+{
+  "bugFiles": [
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-31-lan-fov-interrupt-freeze.md"
+  ],
+  "notes": [
+    "debugger-agent: root cause was Hero.checkVisibleMobs() using the shared heroFOV array (always recomputed for hero[0]) instead of a per-hero FOV, causing spurious interrupt() for remote heroes and LAN deadlock when curAction was cleared. Fixed in Hero.java checkVisibleMobs(): added LAN guard that recomputes fieldOfView from the remote hero's own position before checking mob visibility."
+  ]
+}

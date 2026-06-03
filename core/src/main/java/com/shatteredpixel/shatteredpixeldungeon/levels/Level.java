@@ -568,6 +568,18 @@ public abstract class Level implements Bundlable {
 			return false;
 		}
 
+		if (Dungeon.heroes != null && Dungeon.heroes.size() > 1) {
+			for (Hero other : Dungeon.heroes) {
+				if (other == hero) continue;
+				if (!other.isAlive()) continue; // dead heroes have stale positions; ignore them
+				if (other.buff(Chasm.WaitingToFall.class) != null) continue; // waiting-to-fall heroes don't block the party
+				if (distance(hero.pos, other.pos) > 1) {
+					GLog.w(Messages.get(Level.class, "need_party_adjacent"));
+					return false;
+				}
+			}
+		}
+
 		beforeTransition();
 		InterlevelScene.curTransition = transition;
 		if (transition.type == LevelTransition.Type.REGULAR_EXIT
@@ -576,7 +588,7 @@ public abstract class Level implements Bundlable {
 		} else {
 			InterlevelScene.mode = InterlevelScene.Mode.ASCEND;
 		}
-		Game.switchScene(InterlevelScene.class);
+		if (Game.instance != null) Game.switchScene(InterlevelScene.class);
 		return true;
 	}
 
@@ -1172,8 +1184,8 @@ public abstract class Level implements Bundlable {
 			}
 			
 			if (pit[ch.pos]){
-				if (ch == Dungeon.hero) {
-					Chasm.heroFall(ch.pos);
+				if (ch instanceof Hero) {
+					Chasm.heroFall((Hero)ch, ch.pos);
 				} else if (ch instanceof Mob) {
 					Chasm.mobFall( (Mob)ch );
 				}

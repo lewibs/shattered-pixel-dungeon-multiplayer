@@ -51,6 +51,8 @@ import com.watabou.utils.DeviceCompat;
 import com.watabou.utils.GameMath;
 import com.watabou.utils.RectF;
 
+import java.util.ArrayList;
+
 public class RankingsScene extends PixelScene {
 	
 	private static final float ROW_HEIGHT_MAX	= 20;
@@ -207,8 +209,8 @@ public class RankingsScene extends PixelScene {
 		private RenderedTextBlock desc;
 		private Image steps;
 		private BitmapText depth;
-		private Image classIcon;
-		private BitmapText level;
+		private ArrayList<Image> classIcons = new ArrayList<>();
+		private ArrayList<BitmapText> levelTexts = new ArrayList<>();
 		
 		public Record( int pos, boolean latest, Rankings.Record rec ) {
 			super();
@@ -237,12 +239,10 @@ public class RankingsScene extends PixelScene {
 				position.hardlight( TEXT_WIN[odd] );
 				desc.hardlight( TEXT_WIN[odd] );
 				depth.hardlight( TEXT_WIN[odd] );
-				level.hardlight( TEXT_WIN[odd] );
 			} else {
 				position.hardlight( TEXT_LOSE[odd] );
 				desc.hardlight( TEXT_LOSE[odd] );
 				depth.hardlight( TEXT_LOSE[odd] );
-				level.hardlight( TEXT_LOSE[odd] );
 
 				if (rec.depth != 0){
 					depth.text( Integer.toString(rec.depth) );
@@ -268,71 +268,125 @@ public class RankingsScene extends PixelScene {
 				shield.hardlight(1f, 1.5f, 0.67f);
 			}
 
-			if (rec.herolevel != 0){
-				level.text( Integer.toString(rec.herolevel) );
-				level.measure();
-				add(level);
+			// Build icon grid from rec.heroClasses
+			for (Image img : classIcons) remove(img);  classIcons.clear();
+			for (BitmapText t : levelTexts) remove(t); levelTexts.clear();
+
+			if (rec.heroClasses != null) {
+			int n = rec.heroClasses.length;
+			float iconScale = n == 1 ? 1f : (n == 2 ? 0.75f : 0.6f);
+			for (int i = 0; i < n; i++) {
+				Image icon = new Image(Icons.get(rec.heroClasses[i]));
+				add(icon);
+				classIcons.add(icon);
+
+				if (rec.heroClasses[i] == HeroClass.ROGUE){
+					//cloak of shadows needs to be brightened a bit
+					icon.brightness(2f);
+				}
+
+				BitmapText lvl = new BitmapText(PixelScene.pixelFont);
+				if (rec.heroLevels != null && i < rec.heroLevels.length && rec.heroLevels[i] != 0)
+					lvl.text(Integer.toString(rec.heroLevels[i]));
+				lvl.measure();
+				if (rec.win) {
+					lvl.hardlight( TEXT_WIN[odd] );
+				} else {
+					lvl.hardlight( TEXT_LOSE[odd] );
+				}
+				add(lvl);
+				levelTexts.add(lvl);
 			}
-			
-			classIcon.copy( Icons.get( rec.heroClass ) );
-			if (rec.heroClass == HeroClass.ROGUE){
-				//cloak of shadows needs to be brightened a bit
-				classIcon.brightness(2f);
-			}
+			} // end heroClasses != null guard
 		}
 		
 		@Override
 		protected void createChildren() {
-			
+
 			super.createChildren();
-			
+
 			shield = new Image(new ItemSprite( ItemSpriteSheet.TOMB, null ));
 			add( shield );
-			
+
 			position = new BitmapText( PixelScene.pixelFont);
 			add( position );
-			
+
 			desc = renderTextBlock( 7 );
 			add( desc );
 
 			depth = new BitmapText( PixelScene.pixelFont);
 
 			steps = new Image();
-			
-			classIcon = new Image();
-			add( classIcon );
-
-			level = new BitmapText( PixelScene.pixelFont);
 		}
 		
 		@Override
 		protected void layout() {
-			
+
 			super.layout();
-			
+
 			shield.x = x + (16 - shield.width) / 2f;
 			shield.y = y + (height - shield.height) / 2f;
 			align(shield);
-			
+
 			position.x = shield.x + (shield.width - position.width()) / 2f;
 			position.y = shield.y + (shield.height - position.height()) / 2f + 1;
 			align(position);
-			
+
 			if (flare != null) {
 				flare.point( shield.center() );
 			}
 
-			classIcon.x = x + width - 16 + (16 - classIcon.width())/2f;
-			classIcon.y = shield.y + (16 - classIcon.height())/2f;
-			align(classIcon);
+			// Layout icon grid (1x1 / 2x1 / 2x2)
+			int n = classIcons.size();
 
-			level.x = classIcon.x + (classIcon.width - level.width()) / 2f;
-			level.y = classIcon.y + (classIcon.height - level.height()) / 2f + 1;
-			align(level);
+			if (n == 1) {
+				// Original single-hero layout: class icon flush against right edge, steps icon next to it
+				Image icon = classIcons.get(0);
+				icon.scale.set(1f);
+				icon.x = x + width - 16;
+				icon.y = shield.y;
+				align(icon);
 
-			steps.x = x + width - 32 + (16 - steps.width())/2f;
-			steps.y = shield.y + (16 - steps.height())/2f;
-			align(steps);
+				BitmapText lvl = levelTexts.get(0);
+				lvl.x = icon.x + (16 - lvl.width()) / 2f;
+				lvl.y = icon.y + (16 - lvl.height()) / 2f + 1;
+				align(lvl);
+
+				// steps/depth at original position
+				steps.x = x + width - 32 + (16 - steps.width()) / 2f;
+				steps.y = shield.y + (16 - steps.height()) / 2f;
+				align(steps);
+			} else {
+				int icols = 2;
+				int irows = (n + icols - 1) / icols;
+				float iconScale = n == 2 ? 0.75f : 0.6f;
+				float iw = 16 * iconScale;
+				float ih = 16 * iconScale;
+				float izoneW = icols * iw + (icols - 1);
+				float izoneX = x + width - 4 - izoneW;
+				float izoneY = shield.y + (16 - irows * ih - (irows - 1)) / 2f;
+				// Clamp so icons never appear above the shield
+				if (izoneY < shield.y) izoneY = shield.y;
+
+				for (int i = 0; i < n; i++) {
+					Image icon = classIcons.get(i);
+					icon.scale.set(iconScale);
+					float ix = izoneX + (i % icols) * (iw + 1);
+					float iy = izoneY + (i / icols) * (ih + 1);
+					icon.x = ix;  icon.y = iy;
+					align(icon);
+
+					BitmapText lvl = levelTexts.get(i);
+					lvl.x = ix + (iw - lvl.width()) / 2f;
+					lvl.y = iy + (ih - lvl.height()) / 2f + 1;
+					align(lvl);
+				}
+
+				// steps/depth icon moves left by izoneW to make room
+				steps.x = izoneX - 18 + (16 - steps.width()) / 2f;
+				steps.y = shield.y + (16 - steps.height()) / 2f;
+				align(steps);
+			}
 
 			depth.x = steps.x + (steps.width - depth.width()) / 2f;
 			depth.y = steps.y + (steps.height - depth.height()) / 2f + 1;

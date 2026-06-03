@@ -133,7 +133,7 @@ public class PitfallTrap extends Trap {
 
 			//process hero falling last
 			if (herofell){
-				Chasm.heroFall(Dungeon.hero.pos);
+				Chasm.heroFall(Dungeon.hero, Dungeon.hero.pos);
 			}
 
 			detach();

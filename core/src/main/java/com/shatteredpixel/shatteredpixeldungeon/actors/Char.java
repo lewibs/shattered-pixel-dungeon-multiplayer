@@ -369,7 +369,8 @@ public abstract class Char extends Actor {
 
 		if (enemy == null) return false;
 		
-		boolean visibleFight = Dungeon.level.heroFOV[pos] || Dungeon.level.heroFOV[enemy.pos];
+		boolean visibleFight = (pos >= 0 && Dungeon.level.heroFOV[pos])
+				|| (enemy.pos >= 0 && Dungeon.level.heroFOV[enemy.pos]);
 
 		if (enemy.isInvulnerable(getClass())) {
 
@@ -577,7 +578,19 @@ public abstract class Char extends Actor {
 							|| this instanceof MirrorImage || this instanceof PrismaticImage){
 						Badges.validateDeathFromFriendlyMagic();
 					}
-					Dungeon.fail( this );
+					boolean lastHero = true;
+
+					if (Dungeon.heroes != null) {
+
+					    for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : Dungeon.heroes) {
+
+					        if (h != Dungeon.hero && h.isAlive()) { lastHero = false; break; }
+
+					    }
+
+					}
+
+					if (lastHero) Dungeon.fail( this );
 					GLog.n( Messages.capitalize(Messages.get(Char.class, "kill", name())) );
 					
 				} else if (this == Dungeon.hero) {
@@ -1269,7 +1282,8 @@ public abstract class Char extends Actor {
 
 		pos = step;
 		
-		if (this != Dungeon.hero) {
+		// Mobs use heroFOV for visibility; hero party members are always visible.
+		if (this != Dungeon.hero && !(this instanceof com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero)) {
 			sprite.visible = Dungeon.level.heroFOV[pos];
 		}
 		

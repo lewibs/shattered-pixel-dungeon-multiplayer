@@ -113,6 +113,22 @@ public enum Rankings {
 		rec.customSeed  = Dungeon.customSeedText;
 		rec.daily       = Dungeon.daily;
 
+		// Populate multi-hero arrays from Dungeon.heroes
+		if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+			rec.heroClasses = new HeroClass[Dungeon.heroes.size()];
+			rec.armorTiers  = new int[Dungeon.heroes.size()];
+			rec.heroLevels  = new int[Dungeon.heroes.size()];
+			for (int i = 0; i < Dungeon.heroes.size(); i++) {
+				rec.heroClasses[i] = Dungeon.heroes.get(i).heroClass;
+				rec.armorTiers[i]  = Dungeon.heroes.get(i).tier();
+				rec.heroLevels[i]  = Dungeon.heroes.get(i).lvl;
+			}
+		} else {
+			rec.heroClasses = new HeroClass[]{ rec.heroClass };
+			rec.armorTiers  = new int[]{ rec.armorTier };
+			rec.heroLevels  = new int[]{ rec.herolevel };
+		}
+
 		Badges.validateHighScore( rec.score );
 		
 		INSTANCE.saveGameData(rec);
@@ -467,6 +483,9 @@ public enum Rankings {
 
 		private static final String DATE    = "date";
 		private static final String VERSION = "version";
+		private static final String HERO_CLASSES = "heroClasses";
+		private static final String ARMOR_TIERS = "armorTiers";
+		private static final String HERO_LEVELS = "heroLevels";
 
 		public Class cause;
 		public boolean win;
@@ -476,6 +495,10 @@ public enum Rankings {
 		public int herolevel;
 		public int depth;
 		public boolean ascending;
+
+		public HeroClass[] heroClasses;
+		public int[] armorTiers;
+		public int[] heroLevels;
 
 		public Bundle gameData;
 		public String gameID;
@@ -510,13 +533,13 @@ public enum Rankings {
 		
 		@Override
 		public void restoreFromBundle( Bundle bundle ) {
-			
+
 			if (bundle.contains( CAUSE )) {
 				cause = bundle.getClass( CAUSE );
 			} else {
 				cause = null;
 			}
-			
+
 			win		    = bundle.getBoolean( WIN );
 			score	    = bundle.getInt( SCORE );
 			customSeed  = bundle.getString( SEED );
@@ -537,14 +560,33 @@ public enum Rankings {
 
 			if (bundle.contains(DATA))  gameData = bundle.getBundle(DATA);
 			if (bundle.contains(ID))   gameID = bundle.getString(ID);
-			
+
 			if (gameID == null) gameID = UUID.randomUUID().toString();
+
+			// Restore multi-hero arrays, fallback to single hero fields if absent
+			if (bundle.contains(HERO_CLASSES)) {
+				String[] names = bundle.getStringArray(HERO_CLASSES);
+				if (names != null) {
+					heroClasses = new HeroClass[names.length];
+					for (int i = 0; i < names.length; i++) heroClasses[i] = HeroClass.valueOf(names[i]);
+				} else {
+					heroClasses = new HeroClass[]{ heroClass };
+				}
+				armorTiers = bundle.getIntArray(ARMOR_TIERS);
+				if (armorTiers == null) armorTiers = new int[]{ armorTier };
+				heroLevels = bundle.getIntArray(HERO_LEVELS);
+				if (heroLevels == null) heroLevels = new int[]{ herolevel };
+			} else {
+				heroClasses = new HeroClass[]{ heroClass };
+				armorTiers  = new int[]{ armorTier };
+				heroLevels  = new int[]{ herolevel };
+			}
 
 		}
 		
 		@Override
 		public void storeInBundle( Bundle bundle ) {
-			
+
 			if (cause != null) bundle.put( CAUSE, cause );
 
 			bundle.put( WIN, win );
@@ -563,6 +605,16 @@ public enum Rankings {
 
 			if (gameData != null) bundle.put( DATA, gameData );
 			bundle.put( ID, gameID );
+
+			// Store hero class names as string array for bundle compat
+			if (heroClasses != null && heroClasses.length > 0
+					&& armorTiers != null && heroLevels != null) {
+				String[] classNames = new String[heroClasses.length];
+				for (int i = 0; i < heroClasses.length; i++) classNames[i] = heroClasses[i].name();
+				bundle.put( HERO_CLASSES, classNames );
+				bundle.put( ARMOR_TIERS, armorTiers );
+				bundle.put( HERO_LEVELS, heroLevels );
+			}
 		}
 	}
 

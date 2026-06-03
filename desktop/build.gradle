@@ -24,6 +24,7 @@ tasks.register('debug', JavaExec) {
     systemProperty 'Specification-Version', appVersionName + "-INDEV"
     systemProperty 'Implementation-Version', appVersionCode
 
+    jvmArgs '-Djdk.lang.Process.launchMechanism=VFORK'
     if (osName.contains('mac')) {
         jvmArgs '-XstartOnFirstThread'
     }
