@@ -180,7 +180,7 @@ public class Toolbar extends Component {
 								});
 							} else {
 
-								item.execute(Dungeon.hero);
+								Dungeon.hero.executeOrQueue(item); //LAN: route through the action queue
 								if (item.usesTargeting) {
 									QuickSlotButton.useTargeting(idx);
 								}
@@ -297,7 +297,11 @@ public class Toolbar extends Component {
 						examining = true;
 					} else if (examining) {
 						informer.onSelect(null);
-						Dungeon.hero.search(true);
+						if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+					Dungeon.hero.queueSearch(); //LAN: searching spends a turn and must be broadcast
+				} else {
+					Dungeon.hero.search(true);
+				}
 					}
 				}
 			}
@@ -314,7 +318,11 @@ public class Toolbar extends Component {
 			
 			@Override
 			protected boolean onLongClick() {
-				Dungeon.hero.search(true);
+				if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+					Dungeon.hero.queueSearch(); //LAN: searching spends a turn and must be broadcast
+				} else {
+					Dungeon.hero.search(true);
+				}
 				return true;
 			}
 		});
@@ -464,7 +472,7 @@ public class Toolbar extends Component {
 									super.onSelect(idx, alt);
 									Item item = items.get(idx);
 									if (alt && item.defaultAction() != null) {
-										item.execute(Dungeon.hero);
+										Dungeon.hero.executeOrQueue(item); //LAN: route through the action queue
 									} else {
 										InventoryPane.clearTargetingSlot();
 										Game.scene().addToFront(new WndUseItem(null, item));

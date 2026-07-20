@@ -105,7 +105,7 @@ public class RockfallTrap extends Trap {
 
 				if (ch.isActive()) {
 					Buff.prolong(ch, Paralysis.class, Paralysis.DURATION);
-				} else if (!ch.isAlive() && ch == Dungeon.hero){
+				} else if (!ch.isAlive() && ch instanceof com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero){ //LAN: any hero
 					Dungeon.fail( this );
 					GLog.n( Messages.get(this, "ondeath") );
 					if (reclaimed) Badges.validateDeathFromFriendlyMagic();

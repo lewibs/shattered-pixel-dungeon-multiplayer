@@ -53,6 +53,7 @@ class ItemIdentificationNetworkTest {
         NetworkManager.lanMode = true;
         NetworkManager.setIsHostForTesting(true);
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
     }
 
     @AfterEach
@@ -60,6 +61,7 @@ class ItemIdentificationNetworkTest {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
         if (hostSideSocket != null && !hostSideSocket.isClosed()) hostSideSocket.close();
         if (serverSocket   != null && !serverSocket.isClosed())   serverSocket.close();
@@ -71,11 +73,20 @@ class ItemIdentificationNetworkTest {
     // Helpers
     // -------------------------------------------------------------------------
 
-    /** Read one ITEM_IDENTIFIED packet from the client's perspective (sent by host). */
+    /**
+     * Read one ITEM_IDENTIFIED commit from the client's perspective (broadcast
+     * by the host/leader as a sequenced COMMIT with InnerOp.ITEM_IDENTIFIED).
+     */
     String readIdentificationPacket(DataInputStream in) throws IOException {
         byte type = in.readByte();
-        assertEquals(NetworkManager.PacketType.ITEM_IDENTIFIED, type,
-                "Packet type must be ITEM_IDENTIFIED");
+        assertEquals(NetworkManager.PacketType.COMMIT, type, "Packet type must be COMMIT");
+        in.readInt();  // globalSeq
+        in.readInt();  // player
+        in.readInt();  // clientSeq
+        assertEquals(NetworkManager.InnerOp.ITEM_IDENTIFIED, in.readByte(),
+                "inner op must be ITEM_IDENTIFIED");
+        in.readByte(); // actionType (unused)
+        in.readInt();  // targetPos (unused)
         return in.readUTF();
     }
 
@@ -89,8 +100,8 @@ class ItemIdentificationNetworkTest {
         NetworkManager.sendItemIdentified(className);
 
         byte type = clientIn.readByte();
-        assertEquals(NetworkManager.PacketType.ITEM_IDENTIFIED, type,
-                "First byte must be ITEM_IDENTIFIED packet type");
+        assertEquals(NetworkManager.PacketType.COMMIT, type,
+                "First byte must be a COMMIT frame (ITEM_IDENTIFIED rides the commit stream in v3)");
     }
 
     @Test
@@ -233,9 +244,14 @@ class ItemIdentificationNetworkTest {
         String className = "com.shatteredpixel.shatteredpixeldungeon.items.potions.PotionOfHealing";
         NetworkManager.sendItemIdentified(className);
 
-        // Host reads from hostIn
-        assertEquals(NetworkManager.PacketType.ITEM_IDENTIFIED, hostIn.readByte(),
-                "Host must receive ITEM_IDENTIFIED from client");
+        // Client → leader is a REQUEST carrying the ITEM_IDENTIFIED inner op.
+        assertEquals(NetworkManager.PacketType.REQUEST, hostIn.readByte(),
+                "Host must receive a REQUEST from client");
+        hostIn.readInt(); // clientSeq
+        assertEquals(NetworkManager.InnerOp.ITEM_IDENTIFIED, hostIn.readByte(),
+                "inner op must be ITEM_IDENTIFIED");
+        hostIn.readByte(); // actionType
+        hostIn.readInt();  // targetPos
         assertEquals(className, hostIn.readUTF(),
                 "Host must receive correct class name from client");
 

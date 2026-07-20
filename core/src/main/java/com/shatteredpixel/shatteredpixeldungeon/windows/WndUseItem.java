@@ -59,7 +59,9 @@ public class WndUseItem extends WndInfoItem {
 						hide();
 						if (owner != null && owner.parent != null) owner.hide();
 						if (Dungeon.hero.isAlive() && Dungeon.hero.belongings.contains(item)) {
-							item.execute(Dungeon.hero, action);
+							//LAN: sim-mutating actions go through the action queue,
+							//prompt-only ones execute locally — see Hero.executeOrQueue
+							Dungeon.hero.executeOrQueue(item, action);
 						}
 						Item.updateQuickslot();
 						if (action.equals(item.defaultAction()) && item.usesTargeting && owner == null) {

@@ -2,7 +2,6 @@ package com.shatteredpixel.shatteredpixeldungeon.lan;
 
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
-import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction;
 import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.Timeout;
@@ -24,6 +23,11 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * With timeout=0 + PING: the read blocks indefinitely; PING keeps the
  * connection alive and detects real disconnects via write failure.
+ *
+ * v3 leader-sequenced commit protocol: this device is the LEADER. The remote
+ * player submits ops as REQUEST frames (interleaved with PINGs, which the
+ * persistent reader silently ignores); each sequenced COMMIT lands in
+ * remoteHero.lanActionInbox.
  */
 @Timeout(value = 20, unit = TimeUnit.SECONDS)
 class LanPingHeartbeatTest {
@@ -37,6 +41,9 @@ class LanPingHeartbeatTest {
     private DataOutputStream clientOut;
     private Hero localHero;
     private Hero remoteHero;
+
+    // Per-client contiguous request counter (v3 leader dedupes by clientSeq)
+    private int clientSeq = 0;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -69,13 +76,16 @@ class LanPingHeartbeatTest {
         NetworkManager.setIsHostForTesting(true);
         NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
     }
 
     @AfterEach
     void tearDown() throws IOException {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
         if (hostSideSocket != null && !hostSideSocket.isClosed()) hostSideSocket.close();
         if (serverSocket   != null && !serverSocket.isClosed())   serverSocket.close();
@@ -85,28 +95,32 @@ class LanPingHeartbeatTest {
     }
 
     void sendPing() throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.PING);
-        clientOut.flush();
+        synchronized (clientOut) {
+            clientOut.writeByte(NetworkManager.PacketType.PING);
+            clientOut.flush();
+        }
     }
 
     void sendAction(int pos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1);
-        clientOut.writeByte(0);
-        clientOut.writeInt(pos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++clientSeq, (byte) 0, pos);
     }
 
     boolean waitForAction(Hero h, long maxMs) throws InterruptedException {
         synchronized (h.lanActionLock) {
             long deadline = System.currentTimeMillis() + maxMs;
-            while (h.curAction == null && NetworkManager.lanMode) {
+            while (h.lanActionInbox.isEmpty() && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 h.lanActionLock.wait(rem);
             }
+            return !h.lanActionInbox.isEmpty();
         }
-        return h.curAction != null;
+    }
+
+    NetworkManager.Commit takeCommit(Hero h) {
+        synchronized (h.lanActionLock) {
+            return h.lanActionInbox.pollFirst();
+        }
     }
 
     // =========================================================================
@@ -125,13 +139,12 @@ class LanPingHeartbeatTest {
 
         boolean got = waitForAction(remoteHero, 2000);
         assertTrue(got, "Action must be received after PING packets");
-        assertEquals(42, ((HeroAction.Move) remoteHero.curAction).dst);
+        assertEquals(42, takeCommit(remoteHero).targetPos);
     }
 
     @Test
     void pingsInterleavedBetweenTurns_allActionsReceived() throws Exception {
         for (int turn = 0; turn < 5; turn++) {
-            remoteHero.curAction = null;
             NetworkManager.receiveActionAsync(remoteHero);
 
             // Each turn: send 3 pings then the action
@@ -140,9 +153,7 @@ class LanPingHeartbeatTest {
 
             boolean got = waitForAction(remoteHero, 2000);
             assertTrue(got, "Turn " + turn + " action must arrive after PINGs");
-            assertEquals(turn * 10 + 1, ((HeroAction.Move) remoteHero.curAction).dst);
-            remoteHero.curAction = null;
-            remoteHero.next();
+            assertEquals(turn * 10 + 1, takeCommit(remoteHero).targetPos);
         }
     }
 
@@ -158,7 +169,7 @@ class LanPingHeartbeatTest {
 
         boolean got = waitForAction(remoteHero, 2000);
         assertTrue(got, "Action must be received after 50 PINGs");
-        assertEquals(99, ((HeroAction.Move) remoteHero.curAction).dst);
+        assertEquals(99, takeCommit(remoteHero).targetPos);
     }
 
     // =========================================================================
@@ -177,6 +188,7 @@ class LanPingHeartbeatTest {
 
         boolean got = waitForAction(remoteHero, 3000);
         assertTrue(got, "Long think time must not freeze (no socket timeout)");
+        assertEquals(77, takeCommit(remoteHero).targetPos);
     }
 
     @Test
@@ -215,6 +227,11 @@ class LanPingHeartbeatTest {
         assertNotEquals(NetworkManager.PacketType.START,          ping);
         assertNotEquals(NetworkManager.PacketType.ITEM_IDENTIFIED, ping);
         assertNotEquals(NetworkManager.PacketType.NAME_ANNOUNCE,  ping);
+        // v3 frames must not collide with PING either
+        assertNotEquals(NetworkManager.PacketType.REQUEST,        ping);
+        assertNotEquals(NetworkManager.PacketType.COMMIT,         ping);
+        assertNotEquals(NetworkManager.PacketType.ACK,            ping);
+        assertNotEquals(NetworkManager.PacketType.STATE_CHECK,    ping);
     }
 
     // =========================================================================
@@ -226,7 +243,6 @@ class LanPingHeartbeatTest {
         // Simulate production: ping every 5s, action when player moves
         // We compress timing: ping every 20ms
         for (int round = 0; round < 10; round++) {
-            remoteHero.curAction = null;
             NetworkManager.receiveActionAsync(remoteHero);
 
             // Send a ping (keepalive) then the actual action
@@ -236,8 +252,7 @@ class LanPingHeartbeatTest {
 
             boolean got = waitForAction(remoteHero, 2000);
             assertTrue(got, "Round " + round + " must not freeze");
-            remoteHero.curAction = null;
-            remoteHero.next();
+            assertEquals(round * 3 + 1, takeCommit(remoteHero).targetPos);
         }
     }
 }

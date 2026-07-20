@@ -25,6 +25,7 @@ import com.shatteredpixel.shatteredpixeldungeon.Assets;
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.AscensionChallenge;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.FetidRat;
@@ -128,24 +129,35 @@ public class Ghost extends NPC {
 	
 	@Override
 	public boolean interact(Char c) {
-		sprite.turnTo( pos, c.pos );
+		if (sprite != null) sprite.turnTo( pos, c.pos );
 		
 		Sample.INSTANCE.play( Assets.Sounds.GHOST );
 
-		if (c != Dungeon.hero){
+		//LAN: interact runs on EVERY device with c = the interacting hero. Quest
+		//state and the quest-boss spawn (which draws sim RNG!) must run everywhere;
+		//dialogs are gated to the hero's own device, the reward choice is synced
+		//via OPTION_CHOICE.
+		if (!(c instanceof Hero)){
 			return super.interact(c);
 		}
+		final Hero hero = (Hero) c;
+		final boolean localHero = !hero.isRemoteLanHero();
 		
 		if (Quest.given) {
 			if (Quest.weapon != null) {
 				if (Quest.processed) {
-					Game.runOnRenderThread(new Callback() {
-						@Override
-						public void call() {
-							GameScene.show(new WndSadGhost(Ghost.this, Quest.type));
-						}
-					});
-				} else {
+					if (localHero) {
+						Game.runOnRenderThread(new Callback() {
+							@Override
+							public void call() {
+								GameScene.show(new WndSadGhost(Ghost.this, Quest.type, hero));
+							}
+						});
+					} else {
+						com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.pendingRemoteOptionHandler =
+								idx -> WndSadGhost.performReward( hero, Ghost.this, idx );
+					}
+				} else if (localHero) {
 					Game.runOnRenderThread(new Callback() {
 						@Override
 						public void call() {
@@ -173,13 +185,13 @@ public class Ghost extends NPC {
 			switch (Quest.type){
 				case 1: default:
 					questBoss = new FetidRat();
-					txt_quest = Messages.get(this, "rat_1", Messages.titleCase(Dungeon.hero.name())); break;
+					txt_quest = Messages.get(this, "rat_1", Messages.titleCase(hero.name())); break;
 				case 2:
 					questBoss = new GnollTrickster();
-					txt_quest = Messages.get(this, "gnoll_1", Messages.titleCase(Dungeon.hero.name())); break;
+					txt_quest = Messages.get(this, "gnoll_1", Messages.titleCase(hero.name())); break;
 				case 3:
 					questBoss = new GreatCrab();
-					txt_quest = Messages.get(this, "crab_1", Messages.titleCase(Dungeon.hero.name())); break;
+					txt_quest = Messages.get(this, "crab_1", Messages.titleCase(hero.name())); break;
 			}
 
 			questBoss.pos = Dungeon.level.randomRespawnCell( this );
@@ -187,7 +199,7 @@ public class Ghost extends NPC {
 			if (questBoss.pos != -1) {
 				GameScene.add(questBoss);
 				Quest.given = true;
-				Game.runOnRenderThread(new Callback() {
+				if (localHero) Game.runOnRenderThread(new Callback() {
 					@Override
 					public void call() {
 						GameScene.show( new WndQuest( Ghost.this, txt_quest ){

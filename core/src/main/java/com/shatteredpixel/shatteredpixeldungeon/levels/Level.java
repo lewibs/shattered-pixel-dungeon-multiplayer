@@ -297,9 +297,9 @@ public abstract class Level implements Bundlable {
 
 			transitions = new ArrayList<>();
 
-			mobs = new HashSet<>();
+			mobs = new java.util.LinkedHashSet<>(); //deterministic iteration for LAN lockstep
 			heaps = new SparseArray<>();
-			blobs = new HashMap<>();
+			blobs = new java.util.LinkedHashMap<>();
 			plants = new SparseArray<>();
 			traps = new SparseArray<>();
 			customTiles = new ArrayList<>();
@@ -370,9 +370,9 @@ public abstract class Level implements Bundlable {
 
 		setSize( bundle.getInt(WIDTH), bundle.getInt(HEIGHT));
 		
-		mobs = new HashSet<>();
+		mobs = new java.util.LinkedHashSet<>(); //deterministic iteration for LAN lockstep
 		heaps = new SparseArray<>();
-		blobs = new HashMap<>();
+		blobs = new java.util.LinkedHashMap<>();
 		plants = new SparseArray<>();
 		traps = new SparseArray<>();
 		customTiles = new ArrayList<>();
@@ -595,32 +595,53 @@ public abstract class Level implements Bundlable {
 	//some buff effects have special logic or are cancelled from the hero before transitioning levels
 	public static void beforeTransition(){
 
-		//time freeze effects need to resolve their pressed cells before transitioning
-		TimekeepersHourglass.timeFreeze timeFreeze = Dungeon.hero.buff(TimekeepersHourglass.timeFreeze.class);
-		if (timeFreeze != null) timeFreeze.disarmPresses();
-		Swiftthistle.TimeBubble timeBubble = Dungeon.hero.buff(Swiftthistle.TimeBubble.class);
-		if (timeBubble != null) timeBubble.disarmPresses();
+		//LAN lockstep: apply to EVERY hero in fixed order — using Dungeon.hero
+		//(the local hero, which differs per device) would desync partial-turn
+		//accounting and buff state across devices
+		java.util.List<Hero> transitionHeroes;
+		if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+			transitionHeroes = new ArrayList<>(Dungeon.heroes);
+		} else {
+			transitionHeroes = java.util.Collections.singletonList(Dungeon.hero);
+		}
 
-		//iron stomach and challenge arena do not persist between floors
-		Talent.WarriorFoodImmunity foodImmune = Dungeon.hero.buff(Talent.WarriorFoodImmunity.class);
-		if (foodImmune != null) foodImmune.detach();
-		ScrollOfChallenge.ChallengeArena arena = Dungeon.hero.buff(ScrollOfChallenge.ChallengeArena.class);
-		if (arena != null) arena.detach();
-		//awareness also doesn't, honestly it's weird that it's a buff
-		Awareness awareness = Dungeon.hero.buff(Awareness.class);
-		if (awareness != null) awareness.detach();
+		for (Hero hero : transitionHeroes) {
+			//time freeze effects need to resolve their pressed cells before transitioning
+			TimekeepersHourglass.timeFreeze timeFreeze = hero.buff(TimekeepersHourglass.timeFreeze.class);
+			if (timeFreeze != null) timeFreeze.disarmPresses();
+			Swiftthistle.TimeBubble timeBubble = hero.buff(Swiftthistle.TimeBubble.class);
+			if (timeBubble != null) timeBubble.disarmPresses();
+
+			//iron stomach and challenge arena do not persist between floors
+			Talent.WarriorFoodImmunity foodImmune = hero.buff(Talent.WarriorFoodImmunity.class);
+			if (foodImmune != null) foodImmune.detach();
+			ScrollOfChallenge.ChallengeArena arena = hero.buff(ScrollOfChallenge.ChallengeArena.class);
+			if (arena != null) arena.detach();
+			//awareness also doesn't, honestly it's weird that it's a buff
+			Awareness awareness = hero.buff(Awareness.class);
+			if (awareness != null) awareness.detach();
+		}
 
 		Char ally = Stasis.getStasisAlly();
 		if (Char.hasProp(ally, Char.Property.IMMOVABLE)){
-			Dungeon.hero.buff(Stasis.StasisBuff.class).act();
-			GLog.w(Messages.get(Stasis.StasisBuff.class, "left_behind"));
+			for (Hero hero : transitionHeroes) {
+				if (hero.buff(Stasis.StasisBuff.class) != null) {
+					hero.buff(Stasis.StasisBuff.class).act();
+					GLog.w(Messages.get(Stasis.StasisBuff.class, "left_behind"));
+					break;
+				}
+			}
 		}
 
-		//spend the hero's partial turns,  so the hero cannot take partial turns between floors
-		Dungeon.hero.spendToWhole();
+		//spend the heroes' partial turns, so they cannot take partial turns between floors
+		float maxHeroCooldown = 0;
+		for (Hero hero : transitionHeroes) {
+			hero.spendToWhole();
+			maxHeroCooldown = Math.max(maxHeroCooldown, hero.cooldown());
+		}
 		for (Actor a : Actor.all()){
-			//also adjust any other actors that are now ahead of the hero due to this
-			if (a.cooldown() < Dungeon.hero.cooldown()){
+			//also adjust any other actors that are now ahead of the heroes due to this
+			if (a.cooldown() < maxHeroCooldown){
 				a.spendToWhole();
 			}
 		}
@@ -629,14 +650,23 @@ public abstract class Level implements Bundlable {
 	public void seal(){
 		if (!locked) {
 			locked = true;
-			Buff.affect(Dungeon.hero, LockedFloor.class);
+			//LAN lockstep: affect every hero, not just the device-local one
+			if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+				for (Hero h : Dungeon.heroes) Buff.affect(h, LockedFloor.class);
+			} else {
+				Buff.affect(Dungeon.hero, LockedFloor.class);
+			}
 		}
 	}
 
 	public void unseal(){
 		if (locked) {
 			locked = false;
-			if (Dungeon.hero.buff(LockedFloor.class) != null){
+			if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+				for (Hero h : Dungeon.heroes) {
+					if (h.buff(LockedFloor.class) != null) h.buff(LockedFloor.class).detach();
+				}
+			} else if (Dungeon.hero.buff(LockedFloor.class) != null){
 				Dungeon.hero.buff(LockedFloor.class).detach();
 			}
 		}
@@ -751,8 +781,29 @@ public abstract class Level implements Bundlable {
 		return cooldown / DimensionalSundial.spawnMultiplierAtCurrentTime();
 	}
 
+	private static int minHeroDistance(int[][] heroDistances, int pos) {
+		int min = Integer.MAX_VALUE;
+		for (int[] d : heroDistances) {
+			if (d[pos] < min) min = d[pos];
+		}
+		return min;
+	}
+
 	public boolean spawnMob(int disLimit){
-		PathFinder.buildDistanceMap(Dungeon.hero.pos, BArray.or(passable, avoid, null));
+		//LAN lockstep: measure distance to EVERY hero, not Dungeon.hero — the local
+		//hero differs per device, and a per-device acceptance check desyncs spawns
+		java.util.ArrayList<Hero> spawnHeroes = new java.util.ArrayList<>();
+		if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+			for (Hero h : Dungeon.heroes) if (h.isAlive()) spawnHeroes.add(h);
+		} else if (Dungeon.hero != null) {
+			spawnHeroes.add(Dungeon.hero);
+		}
+		boolean[] spawnPassable = BArray.or(passable, avoid, null);
+		int[][] heroDistances = new int[spawnHeroes.size()][];
+		for (int i = 0; i < spawnHeroes.size(); i++) {
+			PathFinder.buildDistanceMap(spawnHeroes.get(i).pos, spawnPassable);
+			heroDistances[i] = PathFinder.distance.clone();
+		}
 
 		Mob mob = createMob();
 		if (mob.state != mob.PASSIVE) {
@@ -762,9 +813,9 @@ public abstract class Level implements Bundlable {
 		do {
 			mob.pos = randomRespawnCell(mob);
 			tries--;
-		} while ((mob.pos == -1 || PathFinder.distance[mob.pos] < disLimit) && tries > 0);
+		} while ((mob.pos == -1 || minHeroDistance(heroDistances, mob.pos) < disLimit) && tries > 0);
 
-		if (Dungeon.hero.isAlive() && mob.pos != -1 && PathFinder.distance[mob.pos] >= disLimit) {
+		if (!spawnHeroes.isEmpty() && mob.pos != -1 && minHeroDistance(heroDistances, mob.pos) >= disLimit) {
 			GameScene.add( mob );
 			if (!mob.buffs(ChampionEnemy.class).isEmpty()){
 				GLog.w(Messages.get(ChampionEnemy.class, "warn"));
@@ -983,6 +1034,17 @@ public abstract class Level implements Bundlable {
 		updateOpenSpace(cell);
 	}
 	
+	/**
+	 * Drops an item and plays the heap's drop animation if a sprite exists
+	 * (it doesn't in headless tests or before the scene is ready). Replaces the
+	 * crash-prone `drop(item, cell).sprite.drop()` idiom.
+	 */
+	public Heap dropAndShow( Item item, int cell ) {
+		Heap heap = drop( item, cell );
+		if (heap.sprite != null) heap.sprite.drop();
+		return heap;
+	}
+
 	public Heap drop( Item item, int cell ) {
 
 		if (item == null || Challenges.isItemBlocked(item)){
@@ -1168,7 +1230,7 @@ public abstract class Level implements Bundlable {
 			}
 
 			if ( (map[ch.pos] == Terrain.GRASS || map[ch.pos] == Terrain.EMBERS)
-					&& ch == Dungeon.hero && Dungeon.hero.hasTalent(Talent.REJUVENATING_STEPS)
+					&& ch instanceof Hero && ((Hero)ch).hasTalent(Talent.REJUVENATING_STEPS) //LAN: any hero, not the device-local one
 					&& ch.buff(Talent.RejuvenatingStepsCooldown.class) == null){
 
 				if (!Regeneration.regenOn()){
@@ -1177,10 +1239,10 @@ public abstract class Level implements Bundlable {
 					set(ch.pos, Terrain.FURROWED_GRASS);
 				} else {
 					set(ch.pos, Terrain.HIGH_GRASS);
-					Buff.count(ch, Talent.RejuvenatingStepsFurrow.class, 3 - Dungeon.hero.pointsInTalent(Talent.REJUVENATING_STEPS));
+					Buff.count(ch, Talent.RejuvenatingStepsFurrow.class, 3 - ((Hero)ch).pointsInTalent(Talent.REJUVENATING_STEPS));
 				}
 				GameScene.updateMap(ch.pos);
-				Buff.affect(ch, Talent.RejuvenatingStepsCooldown.class, 15f - 5f*Dungeon.hero.pointsInTalent(Talent.REJUVENATING_STEPS));
+				Buff.affect(ch, Talent.RejuvenatingStepsCooldown.class, 15f - 5f*((Hero)ch).pointsInTalent(Talent.REJUVENATING_STEPS));
 			}
 			
 			if (pit[ch.pos]){
@@ -1243,11 +1305,20 @@ public abstract class Level implements Bundlable {
 			break;
 		}
 
-		TimekeepersHourglass.timeFreeze timeFreeze =
-				Dungeon.hero.buff(TimekeepersHourglass.timeFreeze.class);
-
-		Swiftthistle.TimeBubble bubble =
-				Dungeon.hero.buff(Swiftthistle.TimeBubble.class);
+		//LAN lockstep: whether a press is delayed by time freeze is a full
+		//control-flow fork in the simulation — it must not depend on which hero
+		//is device-local, so check every hero
+		TimekeepersHourglass.timeFreeze timeFreeze = null;
+		Swiftthistle.TimeBubble bubble = null;
+		if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+			for (Hero h : Dungeon.heroes) {
+				if (timeFreeze == null) timeFreeze = h.buff(TimekeepersHourglass.timeFreeze.class);
+				if (bubble == null)     bubble     = h.buff(Swiftthistle.TimeBubble.class);
+			}
+		} else if (Dungeon.hero != null) {
+			timeFreeze = Dungeon.hero.buff(TimekeepersHourglass.timeFreeze.class);
+			bubble     = Dungeon.hero.buff(Swiftthistle.TimeBubble.class);
+		}
 
 		if (trap != null) {
 			if (bubble != null){
@@ -1272,11 +1343,11 @@ public abstract class Level implements Bundlable {
 		Plant plant = plants.get( cell );
 		if (plant != null) {
 			if (bubble != null){
-				Sample.INSTANCE.play(Assets.Sounds.TRAMPLE, 1, Random.Float( 0.96f, 1.05f ) );
+				Sample.INSTANCE.play(Assets.Sounds.TRAMPLE, 1, Random.cosmeticFloat( 0.96f, 1.05f ) );
 				bubble.setDelayedPress(cell);
 
 			} else if (timeFreeze != null){
-				Sample.INSTANCE.play(Assets.Sounds.TRAMPLE, 1, Random.Float( 0.96f, 1.05f ) );
+				Sample.INSTANCE.play(Assets.Sounds.TRAMPLE, 1, Random.cosmeticFloat( 0.96f, 1.05f ) );
 				timeFreeze.setDelayedPress(cell);
 
 			} else {

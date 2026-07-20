@@ -411,7 +411,7 @@ public abstract class Elemental extends Mob {
 		public void die(Object cause) {
 			super.die(cause);
 			if (alignment == Alignment.ENEMY) {
-				Dungeon.level.drop( new Embers(), pos ).sprite.drop();
+				Dungeon.level.dropAndShow( new Embers(), pos );
 				//assign score here as player may choose to keep the embers
 				Statistics.questScores[1] += 2000;
 				Game.runOnRenderThread(new Callback() {

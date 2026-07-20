@@ -78,7 +78,17 @@ public class Blacksmith extends NPC {
 	@Override
 	public boolean interact(Char c) {
 		
-		sprite.turnTo( pos, c.pos );
+		if (sprite != null) sprite.turnTo( pos, c.pos );
+
+		// LAN: the blacksmith's quest and reforge flows are driven by dialog
+		// callbacks that mutate shared state on one device only — desyncing the
+		// game. Blocked until the flow is synced (same policy as alchemy).
+		if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode){
+			if (c == Dungeon.hero) {
+				GLog.w( "The blacksmith is not yet supported in LAN multiplayer." );
+			}
+			return true;
+		}
 
 		if (c != Dungeon.hero){
 			return true;
@@ -122,7 +132,7 @@ public class Blacksmith extends NPC {
 							if (pick.doPickUp( Dungeon.hero )) {
 								GLog.i( Messages.capitalize(Messages.get(Dungeon.hero, "you_now_have", pick.name()) ));
 							} else {
-								Dungeon.level.drop( pick, Dungeon.hero.pos ).sprite.drop();
+								Dungeon.level.dropAndShow( pick, Dungeon.hero.pos );
 							}
 							Quest.pickaxe = null;
 

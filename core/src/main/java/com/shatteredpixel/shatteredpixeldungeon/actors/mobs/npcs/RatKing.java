@@ -25,6 +25,7 @@ import com.shatteredpixel.shatteredpixeldungeon.Badges;
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.Ratmogrify;
 import com.shatteredpixel.shatteredpixeldungeon.items.KingsCrown;
@@ -115,56 +116,77 @@ public class RatKing extends NPC {
 
 	@Override
 	public boolean interact(Char c) {
-		sprite.turnTo( pos, c.pos );
+		if (sprite != null) sprite.turnTo( pos, c.pos );
 
-		if (c != Dungeon.hero){
+		//LAN: runs on every device with c = the interacting hero. State changes
+		//(waking, crown upgrade) must apply everywhere; the dialog shows only on
+		//the hero's own device and its choice is synced via OPTION_CHOICE.
+		if (!(c instanceof Hero)){
 			return super.interact(c);
 		}
+		final Hero hero = (Hero) c;
+		final boolean localHero = !hero.isRemoteLanHero();
 
-		KingsCrown crown = Dungeon.hero.belongings.getItem(KingsCrown.class);
+		KingsCrown crown = hero.belongings.getItem(KingsCrown.class);
 		if (state == SLEEPING) {
 			notice();
 			yell( Messages.get(this, "not_sleeping") );
 			state = WANDERING;
 		} else if (crown != null){
-			if (Dungeon.hero.belongings.armor() == null){
+			if (hero.belongings.armor() == null){
 				yell( Messages.get(RatKing.class, "crown_clothes") );
 			} else {
 				Badges.validateRatmogrify();
-				Game.runOnRenderThread(new Callback() {
-					@Override
-					public void call() {
-						GameScene.show(new WndOptions(
-								sprite(),
-								Messages.titleCase(name()),
-								Messages.get(RatKing.class, "crown_desc"),
-								Messages.get(RatKing.class, "crown_yes"),
-								Messages.get(RatKing.class, "crown_info"),
-								Messages.get(RatKing.class, "crown_no")
-						){
-							@Override
-							protected void onSelect(int index) {
-								if (index == 0){
-									crown.upgradeArmor(Dungeon.hero, Dungeon.hero.belongings.armor(), new Ratmogrify());
-									Statistics.qualifiedForRandomVictoryBadge = false;
-									((RatKingSprite)sprite).resetAnims();
-									yell(Messages.get(RatKing.class, "crown_thankyou"));
-								} else if (index == 1) {
-									GameScene.show(new WndInfoArmorAbility(Dungeon.hero.heroClass, new Ratmogrify()));
-								} else {
-									yell(Messages.get(RatKing.class, "crown_fine"));
+				if (localHero) {
+					Game.runOnRenderThread(new Callback() {
+						@Override
+						public void call() {
+							GameScene.show(new WndOptions(
+									sprite(),
+									Messages.titleCase(name()),
+									Messages.get(RatKing.class, "crown_desc"),
+									Messages.get(RatKing.class, "crown_yes"),
+									Messages.get(RatKing.class, "crown_info"),
+									Messages.get(RatKing.class, "crown_no")
+							){
+								{
+									//NPC dialogs open outside item execution, so mark
+									//the LAN broadcast explicitly
+									lanSyncedChoice = com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode;
 								}
-							}
-						});
-					}
-				});
+								@Override
+								protected void onSelect(int index) {
+									if (index == 0){
+										performCrownUpgrade(hero, crown);
+									} else if (index == 1) {
+										GameScene.show(new WndInfoArmorAbility(hero.heroClass, new Ratmogrify()));
+									} else {
+										yell(Messages.get(RatKing.class, "crown_fine"));
+									}
+								}
+							});
+						}
+					});
+				} else {
+					final KingsCrown remoteCrown = crown;
+					com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.pendingRemoteOptionHandler =
+							idx -> { if (idx == 0) performCrownUpgrade(hero, remoteCrown); };
+				}
 			}
-		} else if (Dungeon.hero.armorAbility instanceof Ratmogrify) {
+		} else if (hero.armorAbility instanceof Ratmogrify) {
 			yell( Messages.get(RatKing.class, "crown_after") );
 		} else {
 			yell( Messages.get(this, "what_is_it") );
 		}
 		return true;
+	}
+
+	//applies the crown upgrade identically on the choosing and remote devices
+	private void performCrownUpgrade(Hero hero, KingsCrown crown){
+		crown.upgradeArmor(hero, hero.belongings.armor(), new Ratmogrify());
+		Statistics.qualifiedForRandomVictoryBadge = false;
+		if (sprite instanceof RatKingSprite) ((RatKingSprite)sprite).resetAnims();
+		yell(Messages.get(RatKing.class, "crown_thankyou"));
 	}
 	
 	@Override

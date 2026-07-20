@@ -155,9 +155,12 @@ public class VaultMob extends Mob {
 			investigatingTurns = 0;
 			sprite.showInvestigate();
 			spend(TICK);
-			//hero must know if they are detected
+			//heroes must know if they are detected
+			//LAN: apply to every hero — a buff on only the device-local hero desyncs
 			if (!Dungeon.level.heroFOV[pos]){
-				Buff.affect(Dungeon.hero, TalismanOfForesight.CharAwareness.class, 1f).charID = id();
+				for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : Dungeon.heroes != null ? Dungeon.heroes : java.util.Collections.singletonList(Dungeon.hero)){
+					Buff.affect(h, TalismanOfForesight.CharAwareness.class, 1f).charID = id();
+				}
 			}
 			return true;
 		}
@@ -202,9 +205,11 @@ public class VaultMob extends Mob {
 				state = INVESTIGATING;
 				investigatingTurns = 0;
 				sprite.showInvestigate();
-				//hero must know if they are detected
+				//heroes must know if they are detected (LAN: every hero, see above)
 				if (!Dungeon.level.heroFOV[pos]){
-					Buff.affect(Dungeon.hero, TalismanOfForesight.CharAwareness.class, 1f).charID = id();
+					for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : Dungeon.heroes != null ? Dungeon.heroes : java.util.Collections.singletonList(Dungeon.hero)){
+						Buff.affect(h, TalismanOfForesight.CharAwareness.class, 1f).charID = id();
+					}
 				}
 			}
 		}

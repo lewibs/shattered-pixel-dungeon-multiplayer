@@ -87,6 +87,7 @@ class LanClientPerspectiveTest {
         NetworkManager.setIsHostForTesting(false);  // ← CLIENT, not host
         NetworkManager.localPlayerIndex = 1;         // ← P2 is player 1 (index 1)
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
     }
 
     @AfterEach
@@ -94,6 +95,7 @@ class LanClientPerspectiveTest {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         NetworkManager.localPlayerIndex = 0;
         // Close sockets first to interrupt any blocking readByte() in reader threads
         if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
@@ -114,25 +116,33 @@ class LanClientPerspectiveTest {
      * In production: host calls sendAction() → writes to outs.get(0) = hostOut.
      * Here: we write directly to hostOut to simulate that.
      */
+    /** globalSeq for COMMITs the fake leader sends down to this client. */
+    private int hostCommitSeq = 0;
+
     void hostSendsAction(int heroId, int targetPos) throws IOException {
-        hostOut.writeByte(NetworkManager.PacketType.ACTION);
-        hostOut.writeInt(heroId);
-        hostOut.writeByte(0); // Move action type
-        hostOut.writeInt(targetPos);
-        hostOut.flush();
+        LanTestProtocol.writeActionCommit(hostOut, ++hostCommitSeq, heroId, 0,
+                NetworkManager.ActionType.MOVE, targetPos);
     }
 
-    /** Run the remote-hero wait as Hero.act() does it on P2's device. */
+    /**
+     * Run the remote-hero wait exactly as Hero.act() does it on P2's device:
+     * block until the committed op lands in p1Hero's inbox, then decode it into
+     * curAction (decode is deferred to execution time in v3).
+     */
     boolean runP2WaitForP1(long maxMs) throws InterruptedException {
         synchronized (p1Hero.lanActionLock) {
             long deadline = System.currentTimeMillis() + maxMs;
-            while (p1Hero.curAction == null && NetworkManager.lanMode) {
+            while (p1Hero.lanActionInbox.isEmpty() && p1Hero.curAction == null && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 p1Hero.lanActionLock.wait(rem);
             }
+            if (p1Hero.curAction == null) {
+                NetworkManager.Commit c = p1Hero.lanActionInbox.pollFirst();
+                if (c != null) p1Hero.curAction = NetworkManager.decodeAction(c.actionType, c.targetPos);
+            }
+            return p1Hero.curAction != null;
         }
-        return p1Hero.curAction != null;
     }
 
     // =========================================================================
@@ -202,20 +212,15 @@ class LanClientPerspectiveTest {
 
         // -------- Round 2: P2 acts (local action) --------
         p2Hero.curAction = new HeroAction.Move(2);
-        // P2 sends ACTION to host via clientOut
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1); // heroId = 1 (P2's local player index)
-        clientOut.writeByte(0);
-        clientOut.writeInt(2);
-        clientOut.flush();
+        // P2 sends its op to the leader as a REQUEST via clientOut
+        LanTestProtocol.writeActionRequest(clientOut, 1, NetworkManager.ActionType.MOVE, 2);
         // Verify P2 knows its curAction is set
         assertNotNull(p2Hero.curAction, "P2 must have its own action ready");
         p2Hero.curAction = null; // consumed
 
         // -------- Round 3: P1 acts again, P2 must receive --------
         p1Hero.curAction = null;
-        NetworkManager.resetActionReaderForTesting(); // simulate new turn's reader restart
-        NetworkManager.receiveActionAsync(p1Hero);
+        NetworkManager.receiveActionAsync(p1Hero); // idempotent — persistent reader keeps running
 
         Thread.sleep(20);
         hostSendsAction(0, 3); // P1 sends move to cell 3
@@ -322,24 +327,33 @@ class LanClientPerspectiveTest {
 
         p1Hero.curAction = null;
 
-        // --- P2 now makes their own move (sends to P1) ---
+        // --- P2 now makes their own move (sends to the leader) ---
         p2Hero.curAction = new HeroAction.Move(20);
-        // Simulate Hero.act() sendAction on P2's device
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1); // P2's player index
-        clientOut.writeByte(0); // MOVE
-        clientOut.writeInt(20);
-        clientOut.flush();
+        // v3: P2's device sends a REQUEST to the leader; the leader infers the
+        // owning player from the stream, so a REQUEST carries no heroId field.
+        // Hold clientOutLock so this manual write doesn't interleave with the
+        // reader thread's ACK writes to the same stream.
+        synchronized (NetworkManager.clientOutLockForTesting()) {
+            LanTestProtocol.writeActionRequest(clientOut, 1, NetworkManager.ActionType.MOVE, 20);
+        }
 
-        // P1 must receive P2's action (P1 reads from ins.get(0) = hostIn)
-        // We verify by reading it directly (simulating P1's receiveActionAsync)
-        byte type = hostIn.readByte(); // blocking read with 15s timeout from @Timeout
-        assertEquals(NetworkManager.PacketType.ACTION, type,
-                "P1 must receive the ACTION packet from P2.");
-        int heroId    = hostIn.readInt();
+        // The leader (P1's device) reads P2's REQUEST from ins.get(0) = hostIn.
+        // We verify by reading it directly here — skipping the ACK/PING frames the
+        // client emits upstream after applying the round-1 commit.
+        byte type;
+        while (true) {
+            type = hostIn.readByte(); // blocking read with 15s timeout from @Timeout
+            if (type == NetworkManager.PacketType.ACK) { hostIn.readInt(); continue; }
+            if (type == NetworkManager.PacketType.PING) { continue; }
+            break;
+        }
+        assertEquals(NetworkManager.PacketType.REQUEST, type,
+                "The leader must receive a REQUEST from P2.");
+        hostIn.readInt(); // clientSeq
+        byte inner    = hostIn.readByte();
         byte actType  = hostIn.readByte();
         int targetPos = hostIn.readInt();
-        assertEquals(1, heroId, "heroId in packet must be P2's player index (1)");
+        assertEquals(NetworkManager.InnerOp.ACTION, inner, "inner op must be ACTION");
         assertEquals(0, actType, "action type must be MOVE (0)");
         assertEquals(20, targetPos, "target pos must match P2's move");
     }

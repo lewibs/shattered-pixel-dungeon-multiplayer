@@ -23,6 +23,7 @@ package com.shatteredpixel.shatteredpixeldungeon.ui;
 
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.QuickSlot;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.SPDAction;
 import com.shatteredpixel.shatteredpixeldungeon.SPDSettings;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
@@ -99,7 +100,7 @@ public class QuickSlotButton extends Button {
 					Item item = select(slotNum);
 					if (Dungeon.hero.belongings.contains(item) && !GameScene.cancel()) {
 						GameScene.centerNextWndOnInvPane();
-						item.execute(Dungeon.hero);
+						Dungeon.hero.executeOrQueue(item); //LAN: route through the action queue
 						if (item.usesTargeting) {
 							useTargeting();
 						}
@@ -394,8 +395,10 @@ public class QuickSlotButton extends Button {
 	public static void target( Char target ) {
 		if (target != null && target.alignment != Char.Alignment.ALLY) {
 			lastTarget = target;
-			
-			TargetHealthIndicator.instance.target( target );
+
+			if (TargetHealthIndicator.instance != null) {
+				TargetHealthIndicator.instance.target( target );
+			}
 			InventoryPane.lastTarget = target;
 		}
 	}

@@ -563,7 +563,7 @@ public class InventoryPane extends Component {
 			}
 
 			if (selector == null && item.defaultAction() != null){
-				item.execute(Dungeon.hero);
+				Dungeon.hero.executeOrQueue(item); //LAN: route through the action queue
 				if (item != null && item.usesTargeting) {
 					targetingSlot = this;
 					InventoryPane.useTargeting();

@@ -22,6 +22,7 @@
 package com.shatteredpixel.shatteredpixeldungeon.levels;
 
 import com.shatteredpixel.shatteredpixeldungeon.Bones;
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import com.shatteredpixel.shatteredpixeldungeon.Challenges;
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
@@ -166,6 +167,17 @@ public abstract class RegularLevel extends Level {
 		return initRooms;
 	}
 	
+	//all heroes in fixed party order — level generation must never key off
+	//Dungeon.hero, which is the local hero and differs per device in LAN games
+	protected static ArrayList<Hero> heroesForGen(){
+		if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()){
+			return new ArrayList<>(Dungeon.heroes);
+		}
+		ArrayList<Hero> single = new ArrayList<>();
+		if (Dungeon.hero != null) single.add(Dungeon.hero);
+		return single;
+	}
+
 	protected int standardRooms(boolean forceMax){
 		return 0;
 	}
@@ -498,7 +510,8 @@ public abstract class RegularLevel extends Level {
 		Random.popGenerator();
 
 		Random.pushGenerator( Random.Long() );
-			ArrayList<Item> bonesItems = Bones.get();
+			//LAN: bones come from each device's local files — never identical across devices
+			ArrayList<Item> bonesItems = NetworkManager.lanMode ? null : Bones.get();
 			if (bonesItems != null) {
 				int cell = randomDropCell();
 				if (map[cell] == Terrain.HIGH_GRASS || map[cell] == Terrain.FURROWED_GRASS) {
@@ -512,22 +525,26 @@ public abstract class RegularLevel extends Level {
 		Random.popGenerator();
 
 		Random.pushGenerator( Random.Long() );
-			DriedRose rose = Dungeon.hero.belongings.getItem( DriedRose.class );
-			if (rose != null && rose.isIdentified() && !rose.cursed && Ghost.Quest.completed()){
-				//aim to drop 1 petal every 2 floors
-				int petalsNeeded = (int) Math.ceil((float)((Dungeon.depth / 2) - rose.droppedPetals) / 3);
+			//LAN: iterate all heroes in fixed order — Dungeon.hero is the local hero
+			//and differs per device, which would desync generation
+			for (Hero petalHero : heroesForGen()) {
+				DriedRose rose = petalHero.belongings.getItem( DriedRose.class );
+				if (rose != null && rose.isIdentified() && !rose.cursed && Ghost.Quest.completed()){
+					//aim to drop 1 petal every 2 floors
+					int petalsNeeded = (int) Math.ceil((float)((Dungeon.depth / 2) - rose.droppedPetals) / 3);
 
-				for (int i=1; i <= petalsNeeded; i++) {
-					//the player may miss a single petal and still max their rose.
-					if (rose.droppedPetals < 11) {
-						Item item = new DriedRose.Petal();
-						int cell = randomDropCell();
-						drop( item, cell ).type = Heap.Type.HEAP;
-						if (map[cell] == Terrain.HIGH_GRASS || map[cell] == Terrain.FURROWED_GRASS) {
-							map[cell] = Terrain.GRASS;
-							losBlocking[cell] = false;
+					for (int i=1; i <= petalsNeeded; i++) {
+						//the player may miss a single petal and still max their rose.
+						if (rose.droppedPetals < 11) {
+							Item item = new DriedRose.Petal();
+							int cell = randomDropCell();
+							drop( item, cell ).type = Heap.Type.HEAP;
+							if (map[cell] == Terrain.HIGH_GRASS || map[cell] == Terrain.FURROWED_GRASS) {
+								map[cell] = Terrain.GRASS;
+								losBlocking[cell] = false;
+							}
+							rose.droppedPetals++;
 						}
-						rose.droppedPetals++;
 					}
 				}
 			}
@@ -536,11 +553,13 @@ public abstract class RegularLevel extends Level {
 		//cached rations try to drop in a special room on floors 2/4/7, to a max of 2/3
 		//we increment dropped by 2 for compatibility with old saves, when the talent dropped 4/6 items
 		Random.pushGenerator( Random.Long() );
-			if (Dungeon.hero.hasTalent(Talent.CACHED_RATIONS)){
-				Talent.CachedRationsDropped dropped = Buff.affect(Dungeon.hero, Talent.CachedRationsDropped.class);
+			//LAN: same per-device Dungeon.hero problem as above — iterate all heroes
+			for (Hero rationHero : heroesForGen()) {
+				if (rationHero.hasTalent(Talent.CACHED_RATIONS)){
+				Talent.CachedRationsDropped dropped = Buff.affect(rationHero, Talent.CachedRationsDropped.class);
 				int targetFloor = (int)(2 + dropped.count());
 				if (dropped.count() > 4) targetFloor++;
-				if (Dungeon.depth >= targetFloor && dropped.count() < 2 + 2*Dungeon.hero.pointsInTalent(Talent.CACHED_RATIONS)){
+				if (Dungeon.depth >= targetFloor && dropped.count() < 2 + 2*rationHero.pointsInTalent(Talent.CACHED_RATIONS)){
 					int cell;
 					int tries = 100;
 					boolean valid;
@@ -561,40 +580,45 @@ public abstract class RegularLevel extends Level {
 						dropped.countUp(2);
 					}
 				}
+				}
 			}
 		Random.popGenerator();
 
 		//guide pages
+		//LAN: page drops depend on per-device meta progression (journal state), so
+		//devices would generate different heaps — skip them entirely in LAN games
 		Random.pushGenerator( Random.Long() );
-			Collection<String> allPages = Document.ADVENTURERS_GUIDE.pageNames();
-			ArrayList<String> missingPages = new ArrayList<>();
-			for ( String page : allPages){
-				if (!Document.ADVENTURERS_GUIDE.isPageFound(page)){
-					missingPages.add(page);
+			if (!NetworkManager.lanMode) {
+				Collection<String> allPages = Document.ADVENTURERS_GUIDE.pageNames();
+				ArrayList<String> missingPages = new ArrayList<>();
+				for ( String page : allPages){
+					if (!Document.ADVENTURERS_GUIDE.isPageFound(page)){
+						missingPages.add(page);
+					}
 				}
-			}
 
-			//a total of 6 pages drop randomly, the rest are specially dropped or are given at the start
-			missingPages.remove(Document.GUIDE_SEARCHING);
+				//a total of 6 pages drop randomly, the rest are specially dropped or are given at the start
+				missingPages.remove(Document.GUIDE_SEARCHING);
 
-			//chance to find a page is 0/25/50/75/100% for floors 1/2/3/4/5+
-			float dropChance = 0.25f*(Dungeon.depth-1);
-			if (!missingPages.isEmpty() && Random.Float() < dropChance){
-				GuidePage p = new GuidePage();
-				p.page(missingPages.get(0));
-				int cell = randomDropCell();
-				if (map[cell] == Terrain.HIGH_GRASS || map[cell] == Terrain.FURROWED_GRASS) {
-					map[cell] = Terrain.GRASS;
-					losBlocking[cell] = false;
+				//chance to find a page is 0/25/50/75/100% for floors 1/2/3/4/5+
+				float dropChance = 0.25f*(Dungeon.depth-1);
+				if (!missingPages.isEmpty() && Random.Float() < dropChance){
+					GuidePage p = new GuidePage();
+					p.page(missingPages.get(0));
+					int cell = randomDropCell();
+					if (map[cell] == Terrain.HIGH_GRASS || map[cell] == Terrain.FURROWED_GRASS) {
+						map[cell] = Terrain.GRASS;
+						losBlocking[cell] = false;
+					}
+					drop( p, cell );
 				}
-				drop( p, cell );
 			}
 		Random.popGenerator();
 
 		//lore pages
 		//TODO a fair bit going on here, I might want to refactor/externalize this in the future
 		Random.pushGenerator( Random.Long() );
-			if (Document.ADVENTURERS_GUIDE.allPagesFound()){
+			if (!NetworkManager.lanMode && Document.ADVENTURERS_GUIDE.allPagesFound()){
 
 				int region = 1+(Dungeon.depth-1)/5;
 

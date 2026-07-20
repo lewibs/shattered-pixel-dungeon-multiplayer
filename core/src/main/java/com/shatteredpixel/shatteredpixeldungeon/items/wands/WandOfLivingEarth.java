@@ -107,7 +107,7 @@ public class WandOfLivingEarth extends DamageWand {
 			guardian.sprite.centerEmitter().burst(MagicMissile.EarthParticle.ATTRACT, 8 + buffedLvl() / 2);
 			guardian.setInfo(curUser, buffedLvl(), armorToAdd);
 			wandProc(guardian, chargesPerCast());
-			Sample.INSTANCE.play( Assets.Sounds.HIT_MAGIC, 1, 0.9f * Random.Float(0.87f, 1.15f) );
+			Sample.INSTANCE.play( Assets.Sounds.HIT_MAGIC, 1, 0.9f * Random.cosmeticFloat(0.87f, 1.15f) );
 
 		//shooting the guardian at a location
 		} else if ( guardian == null && buff != null && buff.armor >= buff.armorToGuardian()){
@@ -163,7 +163,7 @@ public class WandOfLivingEarth extends DamageWand {
 
 			guardian.sprite.centerEmitter().burst(MagicMissile.EarthParticle.ATTRACT, 8 + buffedLvl()/2);
 			buff.detach();
-			Sample.INSTANCE.play( Assets.Sounds.HIT_MAGIC, 1, 0.9f * Random.Float(0.87f, 1.15f) );
+			Sample.INSTANCE.play( Assets.Sounds.HIT_MAGIC, 1, 0.9f * Random.cosmeticFloat(0.87f, 1.15f) );
 
 		//shooting at a location/enemy with no guardian being shot
 		} else {
@@ -235,7 +235,7 @@ public class WandOfLivingEarth extends DamageWand {
 
 		if (guardian != null){
 			guardian.sprite.centerEmitter().burst(MagicMissile.EarthParticle.ATTRACT, 8 + buffedLvl() / 2);
-			guardian.setInfo(Dungeon.hero, buffedLvl(), armor);
+			guardian.setInfo(attacker instanceof Hero ? (Hero)attacker : Dungeon.referenceHero(), buffedLvl(), armor); //LAN: the wielder
 		} else {
 			attacker.sprite.centerEmitter().burst(MagicMissile.EarthParticle.ATTRACT, 8 + buffedLvl() / 2);
 			Buff.affect(attacker, RockArmor.class).addArmor( buffedLvl(), armor);
@@ -382,8 +382,15 @@ public class WandOfLivingEarth extends DamageWand {
 		}
 
 		private int wandLevel = -1;
+		private int ownerID = -1; //LAN: the summoning hero, for RockArmor attribution
+
+		private Hero owner(){
+			com.shatteredpixel.shatteredpixeldungeon.actors.Actor a = Actor.findById(ownerID);
+			return a instanceof Hero ? (Hero)a : Dungeon.referenceHero();
+		}
 
 		public void setInfo(Hero hero, int wandLevel, int healthToAdd){
+			if (hero != null) ownerID = hero.id();
 			if (wandLevel > this.wandLevel) {
 				this.wandLevel = wandLevel;
 				HT = 16 + 8 * wandLevel;
@@ -445,12 +452,14 @@ public class WandOfLivingEarth extends DamageWand {
 
 		private static final String DEFENSE = "defense";
 		private static final String WAND_LEVEL = "wand_level";
+		private static final String OWNER_ID = "owner_id";
 
 		@Override
 		public void storeInBundle(Bundle bundle) {
 			super.storeInBundle(bundle);
 			bundle.put(DEFENSE, defenseSkill);
 			bundle.put(WAND_LEVEL, wandLevel);
+			bundle.put(OWNER_ID, ownerID);
 		}
 
 		@Override
@@ -458,6 +467,7 @@ public class WandOfLivingEarth extends DamageWand {
 			super.restoreFromBundle(bundle);
 			defenseSkill = bundle.getInt(DEFENSE);
 			wandLevel = bundle.getInt(WAND_LEVEL);
+			if (bundle.contains(OWNER_ID)) ownerID = bundle.getInt(OWNER_ID);
 		}
 
 		private class Wandering extends Mob.Wandering{
@@ -465,11 +475,13 @@ public class WandOfLivingEarth extends DamageWand {
 			@Override
 			public boolean act(boolean enemyInFOV, boolean justAlerted) {
 				if (!enemyInFOV){
-					Buff.affect(Dungeon.hero, RockArmor.class).addArmor(wandLevel, HP);
+					//LAN: return the armor to the summoning hero, not the device-local one
+					Hero guardianOwner = owner();
+					Buff.affect(guardianOwner, RockArmor.class).addArmor(wandLevel, HP);
 					if (buff(PowerOfMany.PowerBuff.class) != null){
-						Buff.affect(Dungeon.hero, RockArmor.class).powerOfManyTurns = buff(PowerOfMany.PowerBuff.class).cooldown()+1;
+						Buff.affect(guardianOwner, RockArmor.class).powerOfManyTurns = buff(PowerOfMany.PowerBuff.class).cooldown()+1;
 					}
-					Dungeon.hero.sprite.centerEmitter().burst(MagicMissile.EarthParticle.ATTRACT, 8 + wandLevel/2);
+					if (guardianOwner.sprite != null) guardianOwner.sprite.centerEmitter().burst(MagicMissile.EarthParticle.ATTRACT, 8 + wandLevel/2);
 					destroy();
 					sprite.die();
 					return true;

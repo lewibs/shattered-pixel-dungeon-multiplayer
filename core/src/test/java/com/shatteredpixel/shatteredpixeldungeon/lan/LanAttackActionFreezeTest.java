@@ -88,6 +88,7 @@ class LanAttackActionFreezeTest {
         NetworkManager.setIsHostForTesting(true);
         NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
     }
 
     @AfterEach
@@ -95,6 +96,7 @@ class LanAttackActionFreezeTest {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
         if (hostSideSocket != null && !hostSideSocket.isClosed()) hostSideSocket.close();
         if (serverSocket   != null && !serverSocket.isClosed())   serverSocket.close();
@@ -108,38 +110,39 @@ class LanAttackActionFreezeTest {
     // Helpers
     // -------------------------------------------------------------------------
 
-    /** Sends an attack action packet from the client. */
+    /** contiguous per-client request counter — the leader dedupes on it */
+    private int clientSeq = 0;
+
+    /** Client asks the leader to sequence an ATTACK op. */
     void clientSendsAttack(int targetPos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1);    // heroId = 1 (remote hero)
-        clientOut.writeByte(1);   // ATTACK = ActionType.ATTACK = 1
-        clientOut.writeInt(targetPos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++clientSeq,
+                NetworkManager.ActionType.ATTACK, targetPos);
     }
 
-    /** Sends a move action packet from the client. */
+    /** Client asks the leader to sequence a MOVE op. */
     void clientSendsMove(int targetPos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1);   // heroId = 1 (remote hero)
-        clientOut.writeByte(0);  // MOVE
-        clientOut.writeInt(targetPos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++clientSeq,
+                NetworkManager.ActionType.MOVE, targetPos);
     }
 
     /**
-     * Simulates the fixed turn-start protocol: only call receiveActionAsync()
-     * when curAction is null. This mirrors the guard in Hero.act() after the fix.
+     * Turn-start as Hero.act() does it in v3: ensure the persistent reader runs,
+     * then drain the next committed op from the hero's inbox and decode it into
+     * curAction. Returns null if none arrives before the timeout.
      */
     HeroAction fixedTurnStart(long maxWaitMs) throws InterruptedException {
         synchronized (remoteHero.lanActionLock) {
-            if (remoteHero.curAction == null) {
-                NetworkManager.receiveActionAsync(remoteHero);
-            }
+            NetworkManager.receiveActionAsync(remoteHero); // idempotent
             long deadline = System.currentTimeMillis() + maxWaitMs;
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
+            while (remoteHero.curAction == null && remoteHero.lanActionInbox.isEmpty()
+                    && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 remoteHero.lanActionLock.wait(rem);
+            }
+            if (remoteHero.curAction == null) {
+                NetworkManager.Commit c = remoteHero.lanActionInbox.pollFirst();
+                if (c != null) remoteHero.curAction = NetworkManager.decodeAction(c.actionType, c.targetPos);
             }
         }
         return remoteHero.curAction;

@@ -26,6 +26,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.FlavourBuff;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob;
 import com.shatteredpixel.shatteredpixeldungeon.effects.CellEmitter;
 import com.shatteredpixel.shatteredpixeldungeon.effects.particles.PitfallParticle;
@@ -55,7 +56,9 @@ public class PitfallTrap extends Trap {
 			return;
 		}
 
-		DelayedPit p = Buff.append(Dungeon.hero, DelayedPit.class, 1);
+		//LAN: the buff carrier must be the same hero on every device — it only
+		//serves as a timer, but its act() time rides the carrier's timeline
+		DelayedPit p = Buff.append(Dungeon.referenceHero(), DelayedPit.class, 1);
 		p.depth = Dungeon.depth;
 		p.branch = Dungeon.branch;
 
@@ -91,7 +94,7 @@ public class PitfallTrap extends Trap {
 		@Override
 		public boolean act() {
 
-			boolean herofell = false;
+			ArrayList<Hero> fallenHeroes = new ArrayList<>();
 			if (depth == Dungeon.depth && branch == Dungeon.branch && positions != null) {
 				for (int cell : positions) {
 
@@ -107,8 +110,10 @@ public class PitfallTrap extends Trap {
 					if (ch != null && !ch.flying
 							&& !(ch.alignment == Char.Alignment.NEUTRAL && Char.hasProp(ch, Char.Property.IMMOVABLE))
 							&& !(ch.alignment == Char.Alignment.ALLY && ignoreAllies)) {
-						if (ch == Dungeon.hero) {
-							herofell = true;
+						//any hero in the pit falls — not just the device-local one,
+						//which also cast the other hero to (Mob) and crashed
+						if (ch instanceof Hero) {
+							fallenHeroes.add((Hero) ch);
 						} else {
 							Chasm.mobFall((Mob) ch);
 						}
@@ -132,12 +137,12 @@ public class PitfallTrap extends Trap {
 			}
 
 			//process hero falling last
-			if (herofell){
-				Chasm.heroFall(Dungeon.hero, Dungeon.hero.pos);
+			for (Hero h : fallenHeroes){
+				Chasm.heroFall(h, h.pos);
 			}
 
 			detach();
-			return !herofell;
+			return fallenHeroes.isEmpty();
 		}
 
 		public void setPositions(ArrayList<Integer> positions){

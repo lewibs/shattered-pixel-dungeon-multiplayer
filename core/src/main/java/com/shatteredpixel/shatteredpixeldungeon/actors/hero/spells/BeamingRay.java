@@ -141,7 +141,8 @@ public class BeamingRay extends TargetedClericSpell {
 			Sample.INSTANCE.play( Assets.Sounds.RAY );
 
 			if (ally.buff(LifeLink.class) != null){
-				Buff.prolong(Dungeon.hero, LifeLink.class, ally.buff(LifeLink.class).cooldown()).object = ally.id();
+				//LAN: the casting hero, not the device-local Dungeon.hero
+				Buff.prolong(hero, LifeLink.class, ally.buff(LifeLink.class).cooldown()).object = ally.id();
 			}
 		} else {
 			hero.sprite.parent.add(

@@ -50,18 +50,20 @@ public class Regeneration extends Buff {
 			//if other trinkets ever get buffs like this should probably make the buff attaching
 			// behaviour more like wands/rings/artifacts
 			if (ChaoticCenser.averageTurnsUntilGas() != -1){
-				Buff.affect(Dungeon.hero, ChaoticCenser.CenserGasTracker.class);
+				//LAN: attach to the regenerating hero, not the device-local one
+				Buff.affect(target, ChaoticCenser.CenserGasTracker.class);
 			}
 
 			if (regenOn() && target.HP < regencap() && !((Hero)target).isStarving()) {
 				boolean chaliceCursed = false;
 				int chaliceLevel = -1;
 				if (target.buff(MagicImmune.class) == null) {
-					if (Dungeon.hero.buff(ChaliceOfBlood.chaliceRegen.class) != null) {
-						chaliceCursed = Dungeon.hero.buff(ChaliceOfBlood.chaliceRegen.class).isCursed();
-						chaliceLevel = Dungeon.hero.buff(ChaliceOfBlood.chaliceRegen.class).itemLevel();
-					} else if (Dungeon.hero.buff(SpiritForm.SpiritFormBuff.class) != null
-							&& Dungeon.hero.buff(SpiritForm.SpiritFormBuff.class).artifact() instanceof ChaliceOfBlood) {
+					//LAN: read the regenerating hero's own chalice, not the device-local hero's
+					if (target.buff(ChaliceOfBlood.chaliceRegen.class) != null) {
+						chaliceCursed = target.buff(ChaliceOfBlood.chaliceRegen.class).isCursed();
+						chaliceLevel = target.buff(ChaliceOfBlood.chaliceRegen.class).itemLevel();
+					} else if (target.buff(SpiritForm.SpiritFormBuff.class) != null
+							&& target.buff(SpiritForm.SpiritFormBuff.class).artifact() instanceof ChaliceOfBlood) {
 						chaliceLevel = SpiritForm.artifactLevel();
 					}
 				}

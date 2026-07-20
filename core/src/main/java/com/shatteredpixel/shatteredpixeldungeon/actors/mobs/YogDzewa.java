@@ -50,6 +50,7 @@ import com.shatteredpixel.shatteredpixeldungeon.sprites.YogSprite;
 import com.shatteredpixel.shatteredpixeldungeon.tiles.DungeonTilemap;
 import com.shatteredpixel.shatteredpixeldungeon.ui.BossHealthBar;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.watabou.noosa.Game;
 import com.watabou.noosa.audio.Music;
 import com.watabou.noosa.audio.Sample;
@@ -217,7 +218,7 @@ public class YogDzewa extends Mob {
 				Invisibility.dispel(this);
 				for (Char ch : affected) {
 
-					if (ch == Dungeon.hero) {
+					if (ch instanceof Hero) {
 						Statistics.bossScores[4] -= 500;
 					}
 
@@ -231,7 +232,7 @@ public class YogDzewa extends Mob {
 							ch.sprite.flash();
 							CellEmitter.center(pos).burst(PurpleParticle.BURST, Random.IntRange(1, 2));
 						}
-						if (!ch.isAlive() && ch == Dungeon.hero) {
+						if (!ch.isAlive() && ch instanceof Hero) {
 							Badges.validateDeathFromEnemyMagic();
 							Dungeon.fail(this);
 							GLog.n(Messages.get(Char.class, "kill", name()));

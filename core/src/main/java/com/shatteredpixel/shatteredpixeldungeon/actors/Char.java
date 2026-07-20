@@ -234,7 +234,8 @@ public abstract class Char extends Actor {
 		} else if (c instanceof Hero
 				&& alignment == Alignment.ALLY
 				&& !hasProp(this, Property.IMMOVABLE)
-				&& Dungeon.level.distance(pos, c.pos) <= 2*Dungeon.hero.pointsInTalent(Talent.ALLY_WARP)){
+				//LAN: use the interacting hero's talent, not the device-local Dungeon.hero
+				&& Dungeon.level.distance(pos, c.pos) <= 2*((Hero)c).pointsInTalent(Talent.ALLY_WARP)){
 			return true;
 		} else {
 			return false;
@@ -267,7 +268,8 @@ public abstract class Char extends Actor {
 		}
 
 		//warp instantly with allies in this case
-		if (c == Dungeon.hero && Dungeon.hero.hasTalent(Talent.ALLY_WARP)){
+		//LAN: keyed to the interacting hero — Dungeon.hero differs per device
+		if (c instanceof Hero && ((Hero)c).hasTalent(Talent.ALLY_WARP)){
 			PathFinder.buildDistanceMap(c.pos, BArray.or(Dungeon.level.passable, Dungeon.level.avoid, null));
 			if (PathFinder.distance[pos] == Integer.MAX_VALUE){
 				return true;
@@ -292,24 +294,28 @@ public abstract class Char extends Actor {
 		move( newPos );
 
 		c.pos = newPos;
-		c.sprite.move( newPos, oldPos );
+		if (c.sprite != null) c.sprite.move( newPos, oldPos );
 		c.move( oldPos );
-		
+
 		c.spend( 1 / c.speed() );
 
-		if (c == Dungeon.hero){
-			if (Dungeon.hero.subClass == HeroSubClass.FREERUNNER){
-				Buff.affect(Dungeon.hero, Momentum.class).gainStack();
+		//LAN: these effects belong to the hero who swapped, which is not
+		//necessarily the device-local Dungeon.hero
+		if (c instanceof Hero){
+			Hero swappingHero = (Hero)c;
+			if (swappingHero.subClass == HeroSubClass.FREERUNNER){
+				Buff.affect(swappingHero, Momentum.class).gainStack();
 			}
 
-			Dungeon.hero.busy();
+			swappingHero.busy();
 		}
 		
 		return true;
 	}
 	
 	protected boolean moveSprite( int from, int to ) {
-		
+		if (sprite == null) return true;
+
 		if (sprite.isVisible() && sprite.parent != null && (Dungeon.level.heroFOV[from] || Dungeon.level.heroFOV[to])) {
 			sprite.move( from, to );
 			return true;
@@ -377,7 +383,7 @@ public abstract class Char extends Actor {
 			if (visibleFight) {
 				enemy.sprite.showStatus( CharSprite.POSITIVE, Messages.get(this, "invulnerable") );
 
-				Sample.INSTANCE.play(Assets.Sounds.HIT_PARRY, 1f, Random.Float(0.96f, 1.05f));
+				Sample.INSTANCE.play(Assets.Sounds.HIT_PARRY, 1f, Random.cosmeticFloat(0.96f, 1.05f));
 			}
 
 			return false;
@@ -405,8 +411,9 @@ public abstract class Char extends Actor {
 			Preparation prep = buff(Preparation.class);
 			if (prep != null){
 				dmg = prep.damageRoll(this);
-				if (this == Dungeon.hero && Dungeon.hero.hasTalent(Talent.BOUNTY_HUNTER)) {
-					Buff.affect(Dungeon.hero, Talent.BountyHunterTracker.class, 0.0f);
+				//LAN: the attacking hero, not the device-local Dungeon.hero
+				if (this instanceof Hero && ((Hero)this).hasTalent(Talent.BOUNTY_HUNTER)) {
+					Buff.affect(this, Talent.BountyHunterTracker.class, 0.0f);
 				}
 			} else {
 				dmg = damageRoll();
@@ -506,8 +513,8 @@ public abstract class Char extends Actor {
 				effectiveDamage = attackProc(enemy, effectiveDamage);
 			}
 			if (visibleFight) {
-				if (effectiveDamage > 0 || !enemy.blockSound(Random.Float(0.96f, 1.05f))) {
-					hitSound(Random.Float(0.87f, 1.15f));
+				if (effectiveDamage > 0 || !enemy.blockSound(Random.cosmeticFloat(0.96f, 1.05f))) {
+					hitSound(Random.cosmeticFloat(0.87f, 1.15f));
 				}
 			}
 
@@ -562,7 +569,7 @@ public abstract class Char extends Actor {
 				combinedLethality.detach();
 			}
 
-			if (enemy.sprite != null) {
+			if (enemy.sprite != null && sprite != null) {
 				enemy.sprite.bloodBurstA(sprite.center(), effectiveDamage);
 				enemy.sprite.flash();
 			}
@@ -694,10 +701,14 @@ public abstract class Char extends Actor {
 		defRoll *= FerretTuft.evasionMultiplier();
 
 		if (acuRoll >= defRoll){
-			hitMissIcon = FloatingText.getHitReasonIcon(attacker, acuRoll, defender, defRoll);
+			if (com.watabou.noosa.Camera.main != null) {
+				hitMissIcon = FloatingText.getHitReasonIcon(attacker, acuRoll, defender, defRoll);
+			}
 			return true;
 		} else {
-			hitMissIcon = FloatingText.getMissReasonIcon(attacker, acuRoll, defender, defRoll);
+			if (com.watabou.noosa.Camera.main != null) {
+				hitMissIcon = FloatingText.getMissReasonIcon(attacker, acuRoll, defender, defRoll);
+			}
 			return false;
 		}
 	}
@@ -829,7 +840,7 @@ public abstract class Char extends Actor {
 		}
 
 		if(isInvulnerable(src.getClass())){
-			sprite.showStatus(CharSprite.POSITIVE, Messages.get(this, "invulnerable"));
+			if (sprite != null) sprite.showStatus(CharSprite.POSITIVE, Messages.get(this, "invulnerable"));
 			return;
 		}
 
@@ -914,7 +925,7 @@ public abstract class Char extends Actor {
 				b.announced = false;
 				b.set(dmg, Sickle.HarvestBleedTracker.class);
 				b.attachTo(this);
-				sprite.showStatus(CharSprite.WARNING, Messages.titleCase(b.name()) + " " + (int)b.level());
+				if (sprite != null) sprite.showStatus(CharSprite.WARNING, Messages.titleCase(b.name()) + " " + (int)b.level());
 				return;
 			}
 		}
@@ -954,7 +965,7 @@ public abstract class Char extends Actor {
 				// or the hit will reduce it to half or below
 				&& (HP <= HT/2 || HP + shielding() - dmg <= HT/2)
 				&& shield != null && !shield.coolingDown()){
-			sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(buff(BrokenSeal.WarriorShield.class).maxShield()), FloatingText.SHIELDING);
+			if (sprite != null) sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(buff(BrokenSeal.WarriorShield.class).maxShield()), FloatingText.SHIELDING);
 			shield.activate();
 		}
 
@@ -973,7 +984,7 @@ public abstract class Char extends Actor {
 				dmg += extraDmg;
 				HP -= extraDmg;
 
-				sprite.emitter().burst( ShadowParticle.UP, 5 );
+				if (sprite != null) sprite.emitter().burst( ShadowParticle.UP, 5 );
 				if (!isAlive() && buff(Grim.GrimTracker.class).qualifiesForBadge){
 					Badges.validateGrimWeapon();
 				}
@@ -1094,7 +1105,7 @@ public abstract class Char extends Actor {
 	public void die( Object src ) {
 		destroy();
 		if (src != Chasm.class) {
-			sprite.die();
+			if (sprite != null) sprite.die();
 			if (!flying && Dungeon.level != null && sprite instanceof MobSprite && Dungeon.level.map[pos] == Terrain.CHASM){
 				((MobSprite) sprite).fall();
 			}
@@ -1155,7 +1166,9 @@ public abstract class Char extends Actor {
 	@SuppressWarnings("unchecked")
 	//returns all buffs assignable from the given buff class
 	public synchronized <T extends Buff> HashSet<T> buffs( Class<T> c ) {
-		HashSet<T> filtered = new HashSet<>();
+		//LinkedHashSet: callers iterate these while mutating state — order must be
+		//deterministic for LAN lockstep play
+		HashSet<T> filtered = new LinkedHashSet<>();
 		for (Buff b : buffs) {
 			if (c.isInstance( b )) {
 				filtered.add( (T)b );
@@ -1284,7 +1297,7 @@ public abstract class Char extends Actor {
 		
 		// Mobs use heroFOV for visibility; hero party members are always visible.
 		if (this != Dungeon.hero && !(this instanceof com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero)) {
-			sprite.visible = Dungeon.level.heroFOV[pos];
+			if (sprite != null) sprite.visible = Dungeon.level.heroFOV[pos];
 		}
 		
 		Dungeon.level.occupyCell(this );

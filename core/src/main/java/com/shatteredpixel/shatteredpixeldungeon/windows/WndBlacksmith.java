@@ -93,7 +93,7 @@ public class WndBlacksmith extends Window {
 							if (Blacksmith.Quest.pickaxe.doPickUp( Dungeon.hero )) {
 								GLog.i( Messages.capitalize(Messages.get(Dungeon.hero, "you_now_have", Blacksmith.Quest.pickaxe.name()) ));
 							} else {
-								Dungeon.level.drop( Blacksmith.Quest.pickaxe, Dungeon.hero.pos ).sprite.drop();
+								Dungeon.level.dropAndShow( Blacksmith.Quest.pickaxe, Dungeon.hero.pos );
 							}
 							Blacksmith.Quest.favor -= pickaxeCost;
 							Blacksmith.Quest.pickaxe = null;
@@ -526,7 +526,7 @@ public class WndBlacksmith extends Window {
 						if (item.doPickUp( Dungeon.hero )) {
 							GLog.i( Messages.capitalize(Messages.get(Dungeon.hero, "you_now_have", item.name())) );
 						} else {
-							Dungeon.level.drop( item, Dungeon.hero.pos ).sprite.drop();
+							Dungeon.level.dropAndShow( item, Dungeon.hero.pos );
 						}
 						WndSmith.this.hide();
 						Blacksmith.Quest.smithRewards = null;

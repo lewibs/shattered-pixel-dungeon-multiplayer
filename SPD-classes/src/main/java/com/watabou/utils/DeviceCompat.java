@@ -56,6 +56,7 @@ public class DeviceCompat {
 	}
 	
 	public static void log( String tag, String message ){
+		if (Gdx.app == null) return;
 		Gdx.app.log( tag, message );
 	}
 

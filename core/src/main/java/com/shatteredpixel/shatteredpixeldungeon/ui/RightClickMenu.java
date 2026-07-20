@@ -121,7 +121,7 @@ public class RightClickMenu extends Component {
 				protected void onClick() {
 					super.onClick();
 					if (item != null){
-						item.execute(Dungeon.hero, options[finalI]);
+						Dungeon.hero.executeOrQueue(item, options[finalI]); //LAN: route through the action queue
 
 						if (options[finalI].equals(item.defaultAction()) && item.usesTargeting){
 							InventoryPane.useTargeting();

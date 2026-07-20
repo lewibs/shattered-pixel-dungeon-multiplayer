@@ -114,7 +114,7 @@ public class ScrollOfTransmutation extends InventoryScroll {
 						//if we turned an equipped artifact into a ring, ring goes into inventory
 						((EquipableItem) item).doUnequip(Dungeon.hero, false);
 						if (!result.collect()){
-							Dungeon.level.drop(result, curUser.pos).sprite.drop();
+							Dungeon.level.dropAndShow(result, curUser.pos);
 						}
 					} else if (item instanceof KindOfWeapon && Dungeon.hero.belongings.secondWep() == item){
 						((EquipableItem) item).doUnequip(Dungeon.hero, false);
@@ -131,7 +131,7 @@ public class ScrollOfTransmutation extends InventoryScroll {
 						item.detach(Dungeon.hero.belongings.backpack);
 					}
 					if (!result.collect()) {
-						Dungeon.level.drop(result, curUser.pos).sprite.drop();
+						Dungeon.level.dropAndShow(result, curUser.pos);
 					} else if (result.stackable && Dungeon.hero.belongings.getSimilar(result) != null){
 						result = Dungeon.hero.belongings.getSimilar(result);
 					}

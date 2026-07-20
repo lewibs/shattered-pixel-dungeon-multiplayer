@@ -147,7 +147,8 @@ abstract public class MissileWeapon extends Weapon {
 			durability = MAX_DURABILITY;
 			extraThrownLeft = false;
 			quantity = defaultQuantity();
-			Buff.affect(Dungeon.hero, UpgradedSetTracker.class).levelThresholds.put(setID, trueLevel()+1);
+			//LAN: the upgrading hero (curUser at scroll time), not the device-local hero
+			Buff.affect(curUser != null ? curUser : Dungeon.referenceHero(), UpgradedSetTracker.class).levelThresholds.put(setID, trueLevel()+1);
 		}
 		//thrown weapons don't get curse weakened
 		boolean wasCursed = cursed;
@@ -164,7 +165,7 @@ abstract public class MissileWeapon extends Weapon {
 			durability = MAX_DURABILITY;
 			extraThrownLeft = false;
 			quantity = defaultQuantity();
-			Buff.affect(Dungeon.hero, UpgradedSetTracker.class).levelThresholds.put(setID, trueLevel()+1);
+			Buff.affect(curUser != null ? curUser : Dungeon.referenceHero(), UpgradedSetTracker.class).levelThresholds.put(setID, trueLevel()+1);
 		}
 		return super.upgrade();
 	}
@@ -331,8 +332,8 @@ abstract public class MissileWeapon extends Weapon {
 			parent.identify();
 		}
 
-		if (attacker == Dungeon.hero && !isIdentified() && ShardOfOblivion.passiveIDDisabled()){
-			Buff.prolong(Dungeon.hero, ShardOfOblivion.ThrownUseTracker.class, 50f);
+		if (attacker instanceof Hero && !isIdentified() && ShardOfOblivion.passiveIDDisabled()){ //LAN: any hero
+			Buff.prolong(attacker, ShardOfOblivion.ThrownUseTracker.class, 50f);
 		}
 
 		return result;
@@ -412,7 +413,7 @@ abstract public class MissileWeapon extends Weapon {
 					return;
 				}
 			}
-			Dungeon.level.drop( this, cell ).sprite.drop();
+			Dungeon.level.dropAndShow( this, cell );
 		}
 	}
 	

@@ -418,8 +418,13 @@ public class InterlevelScene extends PixelScene {
 			thread = new Thread() {
 				@Override
 				public void run() {
-					
+
 					try {
+
+						// LAN lockstep: level transitions mutate simulation state
+						// (level gen, hero placement) and must use the shared
+						// deterministic generator for any unscoped RNG draws
+						Random.registerSimThread();
 
 						Actor.fixTime();
 

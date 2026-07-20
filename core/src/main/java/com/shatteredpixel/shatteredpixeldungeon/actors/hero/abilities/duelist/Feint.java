@@ -196,10 +196,34 @@ public class Feint extends ArmorAbility {
 			return true;
 		}
 
+		//LAN: the duelist who created this image — talents must key off them,
+		//not the device-local Dungeon.hero
+		private int ownerID = -1;
+
+		private Hero owner(){
+			Actor a = Actor.findById(ownerID);
+			return a instanceof Hero ? (Hero)a : Dungeon.referenceHero();
+		}
+
 		public void syncToHero(Hero hero){
+			ownerID = hero.id();
 			if (cooldown() != hero.cooldown()){
 				spendConstant(hero.cooldown() - cooldown());
 			}
+		}
+
+		private static final String OWNER_ID = "owner_id";
+
+		@Override
+		public void storeInBundle(com.watabou.utils.Bundle bundle) {
+			super.storeInBundle(bundle);
+			bundle.put(OWNER_ID, ownerID);
+		}
+
+		@Override
+		public void restoreFromBundle(com.watabou.utils.Bundle bundle) {
+			super.restoreFromBundle(bundle);
+			ownerID = bundle.getInt(OWNER_ID);
 		}
 
 		@Override
@@ -215,15 +239,16 @@ public class Feint extends ArmorAbility {
 				}
 				Buff.affect(enemy, FeintConfusion.class, 1);
 				if (enemy.sprite != null) enemy.sprite.showLost();
-				if (Dungeon.hero.hasTalent(Talent.FEIGNED_RETREAT)) {
-					Buff.prolong(Dungeon.hero, Haste.class, 2f * Dungeon.hero.pointsInTalent(Talent.FEIGNED_RETREAT));
+				Hero owner = owner();
+				if (owner.hasTalent(Talent.FEIGNED_RETREAT)) {
+					Buff.prolong(owner, Haste.class, 2f * owner.pointsInTalent(Talent.FEIGNED_RETREAT));
 				}
-				if (Dungeon.hero.hasTalent(Talent.EXPOSE_WEAKNESS)) {
-					Buff.prolong(enemy, Vulnerable.class, 2f * Dungeon.hero.pointsInTalent(Talent.EXPOSE_WEAKNESS));
-					Buff.prolong(enemy, Weakness.class, 2f * Dungeon.hero.pointsInTalent(Talent.EXPOSE_WEAKNESS));
+				if (owner.hasTalent(Talent.EXPOSE_WEAKNESS)) {
+					Buff.prolong(enemy, Vulnerable.class, 2f * owner.pointsInTalent(Talent.EXPOSE_WEAKNESS));
+					Buff.prolong(enemy, Weakness.class, 2f * owner.pointsInTalent(Talent.EXPOSE_WEAKNESS));
 				}
-				if (Dungeon.hero.hasTalent(Talent.COUNTER_ABILITY)) {
-					Buff.prolong(Dungeon.hero, Talent.CounterAbilityTacker.class, 3f);
+				if (owner.hasTalent(Talent.COUNTER_ABILITY)) {
+					Buff.prolong(owner, Talent.CounterAbilityTacker.class, 3f);
 				}
 			}
 			return 0;

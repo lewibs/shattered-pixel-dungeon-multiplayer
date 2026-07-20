@@ -89,7 +89,7 @@ public class DisintegrationTrap extends Trap {
 				Sample.INSTANCE.play( Assets.Sounds.RAY );
 			}
 			target.damage( Random.NormalIntRange(30, 50) + scalingDepth(), this );
-			if (target == Dungeon.hero){
+			if (target instanceof Hero){ //LAN: any hero, not the device-local one
 				Hero hero = (Hero)target;
 				if (!hero.isAlive()){
 					Badges.validateDeathFromGrimOrDisintTrap();

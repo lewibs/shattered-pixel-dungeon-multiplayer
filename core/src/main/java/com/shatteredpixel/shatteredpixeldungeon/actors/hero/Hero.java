@@ -230,8 +230,39 @@ public class Hero extends Char {
 	// pair is race-free (no lost notifications possible).
 	public final Object lanActionLock = new Object();
 
-	// EC-6.4: counter for state-hash desync detection — host sends every 10 turns
-	private static int lanTurnHashCounter = 0;
+	// Committed remote ops waiting to be executed by this hero, in globalSeq
+	// order. Filled by NetworkManager's persistent readers (dispatchCommit),
+	// drained by act() under lanActionLock. Transient — never bundled.
+	public final java.util.ArrayDeque<NetworkManager.Commit> lanActionInbox = new java.util.ArrayDeque<>();
+
+	/** True when this hero is controlled by a player on another device. */
+	public boolean isRemoteLanHero() {
+		return NetworkManager.lanMode && Dungeon.heroes != null
+				&& Dungeon.heroes.indexOf(this) != NetworkManager.localPlayerIndex;
+	}
+
+	/**
+	 * LAN: broadcast an atomic action this hero is performing THIS turn (a single
+	 * step, an adjacent attack, a pickup...). Peers replay exactly what happened
+	 * instead of re-deriving multi-turn intents — re-derivation depended on
+	 * per-device state (fog of war, visited cells) and desynced the simulations.
+	 * No-op for remote heroes and outside LAN games.
+	 */
+	private void lanSendPerformed(HeroAction performed) {
+		if (!NetworkManager.lanMode || Dungeon.heroes == null) return;
+		if (Dungeon.heroes.indexOf(this) != NetworkManager.localPlayerIndex) return;
+
+		// Leader-sequenced protocol: on a follower this BLOCKS until the leader
+		// echoes the commit (pessimistic execution) — the op below only runs
+		// once it holds a place in the global order. Routed through
+		// sendActionIfLocal so tests can capture the performed stream via
+		// NetworkManager.sendActionOverride.
+		int seq = NetworkManager.sendActionIfLocal(performed, NetworkManager.localPlayerIndex);
+
+		// Shared pre-execution sim point: leader broadcasts its state hash here,
+		// followers compare theirs against it (desync → snapshot resync).
+		NetworkManager.onAboutToExecuteCommit(seq);
+	}
 
 	//reference to the enemy the hero is currently in the process of attacking
 	private Char attackTarget;
@@ -655,14 +686,14 @@ public class Hero extends Char {
 		if (buff(RoundShield.GuardTracker.class) != null){
 			buff(RoundShield.GuardTracker.class).hasBlocked = true;
 			BuffIndicator.refreshHero();
-			Sample.INSTANCE.play(Assets.Sounds.HIT_PARRY, 1, Random.Float(0.96f, 1.05f));
+			Sample.INSTANCE.play(Assets.Sounds.HIT_PARRY, 1, Random.cosmeticFloat(0.96f, 1.05f));
 			return Messages.get(RoundShield.GuardTracker.class, "guarded");
 		}
 
 		if (buff(MonkEnergy.MonkAbility.Focus.FocusBuff.class) != null){
 			buff(MonkEnergy.MonkAbility.Focus.FocusBuff.class).detach();
 			if (sprite != null && sprite.visible) {
-				Sample.INSTANCE.play(Assets.Sounds.HIT_PARRY, 1, Random.Float(0.96f, 1.05f));
+				Sample.INSTANCE.play(Assets.Sounds.HIT_PARRY, 1, Random.cosmeticFloat(0.96f, 1.05f));
 			}
 			return Messages.get(Monk.class, "parried");
 		}
@@ -969,31 +1000,37 @@ public class Hero extends Char {
 			}
 		}
 
-		// LAN remote hero: block until the action packet arrives.
-		// Uses a synchronized lock so notify() from the reader thread can never
-		// be lost — the wait/notify pair is race-free by construction.
-		//
-		// FIX (multi-step walk stale reader): only start the reader when curAction
-		// is null (i.e. the start of a new remote turn). During intermediate steps
-		// of a multi-step walk, curAction is already set — calling receiveActionAsync()
-		// unconditionally would start a stale reader that blocks on readByte() and
-		// consumes the NEXT turn's action packet early. When the walk finishes and
-		// ready() clears curAction, the next turn has no action left to receive —
-		// permanent freeze. Guarding with curAction == null prevents stale readers.
+		// LAN remote hero: block until the hero's next committed op is available
+		// in its inbox. Commits are delivered by NetworkManager's PERSISTENT
+		// per-socket readers (leader-sequenced protocol) and buffered per hero,
+		// so packets can never be consumed early or by the wrong hero. The
+		// wait/notify pair on lanActionLock is race-free by construction.
 		if (NetworkManager.lanMode && Dungeon.heroes != null) {
 			int myIdx = Dungeon.heroes.indexOf(this);
 			if (myIdx != NetworkManager.localPlayerIndex) {
 				NetworkManager.lanLog("Hero.act | REMOTE idx=%d curAction=%s", myIdx,
 						curAction != null ? curAction.getClass().getSimpleName() : "null");
+				float waitEntryTime = getTimeForTesting();
+				int commitSeq = 0;
 				synchronized (lanActionLock) {
-					if (curAction == null) {
-						NetworkManager.lanLog("Hero.act | starting reader idx=%d", myIdx);
-						NetworkManager.receiveActionAsync(this);
-					} else {
-						NetworkManager.lanLog("Hero.act | skipping reader (mid-walk) idx=%d curAction=%s",
-								myIdx, curAction.getClass().getSimpleName());
-					}
+					NetworkManager.ensureGameplayReaders();
 					while (curAction == null && NetworkManager.lanMode) {
+						NetworkManager.Commit op = lanActionInbox.pollFirst();
+						if (op != null) {
+							// Decode AT EXECUTION TIME — Attack/Interact resolve a Char
+							// by position, which must happen at this sim point, not
+							// when the packet arrived.
+							curAction = NetworkManager.decodeAction(op.actionType, op.targetPos);
+							commitSeq = op.globalSeq;
+							NetworkManager.lanLog("Hero.act | consumed commit seq=%d idx=%d action=%s",
+									op.globalSeq, myIdx,
+									curAction != null ? curAction.getClass().getSimpleName() : "null");
+							continue; // re-check loop condition (exits when decoded)
+						}
+						// a choice commit may resolve a parked prompt and complete
+						// this hero's turn without setting curAction — return so
+						// mobs can act before the next action commit
+						if (getTimeForTesting() != waitEntryTime) break;
 						NetworkManager.lanLog("Hero.act | waiting lanActionLock idx=%d", myIdx);
 						try { lanActionLock.wait(5000); } catch (InterruptedException e) { break; }
 						NetworkManager.lanLog("Hero.act | woke lanActionLock idx=%d curAction=%s", myIdx,
@@ -1001,9 +1038,14 @@ public class Hero extends Char {
 					}
 				}
 				if (curAction == null) {
-					NetworkManager.lanLog("Hero.act | TIMEOUT/DISCONNECT idx=%d returning false", myIdx);
+					NetworkManager.lanLog("Hero.act | no action (turn consumed/disconnect) idx=%d", myIdx);
+					next(); // release the actor loop — never leave it spinning on this hero
 					return false;
 				}
+				// Shared pre-execution sim point for the consumed commit: the
+				// leader broadcasts its state hash, followers compare (desync →
+				// snapshot resync).
+				NetworkManager.onAboutToExecuteCommit(commitSeq);
 				NetworkManager.lanLog("Hero.act | remote acting idx=%d curAction=%s", myIdx,
 						curAction.getClass().getSimpleName());
 			} else {
@@ -1016,6 +1058,9 @@ public class Hero extends Char {
 		if (curAction == null) {
 
 			if (resting) {
+				// LAN: every resting tick spends time, so peers must be told about
+				// each one — otherwise the remote simulation starves and freezes
+				lanSendPerformed( new HeroAction.Rest(true) );
 				spendConstant( TIME_TO_REST );
 				next();
 			} else {
@@ -1039,21 +1084,10 @@ public class Hero extends Char {
 
 			ready = false;
 
-			// LAN: send action once per player tap (lanActionQueued prevents re-sending
-			// on every step of a multi-step move).
-			if (NetworkManager.lanMode && lanActionQueued) {
-				lanActionQueued = false;
-				NetworkManager.sendAction(curAction, NetworkManager.localPlayerIndex);
-
-				// EC-6.4: host sends state hash every 10 turns for desync detection
-				if (NetworkManager.isHost()) {
-					lanTurnHashCounter++;
-					if (lanTurnHashCounter % 10 == 0) {
-						long hash = NetworkManager.computeStateHash();
-						NetworkManager.sendStateHash(lanTurnHashCounter, hash);
-					}
-				}
-			}
+			// LAN protocol note: actions are broadcast per PERFORMED atomic op (each
+			// step, each adjacent attack, each pickup) from inside the actXxx methods
+			// and getCloser(), not once per player intent. See lanSendPerformed().
+			lanActionQueued = false;
 
 			if (curAction instanceof HeroAction.Move) {
 				actResult = actMove( (HeroAction.Move)curAction );
@@ -1084,7 +1118,25 @@ public class Hero extends Char {
 				
 			} else if (curAction instanceof HeroAction.Alchemy) {
 				actResult = actAlchemy( (HeroAction.Alchemy)curAction );
-				
+
+			} else if (curAction instanceof HeroAction.UseItem) {
+				actResult = actUseItem( (HeroAction.UseItem)curAction );
+
+			} else if (curAction instanceof HeroAction.UseItemAt) {
+				actResult = actUseItemAt( (HeroAction.UseItemAt)curAction );
+
+			} else if (curAction instanceof HeroAction.ShopBuy) {
+				actResult = actShopBuy( (HeroAction.ShopBuy)curAction );
+
+			} else if (curAction instanceof HeroAction.ShopSell) {
+				actResult = actShopSell( (HeroAction.ShopSell)curAction );
+
+			} else if (curAction instanceof HeroAction.Rest) {
+				actResult = actRest( (HeroAction.Rest)curAction );
+
+			} else if (curAction instanceof HeroAction.Search) {
+				actResult = actSearch( (HeroAction.Search)curAction );
+
 			} else {
 				actResult = false;
 			}
@@ -1182,6 +1234,7 @@ public class Hero extends Char {
 
 		//Hero moves in place if there is grass to trample
 		} else if (pos == action.dst && canSelfTrample()){
+			lanSendPerformed( new HeroAction.Move(pos) );
 			canSelfTrample = false;
 			Dungeon.level.pressCell(pos);
 			spendAndNext( 1 / speed() );
@@ -1199,9 +1252,10 @@ public class Hero extends Char {
 		if (ch == null) { ready(); return false; }
 
 		if (ch.isAlive() && ch.canInteract(this)) {
-			
+
+			lanSendPerformed( action );
 			ready();
-			sprite.turnTo( pos, ch.pos );
+			if (sprite != null) sprite.turnTo( pos, ch.pos );
 			return ch.interact(this);
 			
 		} else {
@@ -1251,6 +1305,13 @@ public class Hero extends Char {
 		if (Dungeon.level.distance(dst, pos) <= 1) {
 
 			ready();
+
+			// LAN: the alchemy scene crafts items outside the synced action
+			// protocol — devices would diverge. Disabled until crafting is synced.
+			if (NetworkManager.lanMode) {
+				GLog.w( "Alchemy is not yet supported in LAN multiplayer." );
+				return false;
+			}
 			
 			AlchemistsToolkit.kitEnergy kit = buff(AlchemistsToolkit.kitEnergy.class);
 			if (kit != null && kit.isCursed()){
@@ -1272,6 +1333,238 @@ public class Hero extends Char {
 		}
 	}
 
+	/**
+	 * Execute an item identified by bag ordinal + slot index. The item's default
+	 * action is dispatched via item.execute(), which handles time spending itself.
+	 * curAction is cleared first so GameScene.cancel() (called inside execute) does
+	 * not see the UseItem action and double-clear it.
+	 */
+	private boolean actUseItem( HeroAction.UseItem action ) {
+		com.shatteredpixel.shatteredpixeldungeon.items.Item item = findItemForUse(action.bagOrdinal, action.slotIndex);
+		if (item == null) {
+			ready();
+			return false;
+		}
+		String itemAction = item.defaultAction();
+		if (action.actionIdx != HeroAction.UseItem.DEFAULT_ACTION) {
+			java.util.ArrayList<String> actions = item.actions(this);
+			if (action.actionIdx >= 0 && action.actionIdx < actions.size()) {
+				itemAction = actions.get(action.actionIdx);
+			} else {
+				ready();
+				return false;
+			}
+		}
+		lanSendPerformed( action );
+		curAction = null;
+		executeItemInLanContext(item, itemAction);
+		return false;
+	}
+
+	//marks the LAN execution context while an item effect runs, so mid-action
+	//prompts (GameScene.selectItem/selectCell) are parked on remote devices and
+	//broadcast-wrapped on the owning device
+	private void executeItemInLanContext(com.shatteredpixel.shatteredpixeldungeon.items.Item item, String itemAction) {
+		executeInLanContext(() -> item.execute(this, itemAction));
+	}
+
+	private void executeInLanContext(Runnable effect) {
+		boolean remote = isRemoteLanHero();
+		if (NetworkManager.lanMode) {
+			if (remote) {
+				NetworkManager.remoteItemExecution = true;
+				NetworkManager.remoteExecutionHero = this;
+			} else {
+				NetworkManager.localItemExecution = true;
+			}
+		}
+		try {
+			effect.run();
+		} finally {
+			if (NetworkManager.lanMode) {
+				if (remote) NetworkManager.remoteItemExecution = false;
+				else        NetworkManager.localItemExecution = false;
+			}
+		}
+	}
+
+	/** Returns the item at the given bag ordinal / slot index, or null if out of range. */
+	public com.shatteredpixel.shatteredpixeldungeon.items.Item itemAt(int bagOrdinal, int slotIndex) {
+		return findItemForUse(bagOrdinal, slotIndex);
+	}
+
+	private com.shatteredpixel.shatteredpixeldungeon.items.Item findItemForUse(int bagOrdinal, int slotIndex) {
+		com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag bag = null;
+		if (bagOrdinal == 0) {
+			bag = belongings.backpack;
+		} else {
+			java.util.ArrayList<com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag> bags = belongings.getBags();
+			if (bagOrdinal > 0 && bagOrdinal < bags.size()) {
+				bag = bags.get(bagOrdinal);
+			}
+		}
+		if (bag == null || slotIndex < 0 || slotIndex >= bag.items.size()) return null;
+		return bag.items.get(slotIndex);
+	}
+
+	/**
+	 * LAN: queue a UseItem action for the given item. Finds the item's bag ordinal and slot
+	 * index, sets curAction, and marks the action for network transmission. Returns false if
+	 * the item is not found in the hero's inventory.
+	 */
+	public boolean queueUseItem(com.shatteredpixel.shatteredpixeldungeon.items.Item item) {
+		return queueUseItem(item, null);
+	}
+
+	/**
+	 * Single UI entry point for using an item. In LAN games, sim-mutating actions
+	 * are routed through the action queue so they run on the actor thread and are
+	 * broadcast to peers; prompt-only actions (throw/zap/shoot pick a target
+	 * first, OPEN just shows a bag) execute directly — their targeting listeners
+	 * queue the real action once a cell is chosen. Outside LAN, always executes
+	 * directly. Every UI path that used to call item.execute(Dungeon.hero, ...)
+	 * must go through here, or the action never reaches the other devices.
+	 */
+	public void executeOrQueue(com.shatteredpixel.shatteredpixeldungeon.items.Item item, String action) {
+		String resolved = action != null ? action : item.defaultAction();
+		boolean promptOnly = resolved == null
+				|| resolved.equals(com.shatteredpixel.shatteredpixeldungeon.items.Item.AC_THROW)
+				|| resolved.equals(com.shatteredpixel.shatteredpixeldungeon.items.wands.Wand.AC_ZAP)
+				|| resolved.equals(com.shatteredpixel.shatteredpixeldungeon.items.weapon.SpiritBow.AC_SHOOT)
+				|| resolved.equals(com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag.AC_OPEN);
+		if (NetworkManager.lanMode && !isRemoteLanHero() && !promptOnly) {
+			if (queueUseItem(item, resolved)) {
+				next();
+				return;
+			}
+		}
+		if (action == null) {
+			item.execute(this);
+		} else {
+			item.execute(this, action);
+		}
+	}
+
+	public void executeOrQueue(com.shatteredpixel.shatteredpixeldungeon.items.Item item) {
+		executeOrQueue(item, null);
+	}
+
+	/** LAN: queue a specific item action (null = the item's default action). */
+	public boolean queueUseItem(com.shatteredpixel.shatteredpixeldungeon.items.Item item, String action) {
+		int actionIdx = HeroAction.UseItem.DEFAULT_ACTION;
+		if (action != null) {
+			actionIdx = item.actions(this).indexOf(action);
+			if (actionIdx < 0) return false;
+		}
+		java.util.ArrayList<com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag> bags = belongings.getBags();
+		for (int b = 0; b < bags.size(); b++) {
+			int idx = bags.get(b).items.indexOf(item);
+			if (idx >= 0) {
+				curAction = new HeroAction.UseItem(b, idx, actionIdx);
+				lanActionQueued = true;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * LAN: queue a targeted item use (wand zap / throw) so it executes on the
+	 * actor thread and is broadcast to peers. Returns false if the item cannot
+	 * be located in the hero's bags.
+	 */
+	public boolean queueUseItemAt(com.shatteredpixel.shatteredpixeldungeon.items.Item item, int verb, int cell) {
+		java.util.ArrayList<com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag> bags = belongings.getBags();
+		for (int b = 0; b < bags.size(); b++) {
+			int idx = bags.get(b).items.indexOf(item);
+			if (idx >= 0) {
+				curAction = new HeroAction.UseItemAt(b, idx, verb, cell);
+				lanActionQueued = true;
+				next();
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** LAN: queue a shop purchase (heap at heapPos). */
+	public boolean queueShopBuy(int heapPos) {
+		curAction = new HeroAction.ShopBuy(heapPos);
+		lanActionQueued = true;
+		return true;
+	}
+
+	/** LAN: queue a shop sale of an inventory item. */
+	public boolean queueShopSell(com.shatteredpixel.shatteredpixeldungeon.items.Item item, boolean all) {
+		java.util.ArrayList<com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag> bags = belongings.getBags();
+		for (int b = 0; b < bags.size(); b++) {
+			int idx = bags.get(b).items.indexOf(item);
+			if (idx >= 0) {
+				curAction = new HeroAction.ShopSell(b, idx, all);
+				lanActionQueued = true;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean actShopBuy( HeroAction.ShopBuy action ) {
+		lanSendPerformed( action );
+		curAction = null;
+		com.shatteredpixel.shatteredpixeldungeon.windows.WndTradeItem.performBuy(this, action.dst);
+		ready();
+		return false;
+	}
+
+	private boolean actShopSell( HeroAction.ShopSell action ) {
+		com.shatteredpixel.shatteredpixeldungeon.items.Item item = findItemForUse(action.bagOrdinal, action.slotIndex);
+		curAction = null;
+		if (item != null) {
+			lanSendPerformed( action );
+			com.shatteredpixel.shatteredpixeldungeon.windows.WndTradeItem.performSell(this, item, action.all);
+		}
+		ready();
+		return false;
+	}
+
+	/**
+	 * Executes a targeted item use on the actor thread — identically on the
+	 * owning and remote devices. The target cell came with the packet, so no
+	 * CellSelector prompt is involved.
+	 */
+	private boolean actUseItemAt( HeroAction.UseItemAt action ) {
+		com.shatteredpixel.shatteredpixeldungeon.items.Item item = findItemForUse(action.bagOrdinal, action.slotIndex);
+		if (item == null) {
+			ready();
+			return false;
+		}
+		lanSendPerformed( action );
+		curAction = null;
+		executeInLanContext(() -> {
+		if (action.verb == HeroAction.UseItemAt.VERB_THROW) {
+			item.cast(this, action.cell);
+		} else if (action.verb == HeroAction.UseItemAt.VERB_SHOOT
+				&& item instanceof com.shatteredpixel.shatteredpixeldungeon.items.weapon.SpiritBow) {
+			((com.shatteredpixel.shatteredpixeldungeon.items.weapon.SpiritBow) item).performShot(this, action.cell);
+		} else if (action.verb == HeroAction.UseItemAt.VERB_ZAP) {
+			com.shatteredpixel.shatteredpixeldungeon.items.wands.Wand wand = null;
+			if (item instanceof com.shatteredpixel.shatteredpixeldungeon.items.wands.Wand) {
+				wand = (com.shatteredpixel.shatteredpixeldungeon.items.wands.Wand) item;
+			} else if (item instanceof com.shatteredpixel.shatteredpixeldungeon.items.weapon.melee.MagesStaff) {
+				wand = ((com.shatteredpixel.shatteredpixeldungeon.items.weapon.melee.MagesStaff) item).wandForZap();
+			}
+			if (wand != null) {
+				com.shatteredpixel.shatteredpixeldungeon.items.wands.Wand.performZap(this, wand, action.cell);
+			} else {
+				ready();
+			}
+		} else {
+			ready();
+		}
+		});
+		return false;
+	}
+
 	//used to keep track if the wait/pickup action was used
 	// so that the hero spends a turn even if the fail to pick up an item
 	public boolean waitOrPickup = false;
@@ -1279,7 +1572,8 @@ public class Hero extends Char {
 	private boolean actPickUp( HeroAction.PickUp action ) {
 		int dst = action.dst;
 		if (pos == dst) {
-			
+
+			lanSendPerformed( action );
 			Heap heap = Dungeon.level.heaps.get( pos );
 			if (heap != null) {
 				Item item = heap.peek();
@@ -1325,7 +1619,7 @@ public class Hero extends Char {
 					if (Dungeon.level.getTransition(pos) != null){
 						throwItems();
 					} else {
-						heap.sprite.drop();
+						if (heap.sprite != null) heap.sprite.drop();
 					}
 
 					if (item instanceof Dewdrop
@@ -1360,7 +1654,8 @@ public class Hero extends Char {
 		int dst = action.dst;
 		if (Dungeon.level.adjacent( pos, dst ) || pos == dst) {
 			path = null;
-			
+
+			lanSendPerformed( action );
 			Heap heap = Dungeon.level.heaps.get( dst );
 			if (heap != null && (heap.type != Type.HEAP && heap.type != Type.FOR_SALE)) {
 				
@@ -1376,7 +1671,7 @@ public class Hero extends Char {
 				switch (heap.type) {
 				case TOMB:
 					Sample.INSTANCE.play( Assets.Sounds.TOMB );
-					PixelScene.shake( 1, 0.5f );
+					if (com.watabou.noosa.Camera.main != null) PixelScene.shake( 1, 0.5f );
 					break;
 				case SKELETON:
 				case REMAINS:
@@ -1384,8 +1679,9 @@ public class Hero extends Char {
 				default:
 					Sample.INSTANCE.play( Assets.Sounds.UNLOCK );
 				}
-				
-				sprite.operate( dst );
+
+				if (sprite != null) sprite.operate( dst );
+				else onOperateComplete();
 				
 			} else {
 				ready();
@@ -1407,7 +1703,8 @@ public class Hero extends Char {
 		int doorCell = action.dst;
 		if (Dungeon.level.adjacent( pos, doorCell )) {
 			path = null;
-			
+
+			lanSendPerformed( action );
 			boolean hasKey = false;
 			int door = Dungeon.level.map[doorCell];
 			
@@ -1440,11 +1737,12 @@ public class Hero extends Char {
 			}
 			
 			if (hasKey) {
-				
-				sprite.operate( doorCell );
-				
+
+				if (sprite != null) sprite.operate( doorCell );
+				else onOperateComplete();
+
 				Sample.INSTANCE.play( Assets.Sounds.UNLOCK );
-				
+
 			} else {
 				GLog.w( Messages.get(this, "locked_door") );
 				ready();
@@ -1465,12 +1763,13 @@ public class Hero extends Char {
 	private boolean actMine(HeroAction.Mine action){
 		if (Dungeon.level.adjacent(pos, action.dst)){
 			path = null;
+			lanSendPerformed( action );
 			if ((Dungeon.level.map[action.dst] == Terrain.WALL
 					|| Dungeon.level.map[action.dst] == Terrain.WALL_DECO
 					|| Dungeon.level.map[action.dst] == Terrain.MINE_CRYSTAL
 					|| Dungeon.level.map[action.dst] == Terrain.MINE_BOULDER)
 				&& Dungeon.level.insideMap(action.dst)){
-				sprite.attack(action.dst, new Callback() {
+				Callback mineCallback = new Callback() {
 					@Override
 					public void call() {
 
@@ -1496,10 +1795,10 @@ public class Hero extends Char {
 								}
 								spend(-Actor.TICK); //picking up the gold doesn't spend a turn here
 							} else {
-								Dungeon.level.drop( gold, pos ).sprite.drop();
+								Dungeon.level.dropAndShow( gold, pos );
 							}
-							PixelScene.shake(0.5f, 0.5f);
-							CellEmitter.center( action.dst ).burst( Speck.factory( Speck.STAR ), 7 );
+							if (com.watabou.noosa.Camera.main != null) PixelScene.shake(0.5f, 0.5f);
+							if (com.watabou.noosa.Camera.main != null) CellEmitter.center( action.dst ).burst( Speck.factory( Speck.STAR ), 7 );
 							Sample.INSTANCE.play( Assets.Sounds.EVOKE );
 							Level.set( action.dst, Terrain.EMPTY_DECO );
 
@@ -1509,20 +1808,20 @@ public class Hero extends Char {
 						//4 hunger spent total
 						} else if (Dungeon.level.map[action.dst] == Terrain.WALL){
 							buff(Hunger.class).affectHunger(-3);
-							PixelScene.shake(0.5f, 0.5f);
-							CellEmitter.get( action.dst ).burst( Speck.factory( Speck.ROCK ), 2 );
+							if (com.watabou.noosa.Camera.main != null) PixelScene.shake(0.5f, 0.5f);
+							if (com.watabou.noosa.Camera.main != null) CellEmitter.get( action.dst ).burst( Speck.factory( Speck.ROCK ), 2 );
 							Sample.INSTANCE.play( Assets.Sounds.MINE );
 							Level.set( action.dst, Terrain.EMPTY_DECO );
 
 						//1 hunger spent total
 						} else if (Dungeon.level.map[action.dst] == Terrain.MINE_CRYSTAL){
-							Splash.at(action.dst, 0xFFFFFF, 5);
+							if (com.watabou.noosa.Camera.main != null) Splash.at(action.dst, 0xFFFFFF, 5);
 							Sample.INSTANCE.play( Assets.Sounds.SHATTER );
 							Level.set( action.dst, Terrain.EMPTY );
 
 						//1 hunger spent total
 						} else if (Dungeon.level.map[action.dst] == Terrain.MINE_BOULDER){
-							Splash.at(action.dst, 0x555555, 5);
+							if (com.watabou.noosa.Camera.main != null) Splash.at(action.dst, 0x555555, 5);
 							Sample.INSTANCE.play( Assets.Sounds.MINE, 0.6f );
 							Level.set( action.dst, Terrain.EMPTY_DECO );
 						}
@@ -1534,14 +1833,14 @@ public class Hero extends Char {
 							GameScene.updateMap( action.dst+i );
 						}
 
-						if (crystalAdjacent){
+						if (crystalAdjacent && sprite != null && sprite.parent != null){
 							sprite.parent.add(new Delayer(0.2f){
 								@Override
 								protected void onComplete() {
 									boolean broke = false;
 									for (int i : PathFinder.NEIGHBOURS8) {
 										if (Dungeon.level.map[action.dst+i] == Terrain.MINE_CRYSTAL){
-											Splash.at(action.dst+i, 0xFFFFFF, 5);
+											if (com.watabou.noosa.Camera.main != null) Splash.at(action.dst+i, 0xFFFFFF, 5);
 											Level.set( action.dst+i, Terrain.EMPTY );
 											broke = true;
 										}
@@ -1564,7 +1863,12 @@ public class Hero extends Char {
 
 						Dungeon.observe();
 					}
-				});
+				};
+				if (sprite != null) {
+					sprite.attack(action.dst, mineCallback);
+				} else {
+					mineCallback.call();
+				}
 			} else {
 				ready();
 			}
@@ -1590,6 +1894,7 @@ public class Hero extends Char {
 
 		} else if (!Dungeon.level.locked && transition != null && transition.inside(pos)) {
 
+			lanSendPerformed( action );
 			if (Dungeon.level.activateTransition(this, transition)){
 				curAction = null;
 			} else {
@@ -1627,18 +1932,23 @@ public class Hero extends Char {
 
 		if (attackTarget.isAlive() && canAttack(attackTarget) && attackTarget.invisible == 0) {
 
+			lanSendPerformed( action );
 			if (heroClass != HeroClass.DUELIST
 					&& hasTalent(Talent.AGGRESSIVE_BARRIER)
 					&& buff(Talent.AggressiveBarrierCooldown.class) == null
 					&& (HP / (float)HT) <= 0.5f){
 				int shieldAmt = 1 + 2*pointsInTalent(Talent.AGGRESSIVE_BARRIER);
 				Buff.affect(this, Barrier.class).setShield(shieldAmt);
-				sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(shieldAmt), FloatingText.SHIELDING);
+				if (sprite != null) sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(shieldAmt), FloatingText.SHIELDING);
 				Buff.affect(this, Talent.AggressiveBarrierCooldown.class, 50f);
 
 			}
 			//attack target cleared on onAttackComplete
-			sprite.attack( attackTarget.pos );
+			if (sprite != null) {
+				sprite.attack( attackTarget.pos );
+			} else {
+				onAttackComplete();
+			}
 
 			// FIX (attack-action freeze): clear curAction so the next act() re-entry
 			// correctly enters the curAction == null branch and waits for the next
@@ -1670,6 +1980,12 @@ public class Hero extends Char {
 	}
 	
 	public void rest( boolean fullRest ) {
+		// LAN: waiting spends a turn, so it must go through the action queue and be
+		// broadcast like any other action — spending time silently freezes peers
+		if (NetworkManager.lanMode) {
+			queueRest(fullRest);
+			return;
+		}
 		spendAndNextConstant( TIME_TO_REST );
 		if (hasTalent(Talent.HOLD_FAST)){
 			Buff.affect(this, HoldFast.class).pos = pos;
@@ -1683,6 +1999,47 @@ public class Hero extends Char {
 			}
 		}
 		resting = fullRest;
+	}
+
+	/** LAN: queue a Rest action so the turn is executed in act() and broadcast. */
+	public void queueRest( boolean fullRest ) {
+		curAction = new HeroAction.Rest(fullRest);
+		lanActionQueued = true;
+	}
+
+	/** LAN: queue an intentional search so the turn is executed in act() and broadcast. */
+	public void queueSearch() {
+		curAction = new HeroAction.Search();
+		lanActionQueued = true;
+	}
+
+	//executes one waiting turn (or one resting tick) inside the actor loop —
+	//mirrors rest(), but runs identically on the owning and remote devices
+	private boolean actRest( HeroAction.Rest action ) {
+		lanSendPerformed( action );
+		curAction = null;
+		spendAndNextConstant( TIME_TO_REST );
+		if (hasTalent(Talent.HOLD_FAST)){
+			Buff.affect(this, HoldFast.class).pos = pos;
+		}
+		if (hasTalent(Talent.PATIENT_STRIKE)){
+			Buff.affect(this, Talent.PatientStrikeTracker.class).pos = pos;
+		}
+		if (!action.fullRest) {
+			if (sprite != null) {
+				sprite.showStatus(CharSprite.DEFAULT, Messages.get(this, "wait"));
+			}
+		}
+		resting = action.fullRest;
+		return false;
+	}
+
+	//executes one intentional search inside the actor loop, on both devices
+	private boolean actSearch( HeroAction.Search action ) {
+		lanSendPerformed( action );
+		curAction = null;
+		search( true );
+		return false;
 	}
 	
 	@Override
@@ -1950,7 +2307,13 @@ public class Hero extends Char {
 			if (resting){
 				Dungeon.observe();
 			}
-			interrupt();
+			// LAN: remote heroes must not call interrupt() on this device. The interruption
+			// decision is made on the hero's own device (which sends a new action if needed).
+			// Calling interrupt() here would clear curAction that the network already delivered,
+			// causing the actor thread to wait for a packet that will never arrive → freeze.
+			if (!isRemoteLanHero()) {
+				interrupt();
+			}
 		}
 
 		visibleEnemies = visible;
@@ -2012,7 +2375,11 @@ public class Hero extends Char {
 
 			path = null;
 
-			if (Actor.findChar( target ) == null) {
+			// Remote LAN heroes execute steps the owner already performed. The owner
+			// can legitimately path onto a cell occupied by a char outside its FOV
+			// (findPath only blocks visible chars), so the occupancy guard must not
+			// second-guess the transmitted step — refusing it desyncs the sims.
+			if (Actor.findChar( target ) == null || isRemoteLanHero()) {
 				if (Dungeon.level.passable[target] || Dungeon.level.avoid[target]) {
 					step = target;
 				}
@@ -2025,6 +2392,15 @@ public class Hero extends Char {
 			}
 			
 		} else {
+
+			// LAN remote hero: never pathfind. The owning device transmits every
+			// performed step as an adjacent Move, so a non-adjacent target here
+			// means the simulations already diverged — refuse to guess a path
+			// (pathfinding inputs like visited[] are per-device) and wait for the
+			// owner's next packet instead of desyncing further.
+			if (isRemoteLanHero()) {
+				return false;
+			}
 
 			boolean newPath = false;
 			if (path == null || path.isEmpty() || !Dungeon.level.adjacent(pos, path.getFirst()))
@@ -2044,19 +2420,8 @@ public class Hero extends Char {
 				boolean[] v = Dungeon.level.visited;
 				boolean[] m = Dungeon.level.mapped;
 				boolean[] passable = new boolean[len];
-				// In LAN mode, the remote hero executes actions commanded by its owner on
-				// the other device. The owner already validated the path on their own screen,
-				// so any dungeon-passable tile is a legal step candidate regardless of whether
-				// the peer's device has "visited" that tile yet. Without this exception the
-				// remote hero's getCloser() returns false for targets in unexplored fog,
-				// ready() clears curAction, and the hero re-enters the LAN wait indefinitely —
-				// causing the permanent freeze described in
-				// docs/bugs/2026-05-31-lan-freeze-remote-hero-unvisited-path.md.
-				boolean remoteLanHero = NetworkManager.lanMode
-						&& Dungeon.heroes != null
-						&& Dungeon.heroes.indexOf(this) != NetworkManager.localPlayerIndex;
 				for (int i = 0; i < len; i++) {
-					passable[i] = p[i] && (remoteLanHero || v[i] || m[i]);
+					passable[i] = p[i] && (v[i] || m[i]);
 				}
 
 				PathFinder.Path newpath = Dungeon.findPath(this, target, passable, fieldOfView, true);
@@ -2082,10 +2447,14 @@ public class Hero extends Char {
 
 			if (Dungeon.level.pit[step] && !Dungeon.level.solid[step]
 					&& (!flying || buff(Levitation.class) != null && buff(Levitation.class).detachesWithinDelay(delay / speed()))){
-				if (!Chasm.jumpConfirmed){
+				// LAN remote hero: the owner already confirmed the jump on their
+				// device — asking again here would pop a dialog on the wrong screen
+				// and desync. Fall directly.
+				if (!Chasm.jumpConfirmed && !isRemoteLanHero()){
 					Chasm.heroJump(this);
 					interrupt();
 				} else {
+					lanSendPerformed( new HeroAction.Move(step) );
 					flying = false;
 					remove(buff(Levitation.class)); //directly remove to prevent cell pressing
 					Chasm.heroFall(this, step);
@@ -2101,7 +2470,10 @@ public class Hero extends Char {
 			if (subClass == HeroSubClass.FREERUNNER){
 				Buff.affect(this, Momentum.class).gainStack();
 			}
-			
+
+			// LAN: broadcast the performed step (peers replay it verbatim)
+			lanSendPerformed( new HeroAction.Move(step) );
+
 			if (sprite != null) sprite.move(pos, step);
 			move(step);
 
@@ -2562,19 +2934,19 @@ public class Hero extends Char {
 		
 		if (!flying && travelling) {
 			if (Dungeon.level.water[pos]) {
-				Sample.INSTANCE.play( Assets.Sounds.WATER, 1, Random.Float( 0.8f, 1.25f ) );
+				Sample.INSTANCE.play( Assets.Sounds.WATER, 1, Random.cosmeticFloat( 0.8f, 1.25f ) );
 			} else if (Dungeon.level.map[pos] == Terrain.EMPTY_SP) {
-				Sample.INSTANCE.play( Assets.Sounds.STURDY, 1, Random.Float( 0.96f, 1.05f ) );
+				Sample.INSTANCE.play( Assets.Sounds.STURDY, 1, Random.cosmeticFloat( 0.96f, 1.05f ) );
 			} else if (Dungeon.level.map[pos] == Terrain.GRASS
 					|| Dungeon.level.map[pos] == Terrain.EMBERS
 					|| Dungeon.level.map[pos] == Terrain.FURROWED_GRASS){
 				if (step == pos && wasHighGrass) {
-					Sample.INSTANCE.play(Assets.Sounds.TRAMPLE, 1, Random.Float( 0.96f, 1.05f ) );
+					Sample.INSTANCE.play(Assets.Sounds.TRAMPLE, 1, Random.cosmeticFloat( 0.96f, 1.05f ) );
 				} else {
-					Sample.INSTANCE.play( Assets.Sounds.GRASS, 1, Random.Float( 0.96f, 1.05f ) );
+					Sample.INSTANCE.play( Assets.Sounds.GRASS, 1, Random.cosmeticFloat( 0.96f, 1.05f ) );
 				}
 			} else {
-				Sample.INSTANCE.play( Assets.Sounds.STEP, 1, Random.Float( 0.96f, 1.05f ) );
+				Sample.INSTANCE.play( Assets.Sounds.STEP, 1, Random.cosmeticFloat( 0.96f, 1.05f ) );
 			}
 		}
 	}

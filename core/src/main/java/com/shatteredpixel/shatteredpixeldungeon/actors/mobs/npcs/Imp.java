@@ -24,6 +24,7 @@ package com.shatteredpixel.shatteredpixeldungeon.actors.mobs.npcs;
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.AscensionChallenge;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Golem;
@@ -103,32 +104,44 @@ public class Imp extends NPC {
 	@Override
 	public boolean interact(Char c) {
 		
-		sprite.turnTo( pos, Dungeon.hero.pos );
+		if (sprite != null) sprite.turnTo( pos, c.pos );
 
-		if (c != Dungeon.hero){
+		//LAN: runs on every device — quest flags mutate on all, dialogs only on
+		//the interacting hero's device, reward choice synced via OPTION_CHOICE
+		if (!(c instanceof Hero)){
 			return true;
 		}
+		final Hero hero = (Hero) c;
+		final boolean localHero = !hero.isRemoteLanHero();
 
 		if (Quest.given) {
 			
-			DwarfToken tokens = Dungeon.hero.belongings.getItem( DwarfToken.class );
+			DwarfToken tokens = hero.belongings.getItem( DwarfToken.class );
 			if (tokens != null && (tokens.quantity() >= 5 || (!Quest.alternative && tokens.quantity() >= 4))) {
-				Game.runOnRenderThread(new Callback() {
-					@Override
-					public void call() {
-						GameScene.show( new WndImp( Imp.this, tokens ) );
-					}
-				});
-			} else {
+				if (localHero) {
+					Game.runOnRenderThread(new Callback() {
+						@Override
+						public void call() {
+							GameScene.show( new WndImp( Imp.this, tokens, hero ) );
+						}
+					});
+				} else {
+					com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.pendingRemoteOptionHandler =
+							idx -> WndImp.performReward( hero, Imp.this, idx );
+				}
+			} else if (localHero) {
 				tell( Quest.alternative ?
-						Messages.get(this, "monks_2", Messages.titleCase(Dungeon.hero.name()))
-						: Messages.get(this, "golems_2", Messages.titleCase(Dungeon.hero.name())) );
+						Messages.get(this, "monks_2", Messages.titleCase(hero.name()))
+						: Messages.get(this, "golems_2", Messages.titleCase(hero.name())) );
 			}
 			
 		} else {
-			tell( Messages.get(this, "intro") + "\n\n" + (Quest.alternative ?
-					Messages.get(this, "monks_1", Messages.titleCase(Dungeon.hero.name()))
-					: Messages.get(this, "golems_1", Messages.titleCase(Dungeon.hero.name()))) );
+			if (localHero) {
+				tell( Messages.get(this, "intro") + "\n\n" + (Quest.alternative ?
+						Messages.get(this, "monks_1", Messages.titleCase(hero.name()))
+						: Messages.get(this, "golems_1", Messages.titleCase(hero.name()))) );
+			}
+			//quest state is simulation state — set on every device
 			Quest.given = true;
 			Quest.completed = false;
 		}
@@ -249,7 +262,7 @@ public class Imp extends NPC {
 				if ((alternative && mob instanceof Monk) ||
 					(!alternative && mob instanceof Golem)) {
 					
-					Dungeon.level.drop( new DwarfToken(), mob.pos ).sprite.drop();
+					Dungeon.level.dropAndShow( new DwarfToken(), mob.pos );
 				}
 			}
 		}

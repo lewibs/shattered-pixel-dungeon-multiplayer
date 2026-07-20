@@ -39,9 +39,28 @@ public class WndImp extends Window {
 	private static final int BTN_HEIGHT = 20;
 	private static final int GAP        = 2;
 
-	public WndImp( final Imp imp, final DwarfToken tokens ) {
+	com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero;
+
+	//LAN: reward choice broadcast — see WndWandmaker
+	private boolean lanChoiceSent = false;
+	private void sendLanChoice(int idx){
+		if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode && !lanChoiceSent){
+			lanChoiceSent = true;
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.sendOptionChoice(idx);
+		}
+	}
+
+	@Override
+	public void hide() {
+		sendLanChoice(-1);
+		super.hide();
+	}
+
+	public WndImp( final Imp imp, final DwarfToken tokens,
+	               final com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero ) {
 		
 		super();
+		this.hero = hero;
 		
 		IconTitle titlebar = new IconTitle();
 		titlebar.icon( new ItemSprite( tokens.image(), null ) );
@@ -67,17 +86,34 @@ public class WndImp extends Window {
 	}
 	
 	private void takeReward( Imp imp, DwarfToken tokens, Item reward ) {
-		
+
+		sendLanChoice(0);
 		hide();
-		
-		tokens.detachAll( Dungeon.hero.belongings.backpack );
+
+		if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.resolveLocalChoice(
+					() -> performReward(hero, imp, 0));
+		} else {
+			performReward(hero, imp, 0);
+		}
+	}
+
+	/** Applies the quest reward — identical on the choosing and remote devices. */
+	public static void performReward( com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero,
+	                                  Imp imp, int idx ) {
+		if (idx != 0) return;
+
+		DwarfToken tokens = hero.belongings.getItem( DwarfToken.class );
+		if (tokens != null) tokens.detachAll( hero.belongings.backpack );
+
+		Item reward = Imp.Quest.reward;
 		if (reward == null) return;
 
 		reward.identify(false);
-		if (reward.doPickUp( Dungeon.hero )) {
-			GLog.i( Messages.capitalize(Messages.get(Dungeon.hero, "you_now_have", reward.name())) );
+		if (reward.doPickUp( hero )) {
+			GLog.i( Messages.capitalize(Messages.get(hero, "you_now_have", reward.name())) );
 		} else {
-			Dungeon.level.drop( reward, imp.pos ).sprite.drop();
+			Dungeon.level.dropAndShow( reward, imp.pos );
 		}
 		
 		imp.flee();

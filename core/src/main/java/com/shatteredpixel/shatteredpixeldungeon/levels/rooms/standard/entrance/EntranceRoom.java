@@ -100,6 +100,10 @@ public class EntranceRoom extends StandardRoom {
 	}
 
 	public static void placeEarlyGuidePages(Level level, Room r){
+		// LAN: page placement depends on per-device meta progression and unseeded
+		// RNG — devices would generate different heaps. Skip guide pages entirely.
+		if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) return;
+
 		//use a separate generator here so meta progression doesn't affect levelgen
 		Random.pushGenerator();
 

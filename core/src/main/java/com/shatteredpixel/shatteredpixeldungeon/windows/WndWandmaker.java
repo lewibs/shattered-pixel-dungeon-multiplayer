@@ -46,13 +46,32 @@ public class WndWandmaker extends Window {
 
 	Wandmaker wandmaker;
 	Item questItem;
+	com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero;
 
-	public WndWandmaker( final Wandmaker wandmaker, final Item item ) {
+	//LAN: reward choices are broadcast (OPTION_CHOICE) so the remote copy of this
+	//quest resolves identically; -1 releases the remote handler on dismissal
+	private boolean lanChoiceSent = false;
+	private void sendLanChoice(int idx){
+		if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode && !lanChoiceSent){
+			lanChoiceSent = true;
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.sendOptionChoice(idx);
+		}
+	}
+
+	@Override
+	public void hide() {
+		sendLanChoice(-1);
+		super.hide();
+	}
+
+	public WndWandmaker( final Wandmaker wandmaker, final Item item,
+	                     final com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero ) {
 		
 		super();
 
 		this.wandmaker = wandmaker;
 		this.questItem = item;
+		this.hero = hero;
 		
 		IconTitle titlebar = new IconTitle();
 		titlebar.icon(new ItemSprite(item.image(), null));
@@ -77,7 +96,7 @@ public class WndWandmaker extends Window {
 		ItemButton btnWand1 = new ItemButton(){
 			@Override
 			protected void onClick() {
-				if (Dungeon.hero.belongings.contains(questItem) && item() != null) {
+				if (hero.belongings.contains(questItem) && item() != null) {
 					GameScene.show(new RewardWindow(item()));
 				} else {
 					hide();
@@ -91,7 +110,7 @@ public class WndWandmaker extends Window {
 		ItemButton btnWand2 = new ItemButton(){
 			@Override
 			protected void onClick() {
-				if (Dungeon.hero.belongings.contains(questItem) && item() != null) {
+				if (hero.belongings.contains(questItem) && item() != null) {
 					GameScene.show(new RewardWindow(item()));
 				} else {
 					hide();
@@ -111,22 +130,40 @@ public class WndWandmaker extends Window {
 			return;
 		}
 
+		int idx = reward == Wandmaker.Quest.wand1 ? 0 : 1;
+		sendLanChoice(idx);
 		hide();
 
-		questItem.detach( Dungeon.hero.belongings.backpack );
+		if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.resolveLocalChoice(
+					() -> performReward(hero, wandmaker, questItem, idx));
+		} else {
+			performReward(hero, wandmaker, questItem, idx);
+		}
+	}
+
+	/** Applies the quest reward — identical on the choosing and remote devices. */
+	public static void performReward( com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero,
+	                                  Wandmaker wandmaker, Item questItem, int idx ) {
+		Item reward = idx == 0 ? Wandmaker.Quest.wand1 : idx == 1 ? Wandmaker.Quest.wand2 : null;
+		if (reward == null){
+			return;
+		}
+
+		questItem.detach( hero.belongings.backpack );
 
 		reward.identify(false);
-		if (reward.doPickUp( Dungeon.hero )) {
-			GLog.i( Messages.capitalize(Messages.get(Dungeon.hero, "you_now_have", reward.name())) );
+		if (reward.doPickUp( hero )) {
+			GLog.i( Messages.capitalize(Messages.get(hero, "you_now_have", reward.name())) );
 		} else {
-			Dungeon.level.drop( reward, wandmaker.pos ).sprite.drop();
+			Dungeon.level.dropAndShow( reward, wandmaker.pos );
 		}
-		
-		wandmaker.yell( Messages.get(this, "farewell", Messages.titleCase(Dungeon.hero.name())) );
+
+		wandmaker.yell( Messages.get(WndWandmaker.class, "farewell", Messages.titleCase(hero.name())) );
 		wandmaker.destroy();
-		
-		wandmaker.sprite.die();
-		
+
+		if (wandmaker.sprite != null) wandmaker.sprite.die();
+
 		Wandmaker.Quest.complete();
 	}
 

@@ -106,20 +106,31 @@ public class ChaoticCenser extends Trinket {
 
 			if (left <= 0) {
 
-				if (TargetHealthIndicator.instance != null && TargetHealthIndicator.instance.isVisible()){
-					Char target = TargetHealthIndicator.instance.target();
-
-					if (target != null
-							&& target.isActive()
-							&& target.alignment == Char.Alignment.ENEMY
-							&& (!(target instanceof Mob) || ((Mob) target).state != ((Mob) target).PASSIVE)){
-
-						if (produceGas(target)){
-							Sample.INSTANCE.play(Assets.Sounds.GAS, 0.5f);
-							Dungeon.hero.interrupt();
-							left += Random.IntRange((int) (avgTurns * 0.9f), (int) (avgTurns * 1.1f));
+				//LAN: the target must be derived from sim state, not the per-device
+				//TargetHealthIndicator UI singleton — pick the closest active enemy
+				//in hero FOV, tie-breaking on lower position
+				Char gasTarget = null;
+				if (target instanceof com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero) {
+					int best = Integer.MAX_VALUE;
+					for (Mob m : Dungeon.level.mobs) {
+						if (m.isActive()
+								&& m.alignment == Char.Alignment.ENEMY
+								&& m.state != m.PASSIVE
+								&& Dungeon.level.heroFOV[m.pos]) {
+							int dist = Dungeon.level.distance(target.pos, m.pos);
+							if (dist < best || (dist == best && gasTarget != null && m.pos < gasTarget.pos)) {
+								best = dist;
+								gasTarget = m;
+							}
 						}
 					}
+				}
+
+				if (gasTarget != null
+						&& produceGas((com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero) target, gasTarget)) {
+					Sample.INSTANCE.play(Assets.Sounds.GAS, 0.5f);
+					if (target == Dungeon.hero) Dungeon.hero.interrupt();
+					left += Random.IntRange((int) (avgTurns * 0.9f), (int) (avgTurns * 1.1f));
 				}
 
 			}
@@ -149,7 +160,7 @@ public class ChaoticCenser extends Trinket {
 		}
 	}
 
-	private static boolean produceGas( Char target ){
+	private static boolean produceGas( com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero censerHero, Char target ){
 		int level = trinketLevel(ChaoticCenser.class);
 
 		if (level < 0 || level > 3){
@@ -176,7 +187,7 @@ public class ChaoticCenser extends Trinket {
 		}
 
 		HashMap<Integer, Float> candidateCells = new HashMap<>();
-		PathFinder.buildDistanceMap(Dungeon.hero.pos, BArray.not(Dungeon.level.solid, null), 6);
+		PathFinder.buildDistanceMap(censerHero.pos, BArray.not(Dungeon.level.solid, null), 6);
 
 		//spawn gas in a random visible cell 2-6 tiles away
 		for (int i = 0; i < Dungeon.level.length(); i++){
@@ -189,11 +200,11 @@ public class ChaoticCenser extends Trinket {
 
 		//strongly prefer cells closer to target
 		int targetpos = target.pos;
-		if (Dungeon.level.trueDistance(target.pos, Dungeon.hero.pos) >= 4){
+		if (Dungeon.level.trueDistance(target.pos, censerHero.pos) >= 4){
 			//if target is a distance from the hero, aim in front of them instead
 			for (int i : PathFinder.NEIGHBOURS8){
 				while (!Dungeon.level.solid[targetpos+i]
-						&& Dungeon.level.trueDistance(target.pos+i, Dungeon.hero.pos) < Dungeon.level.trueDistance(targetpos, Dungeon.hero.pos)){
+						&& Dungeon.level.trueDistance(target.pos+i, censerHero.pos) < Dungeon.level.trueDistance(targetpos, censerHero.pos)){
 					targetpos = target.pos+i;
 				}
 			}
@@ -219,7 +230,7 @@ public class ChaoticCenser extends Trinket {
 		if (!candidateCells.isEmpty()) {
 			Integer targetCell = Random.chances(candidateCells);
 			if (targetCell != null) {
-				Buff.affect(Dungeon.hero, GasSpewer.class, Dungeon.hero.cooldown()).set(targetCell, gasToSpawn, (int)gasQuantity);
+				Buff.affect(censerHero, GasSpewer.class, censerHero.cooldown()).set(targetCell, gasToSpawn, (int)gasQuantity);
 				GLog.w(Messages.get(ChaoticCenser.class, "spew", Messages.titleCase(Messages.get(gasToSpawn, "name")) ));
 				if (target.sprite != null && target.sprite.parent != null) {
 					target.sprite.parent.addToBack(new TargetedCell(targetCell, 0xFF0000));
@@ -306,21 +317,23 @@ public class ChaoticCenser extends Trinket {
 		GAS_CAT_CHANCES[3] = new float[]{40, 40, 20};
 	}
 
-	private static final HashMap<Class<? extends Blob>, Float> COMMON_GASSES = new HashMap<>();
+	//LinkedHashMap: Random.element iterates the keys — Class identity hashes differ per JVM,
+	//so a plain HashMap picks different gasses on different LAN devices
+	private static final HashMap<Class<? extends Blob>, Float> COMMON_GASSES = new java.util.LinkedHashMap<>();
 	static {
 		COMMON_GASSES.put(ToxicGas.class, 300f);
 		COMMON_GASSES.put(ConfusionGas.class, 300f);
 		COMMON_GASSES.put(Regrowth.class, 200f);
 	}
 
-	private static final HashMap<Class<? extends Blob>, Float> UNCOMMON_GASSES = new HashMap<>();
+	private static final HashMap<Class<? extends Blob>, Float> UNCOMMON_GASSES = new java.util.LinkedHashMap<>();
 	static {
 		UNCOMMON_GASSES.put(StormCloud.class, 300f);
 		UNCOMMON_GASSES.put(SmokeScreen.class, 300f);
 		UNCOMMON_GASSES.put(StenchGas.class, 200f);
 	}
 
-	private static final HashMap<Class<? extends Blob>, Float> RARE_GASSES = new HashMap<>();
+	private static final HashMap<Class<? extends Blob>, Float> RARE_GASSES = new java.util.LinkedHashMap<>();
 	static {
 		RARE_GASSES.put(Inferno.class, 300f);
 		RARE_GASSES.put(Blizzard.class, 300f);

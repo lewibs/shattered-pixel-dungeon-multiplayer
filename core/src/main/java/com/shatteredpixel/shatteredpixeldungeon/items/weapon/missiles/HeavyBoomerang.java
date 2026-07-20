@@ -71,14 +71,17 @@ public class HeavyBoomerang extends MissileWeapon {
 	protected void rangedHit(Char enemy, int cell) {
 		decrementDurability();
 		if (durability > 0){
-			Buff.append(Dungeon.hero, CircleBack.class).setup(this, cell, Dungeon.hero.pos, Dungeon.depth, Dungeon.branch);
+			//LAN: the throwing hero (curUser), not the device-local Dungeon.hero
+			Hero thrower = curUser != null ? curUser : Dungeon.referenceHero();
+			Buff.append(thrower, CircleBack.class).setup(this, cell, thrower.pos, Dungeon.depth, Dungeon.branch);
 		}
 	}
 	
 	@Override
 	protected void rangedMiss(int cell) {
 		parent = null;
-		Buff.append(Dungeon.hero, CircleBack.class).setup(this, cell, Dungeon.hero.pos, Dungeon.depth, Dungeon.branch);
+		Hero thrower = curUser != null ? curUser : Dungeon.referenceHero();
+		Buff.append(thrower, CircleBack.class).setup(this, cell, thrower.pos, Dungeon.depth, Dungeon.branch);
 	}
 	
 	public static class CircleBack extends Buff {
@@ -136,7 +139,7 @@ public class HeavyBoomerang extends MissileWeapon {
 											if (returnTarget == target){
 												if (!boomerang.spawnedForEffect) {
 													if (!(target instanceof Hero) || !boomerang.doPickUp((Hero) target)) {
-														Dungeon.level.drop(boomerang, returnPos).sprite.drop();
+														Dungeon.level.dropAndShow(boomerang, returnPos);
 													}
 												}
 												
@@ -145,11 +148,11 @@ public class HeavyBoomerang extends MissileWeapon {
 													boomerang.decrementDurability();
 												}
 												if (!boomerang.spawnedForEffect && boomerang.durability > 0) {
-													Dungeon.level.drop(boomerang, returnPos).sprite.drop();
+													Dungeon.level.dropAndShow(boomerang, returnPos);
 												}
 												
 											} else if (!boomerang.spawnedForEffect) {
-												Dungeon.level.drop(boomerang, returnPos).sprite.drop();
+												Dungeon.level.dropAndShow(boomerang, returnPos);
 											}
 											boomerang.circlingBack = false;
 											CircleBack.this.next();

@@ -12,7 +12,6 @@ import java.net.*;
 import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.atomic.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -20,8 +19,14 @@ import static org.junit.jupiter.api.Assertions.*;
  * Comprehensive real-socket tests targeting the specific "3rd move freeze"
  * scenario and all variations that could cause LAN turns to freeze.
  *
- * Every test uses real TCP loopback sockets with a short timeout (200ms)
- * to simulate the production 30-second scenario at test speed.
+ * v3 leader-sequenced commit protocol: this device is the LEADER (host,
+ * localPlayerIndex=0). The remote player (player 1) submits ops as REQUEST
+ * frames on the client socket; the leader sequences them and dispatches the
+ * resulting COMMIT into remoteHero.lanActionInbox (and echoes the COMMIT back
+ * down the socket — the tests simply leave those bytes in the client's TCP
+ * receive buffer). "Action received" now means "commit landed in the inbox".
+ *
+ * Every test uses real TCP loopback sockets.
  */
 @Timeout(value = 20, unit = TimeUnit.SECONDS)
 class LanTurnSequenceTest {
@@ -41,6 +46,9 @@ class LanTurnSequenceTest {
     private Hero localHero;   // heroes[0] — host
     private Hero remoteHero;  // heroes[1] — client
 
+    // Per-client contiguous request counter (v3 leader dedupes by clientSeq)
+    private int clientSeq = 0;
+
     @BeforeEach
     void setUp() throws IOException {
         serverSocket   = new ServerSocket(0);
@@ -51,8 +59,6 @@ class LanTurnSequenceTest {
         catch (InterruptedException | ExecutionException | TimeoutException e) {
             throw new IOException("setup failed", e);
         }
-        
-        
 
         hostIn   = new DataInputStream(hostSideSocket.getInputStream());
         hostOut  = new DataOutputStream(hostSideSocket.getOutputStream());
@@ -73,13 +79,16 @@ class LanTurnSequenceTest {
         NetworkManager.setIsHostForTesting(true);
         NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
     }
 
     @AfterEach
     void tearDown() throws IOException {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
         if (hostSideSocket != null && !hostSideSocket.isClosed()) hostSideSocket.close();
         if (serverSocket   != null && !serverSocket.isClosed())   serverSocket.close();
@@ -92,30 +101,45 @@ class LanTurnSequenceTest {
     // Helpers
     // -------------------------------------------------------------------------
 
+    /** Client (player 1) submits a Move op — v3 REQUEST frame with contiguous clientSeq. */
     void clientSendsAction(int targetPos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1);   // heroId = 1 (remote)
-        clientOut.writeByte(0);  // Move
-        clientOut.writeInt(targetPos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++clientSeq, (byte) 0, targetPos);
     }
 
+    /** Waits until a commit for h lands in its per-hero inbox. */
     boolean waitForAction(Hero h, long maxMs) throws InterruptedException {
         synchronized (h.lanActionLock) {
             long deadline = System.currentTimeMillis() + maxMs;
-            while (h.curAction == null && NetworkManager.lanMode) {
+            while (h.lanActionInbox.isEmpty() && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 h.lanActionLock.wait(rem);
             }
+            return !h.lanActionInbox.isEmpty();
         }
-        return h.curAction != null;
     }
 
-    /** Run a complete remote turn: start reader, deliver packet, wait, consume. */
+    /** Consumes the next committed op from the hero's inbox (as Hero.act() does). */
+    NetworkManager.Commit takeCommit(Hero h) {
+        synchronized (h.lanActionLock) {
+            return h.lanActionInbox.pollFirst();
+        }
+    }
+
+    /** Counts live persistent gameplay reader threads. */
+    static int countNetReaderThreads() {
+        Thread[] all = new Thread[Thread.activeCount() * 2 + 16];
+        int n = Thread.enumerate(all);
+        int count = 0;
+        for (int i = 0; i < n; i++) {
+            if (all[i] != null && all[i].isAlive() && all[i].getName().startsWith("net-reader-")) count++;
+        }
+        return count;
+    }
+
+    /** Run a complete remote turn: ensure readers, deliver request, wait, consume commit. */
     void doRemoteTurn(int targetPos, long sendDelayMs, String label)
             throws Exception {
-        remoteHero.curAction = null;
         NetworkManager.receiveActionAsync(remoteHero);
 
         Thread deliver = new Thread(() -> {
@@ -128,12 +152,12 @@ class LanTurnSequenceTest {
         deliver.start();
 
         boolean got = waitForAction(remoteHero, 3000);
+        deliver.join(1000); // keeps clientSeq increments serialized across turns
         assertTrue(got, label + ": remote action must be received (no freeze)");
-        assertEquals(targetPos, ((HeroAction.Move) remoteHero.curAction).dst,
-                label + ": correct action received");
-
-        remoteHero.curAction = null;  // consume
-        remoteHero.next();            // unblock actor loop
+        NetworkManager.Commit c = takeCommit(remoteHero);
+        assertNotNull(c, label + ": commit must be in the inbox");
+        assertEquals(targetPos, c.targetPos, label + ": correct action received");
+        assertEquals(1, c.player, label + ": commit owned by remote player");
     }
 
     /** Run a complete local turn: just set curAction and consume. */
@@ -177,7 +201,7 @@ class LanTurnSequenceTest {
 
     @Test
     void p2ThinksBetweenTurns_noFreeze() throws Exception {
-        // P2 takes slightly longer than socket timeout to think each time
+        // P2 takes slightly longer than the old socket timeout to think each time
         doLocalTurn(1);
         doRemoteTurn(2, THINK_DELAY_MS + 50, "T2 slow");  // P2 "thinks" past timeout
         doLocalTurn(3);
@@ -207,51 +231,50 @@ class LanTurnSequenceTest {
     }
 
     // =========================================================================
-    // Action arrives before reader starts (pre-buffered packet)
+    // Request arrives before readers start (pre-buffered packet)
     // =========================================================================
 
     @Test
     void actionArrivesBeforeReaderStarts_stillReceived() throws Exception {
-        // Send packet BEFORE calling receiveActionAsync
+        // Send request BEFORE the persistent readers are running
         clientSendsAction(77);
         Thread.sleep(10); // let it buffer in the TCP receive buffer
 
-        // Now start the reader — packet already in buffer
+        // Now start the readers — request already in buffer
         NetworkManager.receiveActionAsync(remoteHero);
         boolean got = waitForAction(remoteHero, 2000);
         assertTrue(got, "Pre-buffered action must be received");
-        assertEquals(77, ((HeroAction.Move) remoteHero.curAction).dst);
-        remoteHero.curAction = null;
-        remoteHero.next();
+        NetworkManager.Commit c = takeCommit(remoteHero);
+        assertEquals(77, c.targetPos);
     }
 
     @Test
     void multiplePreBufferedActions_firstIsReceived() throws Exception {
-        // Send 3 packets before starting reader; at minimum the first must arrive.
-        // (Production code processes one action per turn — the reader delivers them
-        // sequentially; this test verifies pre-buffered data is not dropped.)
+        // Send 3 requests before starting readers. v3: the per-hero inbox makes
+        // early/buffered packets safe — ALL of them must be sequenced and
+        // delivered, in order, none lost.
         for (int i = 1; i <= 3; i++) {
             clientSendsAction(i * 11);
         }
         Thread.sleep(20);
 
         NetworkManager.receiveActionAsync(remoteHero);
-        boolean got = waitForAction(remoteHero, 2000);
-        assertTrue(got, "First pre-buffered action must be received");
-        assertNotNull(remoteHero.curAction);
-        remoteHero.curAction = null;
-        remoteHero.next();
+        for (int i = 1; i <= 3; i++) {
+            boolean got = waitForAction(remoteHero, 2000);
+            assertTrue(got, "Pre-buffered action " + i + " must be received");
+            NetworkManager.Commit c = takeCommit(remoteHero);
+            assertNotNull(c);
+            assertEquals(i * 11, c.targetPos, "Pre-buffered actions must arrive in order");
+        }
     }
 
     // =========================================================================
-    // Race condition: action sent simultaneously with reader starting
+    // Race condition: request sent simultaneously with readers starting
     // =========================================================================
 
     @Test
     void actionRacesWithReaderStart_10times() throws Exception {
         for (int race = 0; race < 10; race++) {
-            remoteHero.curAction = null;
-
             CountDownLatch go = new CountDownLatch(2);
             final int pos = race * 7 + 1;
             Thread sender = new Thread(() -> {
@@ -273,8 +296,8 @@ class LanTurnSequenceTest {
 
             boolean got = waitForAction(remoteHero, 2000);
             assertTrue(got, "Race " + race + ": action must be received");
-            remoteHero.curAction = null;
-            remoteHero.next();
+            NetworkManager.Commit c = takeCommit(remoteHero);
+            assertEquals(pos, c.targetPos, "Race " + race + ": correct action");
             sender.join(500);
             reader.join(500);
         }
@@ -304,7 +327,7 @@ class LanTurnSequenceTest {
 
     @Test
     void thirdMoveWithSlowPeer_noFreeze() throws Exception {
-        // Same scenario but P2 takes > socket timeout each time
+        // Same scenario but P2 takes > the old socket timeout each time
         int slowDelay = THINK_DELAY_MS + 60;
         doLocalTurn(1);
         doRemoteTurn(2, slowDelay, "P2-slow-move1");
@@ -315,23 +338,34 @@ class LanTurnSequenceTest {
     }
 
     // =========================================================================
-    // Reader singleton guard — must not prevent re-entry after timeout
+    // Reader lifecycle — repeated ensure calls spawn no duplicates, and the
+    // persistent reader keeps receiving after quiet periods (v3 equivalent of
+    // the old "singleton guard allows re-entry after timeout" test)
     // =========================================================================
 
     @Test
     void singletonGuard_allowsReEntryAfterTimeout() throws Exception {
-        // Start reader, let it timeout, then start again — must still work
+        // Start readers, let the connection sit idle, then call again — the
+        // persistent reader must still be the SAME single thread and must
+        // still deliver the next action.
         NetworkManager.receiveActionAsync(remoteHero);
-        Thread.sleep(THINK_DELAY_MS + 100); // let timeout fire
+        int before = countNetReaderThreads();
+        assertTrue(before >= 1, "A persistent net-reader thread must be running");
 
-        // Reset guard (simulates actionReaderRunning=false after timeout)
-        // With the fix, the reader NEVER exits on timeout, so guard stays true
-        // Either way, a subsequent receiveActionAsync must eventually get the action
+        Thread.sleep(THINK_DELAY_MS + 100); // idle period (old code timed out here)
 
-        NetworkManager.receiveActionAsync(remoteHero); // second call
+        for (int i = 0; i < 5; i++) {
+            NetworkManager.receiveActionAsync(remoteHero); // repeated calls
+        }
+        int after = countNetReaderThreads();
+        assertTrue(after <= before,
+                "Repeated receiveActionAsync must not spawn duplicate net-reader threads"
+                        + " (before=" + before + " after=" + after + ")");
+
         clientSendsAction(55);
         boolean got = waitForAction(remoteHero, 3000);
-        assertTrue(got, "After timeout, re-entered reader must receive action");
+        assertTrue(got, "After idle period, persistent reader must still receive the action");
+        assertEquals(55, takeCommit(remoteHero).targetPos);
     }
 
     // =========================================================================
@@ -340,13 +374,10 @@ class LanTurnSequenceTest {
 
     @Test
     void bothPlayersActConcurrently_noContamination() throws Exception {
-        // P1 sets local action while P2's packet is in flight
-        AtomicBoolean p2Received = new AtomicBoolean(false);
-
         // Start P2's reader
         NetworkManager.receiveActionAsync(remoteHero);
 
-        // P1 acts (local) and P2 sends packet simultaneously
+        // P1 acts (local) and P2 sends its request simultaneously
         Thread p1 = new Thread(() -> doLocalTurn(100));
         Thread p2 = new Thread(() -> {
             try {
@@ -359,11 +390,11 @@ class LanTurnSequenceTest {
         p1.join(1000); p2.join(1000);
 
         boolean got = waitForAction(remoteHero, 2000);
-        p2Received.set(got);
-
-        assertTrue(p2Received.get(), "P2 action must be received while P1 also acts");
-        assertEquals(200, ((HeroAction.Move) remoteHero.curAction).dst,
+        assertTrue(got, "P2 action must be received while P1 also acts");
+        NetworkManager.Commit c = takeCommit(remoteHero);
+        assertEquals(200, c.targetPos,
                 "P2 action must not be contaminated by P1's action");
+        assertEquals(1, c.player, "commit must be owned by P2");
     }
 
     // =========================================================================
@@ -382,35 +413,35 @@ class LanTurnSequenceTest {
     void fiftyTurnsWithOccasionalSlowness_noFreeze() throws Exception {
         for (int i = 0; i < 50; i++) {
             doLocalTurn(i * 2 + 1);
-            // Every 7th turn P2 is slow (> socket timeout)
+            // Every 7th turn P2 is slow (> old socket timeout)
             long delay = (i % 7 == 0) ? THINK_DELAY_MS + 60 : 3;
             doRemoteTurn(i * 2 + 2, delay, "t" + i);
         }
     }
 
     // =========================================================================
-    // Action arrives during timeout wait — critical timing
+    // Action arrives during a quiet period — critical timing
     // =========================================================================
 
     @Test
     void actionArrivesExactlyAtTimeoutBoundary_received() throws Exception {
         NetworkManager.receiveActionAsync(remoteHero);
-        // Send at exactly the timeout boundary
+        // Send at exactly the old timeout boundary
         Thread.sleep(THINK_DELAY_MS - 10);
         clientSendsAction(33);
         boolean got = waitForAction(remoteHero, 3000);
         assertTrue(got, "Action at timeout boundary must be received");
-        remoteHero.curAction = null; remoteHero.next();
+        assertEquals(33, takeCommit(remoteHero).targetPos);
     }
 
     @Test
     void actionArrivesJustAfterTimeout_received() throws Exception {
         NetworkManager.receiveActionAsync(remoteHero);
-        // Send just AFTER the timeout fires
+        // Send just AFTER the old timeout would have fired
         Thread.sleep(THINK_DELAY_MS + 30);
         clientSendsAction(44);
         boolean got = waitForAction(remoteHero, 3000);
         assertTrue(got, "Action arriving just after timeout must be received");
-        remoteHero.curAction = null; remoteHero.next();
+        assertEquals(44, takeCommit(remoteHero).targetPos);
     }
 }

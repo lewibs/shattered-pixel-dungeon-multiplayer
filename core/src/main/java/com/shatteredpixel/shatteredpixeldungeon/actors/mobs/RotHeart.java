@@ -108,7 +108,7 @@ public class RotHeart extends Mob {
 	@Override
 	public void die(Object cause) {
 		super.die(cause);
-		Dungeon.level.drop( new Rotberry.Seed(), pos ).sprite.drop();
+		Dungeon.level.dropAndShow( new Rotberry.Seed(), pos );
 		//assign score here as player may choose to keep the rotberry seed
 		Statistics.questScores[1] += 2000;
 	}

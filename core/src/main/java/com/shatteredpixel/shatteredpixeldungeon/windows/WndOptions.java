@@ -29,7 +29,14 @@ import com.shatteredpixel.shatteredpixeldungeon.ui.RenderedTextBlock;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
 import com.watabou.noosa.Image;
 
-public class WndOptions extends Window {
+public class WndOptions extends Window implements LanChoiceWindow {
+
+	//captured at construction: option dialogs created while a LAN-synced action
+	//executes must broadcast the picked index so remote devices resolve their
+	//parked copy of this dialog identically
+	protected boolean lanSyncedChoice =
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode
+			&& com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.localItemExecution;
 
 	protected static final int WIDTH_P = 120;
 	protected static final int WIDTH_L = 144;
@@ -89,7 +96,7 @@ public class WndOptions extends Window {
 				@Override
 				protected void onClick() {
 					hide();
-					onSelect( index );
+					dispatchSelect( index );
 				}
 			};
 			if (hasIcon(i)) btn.icon(getIcon(i));
@@ -121,7 +128,35 @@ public class WndOptions extends Window {
 	protected boolean enabled( int index ){
 		return true;
 	}
-	
+
+	//owner side of a LAN-synced dialog: broadcast the index, then resolve with
+	//the deterministic sim RNG (nested prompts wrapped too)
+	private void dispatchSelect( int index ) {
+		if (lanSyncedChoice) {
+			lanSyncedChoice = false; //broadcast at most once
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.sendOptionChoice(index);
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.resolveLocalChoice(() -> onSelect(index));
+		} else {
+			onSelect(index);
+		}
+	}
+
+	@Override
+	public void selectLanChoice( int choice ) {
+		//remote side: sim context/flags are applied by the OPTION_CHOICE handler
+		if (choice >= 0) onSelect(choice);
+	}
+
+	@Override
+	public void onBackPressed() {
+		//a dismissed synced dialog must still release the remote device's parked copy
+		if (lanSyncedChoice) {
+			lanSyncedChoice = false;
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.sendOptionChoice(-1);
+		}
+		super.onBackPressed();
+	}
+
 	protected void onSelect( int index ) {}
 
 	protected boolean hasInfo( int index ) {

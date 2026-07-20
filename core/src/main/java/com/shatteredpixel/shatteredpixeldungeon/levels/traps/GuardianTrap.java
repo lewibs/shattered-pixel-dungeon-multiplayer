@@ -63,7 +63,9 @@ public class GuardianTrap extends Trap {
 			guardian.pos = Dungeon.level.randomRespawnCell( guardian );
 			if (guardian.pos != -1) {
 				GameScene.add(guardian);
-				guardian.beckon(Dungeon.hero.pos);
+				//LAN: beckon toward the char on the trap (deterministic), never the device-local hero
+				com.shatteredpixel.shatteredpixeldungeon.actors.Char trapped = com.shatteredpixel.shatteredpixeldungeon.actors.Actor.findChar(pos);
+				guardian.beckon(trapped != null ? trapped.pos : Dungeon.referenceHero().pos);
 			}
 		}
 

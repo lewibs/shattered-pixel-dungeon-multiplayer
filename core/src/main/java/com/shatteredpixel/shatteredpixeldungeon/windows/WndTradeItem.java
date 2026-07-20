@@ -89,6 +89,11 @@ public class WndTradeItem extends WndInfoItem {
 			RedButton btnSell = new RedButton( Messages.get(this, "sell", item.value()) ) {
 				@Override
 				protected void onClick() {
+					if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+						if (Dungeon.hero.queueShopSell(item, true)) Dungeon.hero.next();
+						hide();
+						return;
+					}
 					sell( item, finalShop);
 					hide();
 				}
@@ -105,6 +110,11 @@ public class WndTradeItem extends WndInfoItem {
 			RedButton btnSell1 = new RedButton( Messages.get(this, "sell_1", priceAll / item.quantity()) ) {
 				@Override
 				protected void onClick() {
+					if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+						if (Dungeon.hero.queueShopSell(item, false)) Dungeon.hero.next();
+						hide();
+						return;
+					}
 					sellOne( item, finalShop );
 					hide();
 				}
@@ -115,6 +125,11 @@ public class WndTradeItem extends WndInfoItem {
 			RedButton btnSellAll = new RedButton( Messages.get(this, "sell_all", priceAll ) ) {
 				@Override
 				protected void onClick() {
+					if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+						if (Dungeon.hero.queueShopSell(item, true)) Dungeon.hero.next();
+						hide();
+						return;
+					}
 					sell( item, finalShop );
 					hide();
 				}
@@ -148,6 +163,11 @@ public class WndTradeItem extends WndInfoItem {
 			@Override
 			protected void onClick() {
 				hide();
+				// LAN: purchases mutate shared state — route through the action queue
+				if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+					if (Dungeon.hero.queueShopBuy(heap.pos)) Dungeon.hero.next();
+					return;
+				}
 				buy( heap );
 			}
 		};
@@ -172,7 +192,7 @@ public class WndTradeItem extends WndInfoItem {
 						hide();
 
 						if (!item.doPickUp(hero)) {
-							Dungeon.level.drop(item, heap.pos).sprite.drop();
+							Dungeon.level.dropAndShow(item, heap.pos);
 						}
 					} else {
 						GameScene.show(new WndOptions(new ItemSprite(ItemSpriteSheet.ARTIFACT_ARMBAND),
@@ -190,7 +210,7 @@ public class WndTradeItem extends WndInfoItem {
 										WndTradeItem.this.hide();
 
 										if (!item.doPickUp(hero)) {
-											Dungeon.level.drop(item, heap.pos).sprite.drop();
+											Dungeon.level.dropAndShow(item, heap.pos);
 										}
 									} else {
 										for (Mob mob : Dungeon.level.mobs) {
@@ -229,6 +249,66 @@ public class WndTradeItem extends WndInfoItem {
 			owner.hide();
 		}
 		if (selling) Shopkeeper.sell();
+	}
+
+	/** LAN: executes a purchase identically on every device. Spends no time. */
+	public static void performBuy( com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero, int heapPos ) {
+		Heap heap = Dungeon.level.heaps.get( heapPos );
+		if (heap == null || heap.type != Heap.Type.FOR_SALE || heap.size() != 1) return;
+
+		Item item = heap.pickUp();
+		if (item == null) return;
+
+		int price = Shopkeeper.sellPrice( item );
+		Dungeon.gold -= price;
+		Catalog.countUses(Gold.class, price);
+
+		if (!item.doPickUp( hero )) {
+			Dungeon.level.dropAndShow( item, heapPos );
+		}
+	}
+
+	/** LAN: executes a sale identically on every device. Spends no time. */
+	public static void performSell( com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero, Item item, boolean all ) {
+		Shopkeeper shop = null;
+		for (com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob m : Dungeon.level.mobs) {
+			if (m instanceof Shopkeeper) { shop = (Shopkeeper)m; break; }
+		}
+		if (all || item.quantity() <= 1) {
+			if (item.isEquipped( hero ) && !((EquipableItem)item).doUnequip( hero, false )) {
+				return;
+			}
+			item.detachAll( hero.belongings.backpack );
+
+			if (item instanceof MissileWeapon && item.isUpgradable()){
+				Buff.affect(hero, MissileWeapon.UpgradedSetTracker.class).levelThresholds.put(((MissileWeapon) item).setID, Integer.MAX_VALUE);
+			}
+
+			//selling items in the sell interface doesn't spend time
+			hero.spend(-hero.cooldown());
+
+			new Gold( item.value() ).doPickUp( hero );
+
+			if (shop != null){
+				shop.buybackItems.add(item);
+				while (shop.buybackItems.size() > Shopkeeper.MAX_BUYBACK_HISTORY){
+					shop.buybackItems.remove(0);
+				}
+			}
+		} else {
+			Item detached = item.detach( hero.belongings.backpack );
+
+			hero.spend(-hero.cooldown());
+
+			new Gold( detached.value() ).doPickUp( hero );
+
+			if (shop != null){
+				shop.buybackItems.add(detached);
+				while (shop.buybackItems.size() > Shopkeeper.MAX_BUYBACK_HISTORY){
+					shop.buybackItems.remove(0);
+				}
+			}
+		}
 	}
 
 	public static void sell( Item item ) {
@@ -299,7 +379,7 @@ public class WndTradeItem extends WndInfoItem {
 		Catalog.countUses(Gold.class, price);
 		
 		if (!item.doPickUp( Dungeon.hero )) {
-			Dungeon.level.drop( item, heap.pos ).sprite.drop();
+			Dungeon.level.dropAndShow( item, heap.pos );
 		}
 	}
 }

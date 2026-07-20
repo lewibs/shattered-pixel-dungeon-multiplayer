@@ -87,15 +87,17 @@ public class Heap implements Bundlable {
 			Wraith.spawnAround( hero.pos );
 			break;
 		case REMAINS:
-		case SKELETON:
-			CellEmitter.center( pos ).start(Speck.factory(Speck.RATTLE), 0.1f, 3);
+		case SKELETON: {
+			com.watabou.noosa.particles.Emitter e = CellEmitter.center( pos );
+			if (e != null) e.start(Speck.factory(Speck.RATTLE), 0.1f, 3);
 			break;
+		}
 		default:
 		}
 		
 		if (haunted){
 			if (Wraith.spawnAt( pos ) == null) {
-				hero.sprite.emitter().burst( ShadowParticle.CURSE, 6 );
+				if (hero.sprite != null) hero.sprite.emitter().burst( ShadowParticle.CURSE, 6 );
 				hero.damage( hero.HP / 2, this );
 				if (!hero.isAlive()){
 					Dungeon.fail(Wraith.class);
@@ -111,8 +113,10 @@ public class Heap implements Bundlable {
 			items.addAll(0, bonus);
 			RingOfWealth.showFlareForBonusDrop(sprite);
 		}
-		sprite.link();
-		sprite.drop();
+		if (sprite != null) {
+			sprite.link();
+			sprite.drop();
+		}
 	}
 	
 	public Heap setHauntedIfCursed(){

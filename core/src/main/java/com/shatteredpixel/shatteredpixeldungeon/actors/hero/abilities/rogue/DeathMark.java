@@ -89,7 +89,9 @@ public class DeathMark extends ArmorAbility {
 		}
 
 		if (ch != null){
-			Buff.affect(ch, DeathMarkTracker.class, DeathMarkTracker.DURATION).setInitialHP(ch.HP);
+			DeathMarkTracker mark = Buff.affect(ch, DeathMarkTracker.class, DeathMarkTracker.DURATION);
+			mark.setInitialHP(ch.HP);
+			mark.markerID = hero.id(); //LAN: talents key off the marking rogue, not Dungeon.hero
 		}
 
 		armor.charge -= chargeUse( hero );
@@ -151,6 +153,7 @@ public class DeathMark extends ArmorAbility {
 		public static float DURATION = 5f;
 
 		int initialHP = 0;
+		int markerID = -1; //LAN: id of the hero who marked, for talent attribution
 
 		{
 			type = buffType.NEGATIVE;
@@ -198,26 +201,31 @@ public class DeathMark extends ArmorAbility {
 				Sample.INSTANCE.play(Assets.Sounds.HIT_STAB);
 				Sample.INSTANCE.play(Assets.Sounds.HIT_STRONG);
 				target.die(this);
-				int shld = Math.round(initialHP * (0.125f*Dungeon.hero.pointsInTalent(Talent.DEATHLY_DURABILITY)));
+				Actor markA = Actor.findById(markerID);
+				Hero marker = markA instanceof Hero ? (Hero)markA : Dungeon.referenceHero();
+				int shld = Math.round(initialHP * (0.125f*marker.pointsInTalent(Talent.DEATHLY_DURABILITY)));
 				if (shld > 0 && target.alignment != Char.Alignment.ALLY){
-					Dungeon.hero.sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(shld), FloatingText.SHIELDING);
-					Buff.affect(Dungeon.hero, Barrier.class).setShield(shld);
+					if (marker.sprite != null) marker.sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(shld), FloatingText.SHIELDING);
+					Buff.affect(marker, Barrier.class).setShield(shld);
 				}
 			}
 		}
 
 		private static String INITIAL_HP = "initial_hp";
+		private static String MARKER_ID = "marker_id";
 
 		@Override
 		public void storeInBundle(Bundle bundle) {
 			super.storeInBundle(bundle);
 			bundle.put(INITIAL_HP, initialHP);
+			bundle.put(MARKER_ID, markerID);
 		}
 
 		@Override
 		public void restoreFromBundle(Bundle bundle) {
 			super.restoreFromBundle(bundle);
 			initialHP = bundle.getInt(INITIAL_HP);
+			if (bundle.contains(MARKER_ID)) markerID = bundle.getInt(MARKER_ID);
 		}
 	}
 

@@ -276,6 +276,11 @@ class LanPassPlaySyncTest {
         NetworkManager.setIsHostForTesting(true);
         NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
+        // Discard local heroes' performed-op sends: the remote side is fed
+        // manually, and this keeps a client-side local hero from blocking on a
+        // commit echo that no leader will send.
+        NetworkManager.sendActionOverride = (a, h) -> {};
         Dungeon.hero = hero0;
     }
 
@@ -285,6 +290,8 @@ class LanPassPlaySyncTest {
         NetworkManager.setIsHostForTesting(false);
         NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
+        NetworkManager.sendActionOverride = null;
         if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
         if (hostSideSocket != null && !hostSideSocket.isClosed()) hostSideSocket.close();
         if (serverSocket   != null && !serverSocket.isClosed())   serverSocket.close();
@@ -301,35 +308,31 @@ class LanPassPlaySyncTest {
     // Helpers (same patterns as existing LAN tests)
     // -------------------------------------------------------------------------
 
-    /** Wait for remoteHero.curAction to be set (mirrors Hero.act() wait block). */
+    // v3: commits queue in the hero inbox; curAction is decoded from it inside act().
     boolean waitFor(Hero h, long maxMs) throws InterruptedException {
         synchronized (h.lanActionLock) {
             long deadline = System.currentTimeMillis() + maxMs;
-            while (h.curAction == null && NetworkManager.lanMode) {
+            while (h.lanActionInbox.isEmpty() && h.curAction == null && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 h.lanActionLock.wait(rem);
             }
+            return !h.lanActionInbox.isEmpty() || h.curAction != null;
         }
-        return h.curAction != null;
     }
 
-    /** Send a MOVE ACTION packet from the CLIENT socket. */
+    private int hostReqSeq = 0;
+    private int clientCommitSeq = -1;
+
+    /** Fake client → host device: a MOVE REQUEST the leader sequences. */
     void clientSendsAction(int heroId, int targetPos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(heroId);
-        clientOut.writeByte(NetworkManager.ActionType.MOVE);
-        clientOut.writeInt(targetPos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++hostReqSeq, NetworkManager.ActionType.MOVE, targetPos);
     }
 
-    /** Send a MOVE ACTION packet from the HOST socket. */
+    /** Fake leader → client device: a MOVE COMMIT applied in globalSeq order. */
     void hostSendsAction(int heroId, int targetPos) throws IOException {
-        hostOut.writeByte(NetworkManager.PacketType.ACTION);
-        hostOut.writeInt(heroId);
-        hostOut.writeByte(NetworkManager.ActionType.MOVE);
-        hostOut.writeInt(targetPos);
-        hostOut.flush();
+        if (clientCommitSeq < 0) clientCommitSeq = NetworkManager.getGlobalSeqForTesting();
+        LanTestProtocol.writeActionCommit(hostOut, ++clientCommitSeq, heroId, 0, NetworkManager.ActionType.MOVE, targetPos);
     }
 
     /** Reset hero state between perspective runs. */
@@ -374,11 +377,12 @@ class LanPassPlaySyncTest {
         Thread.sleep(20);
         clientSendsAction(1, POS_MOB);     // hero1 on client sends ATTACK
         assertTrue(waitFor(hero1, 2000), "Host must receive hero1's action via socket");
-        assertNotNull(hero1.curAction);
+        assertFalse(hero1.lanActionInbox.isEmpty(), "committed op must be queued in hero1's inbox");
 
         // Execute the kill — same as Hero.actAttack() calling attack() → die()
         mobA.die(hero1);
         hero1.curAction = null;
+        hero1.lanActionInbox.clear();
 
         GameState stateA = new GameState(hero0, hero1, mobA);
         Random.popGenerator();
@@ -780,7 +784,10 @@ class LanPassPlaySyncTest {
         Thread.sleep(20);
         clientSendsAction(1, 42);
         assertTrue(waitFor(hero1, 2000), "Host must receive client action via socket");
-        assertNotNull(hero1.curAction);
+        // v3: the committed op waits in the hero's inbox until act() decodes it.
+        NetworkManager.Commit c = hero1.lanActionInbox.peekFirst();
+        assertNotNull(c, "committed op must be queued in hero1's inbox");
+        assertEquals(42, NetworkManager.decodeAction(c.actionType, c.targetPos).dst);
     }
 
     /** Client receives hero0's action via socket (mirrors LanClientPerspectiveTest). */
@@ -793,7 +800,9 @@ class LanPassPlaySyncTest {
         Thread.sleep(20);
         hostSendsAction(0, 77);
         assertTrue(waitFor(hero0, 2000), "Client must receive host action via socket");
-        assertNotNull(hero0.curAction);
-        assertEquals(77, ((HeroAction.Move) hero0.curAction).dst);
+        // v3: the committed op waits in the hero's inbox until act() decodes it.
+        NetworkManager.Commit c = hero0.lanActionInbox.peekFirst();
+        assertNotNull(c, "committed op must be queued in hero0's inbox");
+        assertEquals(77, ((HeroAction.Move) NetworkManager.decodeAction(c.actionType, c.targetPos)).dst);
     }
 }

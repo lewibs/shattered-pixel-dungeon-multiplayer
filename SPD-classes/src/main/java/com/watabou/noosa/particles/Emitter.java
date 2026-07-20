@@ -88,8 +88,11 @@ public class Emitter extends Group {
 	}
 
 	public void start( Factory factory, float interval, int quantity ) {
-		//by default the delay is random, up to the interval
-		startDelayed( factory, interval, quantity, Random.Float(interval));
+		//by default the delay is random, up to the interval.
+		//cosmetic draw: emitter starts are often triggered from simulation code
+		//behind per-device visibility checks — they must never consume from the
+		//deterministic gameplay generator (LAN lockstep would desync)
+		startDelayed( factory, interval, quantity, Random.cosmeticFloat(interval));
 	}
 
 	public void startDelayed( Factory factory, float interval, int quantity, float delay ) {

@@ -88,4 +88,99 @@ public class HeroAction {
 			this.target = target;
 		}
 	}
+
+	/**
+	 * Use an item from the hero's inventory. bagOrdinal and slotIndex identify
+	 * the item's location within the hero's Belongings (0 = backpack, slot = index
+	 * in bag.items). Packed into the wire-protocol targetPos as
+	 * (bagOrdinal << 16) | slotIndex so it fits the existing 4-byte field.
+	 */
+	public static class UseItem extends HeroAction {
+		public static final int DEFAULT_ACTION = 0xFF;
+
+		public final int bagOrdinal;
+		public final int slotIndex;
+		//index into item.actions(hero), or DEFAULT_ACTION for the default verb —
+		//the list is derived from synced state, so the index means the same thing
+		//on every device
+		public final int actionIdx;
+		public UseItem(int bagOrdinal, int slotIndex) {
+			this(bagOrdinal, slotIndex, DEFAULT_ACTION);
+		}
+		public UseItem(int bagOrdinal, int slotIndex, int actionIdx) {
+			this.bagOrdinal = bagOrdinal;
+			this.slotIndex  = slotIndex;
+			this.actionIdx  = actionIdx;
+		}
+	}
+
+	/**
+	 * Use an item AT a target cell — wand zaps and thrown items. The verb says
+	 * how the item is applied. Packed into the wire-protocol targetPos as
+	 * (bagOrdinal &lt;&lt; 28) | (slotIndex &lt;&lt; 18) | (verb &lt;&lt; 16) | cell.
+	 */
+	public static class UseItemAt extends HeroAction {
+		public static final int VERB_ZAP   = 0;
+		public static final int VERB_THROW = 1;
+		public static final int VERB_SHOOT = 2;
+
+		public final int bagOrdinal;
+		public final int slotIndex;
+		public final int verb;
+		public final int cell;
+		public UseItemAt(int bagOrdinal, int slotIndex, int verb, int cell) {
+			this.bagOrdinal = bagOrdinal;
+			this.slotIndex  = slotIndex;
+			this.verb       = verb;
+			this.cell       = cell;
+			this.dst        = cell;
+		}
+	}
+
+	/** Buy the single for-sale item on the heap at dst. Spends no time. */
+	public static class ShopBuy extends HeroAction {
+		public ShopBuy(int heapPos) {
+			this.dst = heapPos;
+		}
+	}
+
+	/**
+	 * Sell an inventory item to the shop (all == false sells one of a stack).
+	 * Packed as (bagOrdinal &lt;&lt; 28) | (slotIndex &lt;&lt; 18) | (all ? 1 : 0). Spends no time.
+	 */
+	public static class ShopSell extends HeroAction {
+		public final int bagOrdinal;
+		public final int slotIndex;
+		public final boolean all;
+		public ShopSell(int bagOrdinal, int slotIndex, boolean all) {
+			this.bagOrdinal = bagOrdinal;
+			this.slotIndex  = slotIndex;
+			this.all        = all;
+		}
+	}
+
+	/**
+	 * Wait in place for one turn (fullRest=false) or begin resting until
+	 * interrupted (fullRest=true). Routed through the action queue in LAN games so
+	 * the turn is transmitted to peers — waiting used to spend time locally with no
+	 * packet, freezing the remote simulation. fullRest rides in the wire-protocol
+	 * targetPos field (0 or 1).
+	 */
+	public static class Rest extends HeroAction {
+		public final boolean fullRest;
+		public Rest(boolean fullRest) {
+			this.fullRest = fullRest;
+			this.dst = fullRest ? 1 : 0;
+		}
+	}
+
+	/**
+	 * Intentionally search surrounding cells (spends time). Routed through the
+	 * action queue in LAN games for the same reason as Rest.
+	 */
+	public static class Search extends HeroAction {
+		public Search() {
+			this.dst = 0;
+		}
+	}
 }

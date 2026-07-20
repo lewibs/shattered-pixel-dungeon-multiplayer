@@ -105,7 +105,7 @@ public class HornOfPlenty extends Artifact {
 					satietyPerCharge /= 3;
 				}
 
-				Hunger hunger = Buff.affect(Dungeon.hero, Hunger.class);
+				Hunger hunger = Buff.affect(hero, Hunger.class); //LAN: the eating hero
 				int chargesToUse = Math.max( 1, hunger.hunger() / satietyPerCharge);
 				if (chargesToUse > charge) chargesToUse = charge;
 

@@ -77,8 +77,10 @@ public class DisarmingTrap extends Trap{
 			CellEmitter.get(pos).burst(Speck.factory(Speck.LIGHT), 4);
 		}
 
-		if (Dungeon.hero.pos == pos && !Dungeon.hero.flying){
-			Hero hero = Dungeon.hero;
+		//LAN: disarm whichever hero stands on the trap, not the device-local one
+		com.shatteredpixel.shatteredpixeldungeon.actors.Char trapped = Actor.findChar(pos);
+		if (trapped instanceof Hero && !trapped.flying){
+			Hero hero = (Hero) trapped;
 			KindOfWeapon weapon = hero.belongings.weapon;
 
 			if (weapon != null && !weapon.cursed) {

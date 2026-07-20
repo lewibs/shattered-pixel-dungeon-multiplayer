@@ -64,6 +64,16 @@ import com.watabou.utils.Random;
 
 public abstract class YogFist extends Mob {
 
+	//LAN: iterate all heroes in fixed order; falls back to the single local hero
+	protected static java.util.List<com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero> heroesOrLocal() {
+		if (Dungeon.heroes != null && !Dungeon.heroes.isEmpty()) {
+			return new java.util.ArrayList<>(Dungeon.heroes);
+		}
+		java.util.List<com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero> single = new java.util.ArrayList<>();
+		if (Dungeon.hero != null) single.add(Dungeon.hero);
+		return single;
+	}
+
 	{
 		HP = HT = 300;
 		defenseSkill = 20;
@@ -531,7 +541,10 @@ public abstract class YogFist extends Mob {
 			super.damage(dmg, src);
 			if (isAlive() && beforeHP > HT/2 && HP <= HT/2){
 				HP = HT/2;
-				Buff.prolong( Dungeon.hero, Blindness.class, Blindness.DURATION*1.5f );
+				//LAN: affect every hero — Dungeon.hero is the device-local hero only
+				for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : heroesOrLocal()) {
+					Buff.prolong( h, Blindness.class, Blindness.DURATION*1.5f );
+				}
 				int i;
 				do {
 					i = Random.Int(Dungeon.level.length());
@@ -544,7 +557,9 @@ public abstract class YogFist extends Mob {
 				GameScene.flash(0x80FFFFFF);
 				GLog.w( Messages.get( this, "teleport" ));
 			} else if (!isAlive()){
-				Buff.prolong( Dungeon.hero, Blindness.class, Blindness.DURATION*3f );
+				for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : heroesOrLocal()) {
+					Buff.prolong( h, Blindness.class, Blindness.DURATION*3f );
+				}
 				GameScene.flash(0x80FFFFFF);
 			}
 		}
@@ -601,9 +616,11 @@ public abstract class YogFist extends Mob {
 			super.damage(dmg, src);
 			if (isAlive() && beforeHP > HT/2 && HP <= HT/2){
 				HP = HT/2;
-				Light l = Dungeon.hero.buff(Light.class);
-				if (l != null){
-					l.detach();
+				for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : heroesOrLocal()) {
+					Light l = h.buff(Light.class);
+					if (l != null){
+						l.detach();
+					}
 				}
 				int i;
 				do {
@@ -617,9 +634,11 @@ public abstract class YogFist extends Mob {
 				GameScene.flash(0, false);
 				GLog.w( Messages.get( this, "teleport" ));
 			} else if (!isAlive()){
-				Light l = Dungeon.hero.buff(Light.class);
-				if (l != null){
-					l.detach();
+				for (com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero h : heroesOrLocal()) {
+					Light l = h.buff(Light.class);
+					if (l != null){
+						l.detach();
+					}
 				}
 				GameScene.flash(0, false);
 			}

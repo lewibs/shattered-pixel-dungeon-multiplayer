@@ -817,7 +817,13 @@ public class CharSprite extends MovieClip implements Tweener.Listener, MovieClip
 				GameScene.ripple( ch.pos );
 			}
 			if (jumpCallback != null) {
-				jumpCallback.call();
+				//sim context: jump landings resolve simulation effects — see onComplete(Animation)
+				com.watabou.utils.Random.enterSimContext();
+				try {
+					jumpCallback.call();
+				} finally {
+					com.watabou.utils.Random.exitSimContext();
+				}
 			}
 			GameScene.sortMobSprites();
 
@@ -828,7 +834,12 @@ public class CharSprite extends MovieClip implements Tweener.Listener, MovieClip
 
 				motion.killAndErase();
 				motion = null;
-				ch.onMotionComplete();
+				com.watabou.utils.Random.enterSimContext();
+				try {
+					ch.onMotionComplete();
+				} finally {
+					com.watabou.utils.Random.exitSimContext();
+				}
 
 				GameScene.sortMobSprites();
 				notifyAll();
@@ -839,25 +850,34 @@ public class CharSprite extends MovieClip implements Tweener.Listener, MovieClip
 
 	@Override
 	public synchronized void onComplete( Animation anim ) {
-		
-		if (animCallback != null) {
-			Callback executing = animCallback;
-			animCallback = null;
-			executing.call();
-		} else {
-			
-			if (anim == attack) {
-				
-				idle();
-				ch.onAttackComplete();
-				
-			} else if (anim == operate) {
-				
-				idle();
-				ch.onOperateComplete();
-				
+
+		//animation completions resolve simulation effects (attack damage, chest
+		//opening, mining) on the render thread while the actor loop is parked.
+		//Their RNG draws must come from the deterministic sim generator in LAN
+		//games or devices roll different results.
+		com.watabou.utils.Random.enterSimContext();
+		try {
+			if (animCallback != null) {
+				Callback executing = animCallback;
+				animCallback = null;
+				executing.call();
+			} else {
+
+				if (anim == attack) {
+
+					idle();
+					ch.onAttackComplete();
+
+				} else if (anim == operate) {
+
+					idle();
+					ch.onOperateComplete();
+
+				}
+
 			}
-			
+		} finally {
+			com.watabou.utils.Random.exitSimContext();
 		}
 	}
 

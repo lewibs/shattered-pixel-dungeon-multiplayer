@@ -19,16 +19,19 @@ import static org.junit.jupiter.api.Assertions.*;
  * Integration tests using REAL TCP sockets to simulate two devices.
  *
  * These tests wire actual DataInputStream/DataOutputStream into NetworkManager
- * and call receiveActionAsync() exactly as production code does, triggering
- * real socket behaviour including SocketTimeoutException.
+ * and call receiveActionAsync() exactly as production code does, exercising the
+ * real persistent per-socket reader threads.
  *
- * Goal: find tests that ACTUALLY FAIL (freeze/deadlock), then add the fix.
+ * v3 leader-sequenced commit protocol: this device is the LEADER. The remote
+ * player (player 1) submits REQUEST frames; the leader sequences each into a
+ * COMMIT delivered to remoteHero.lanActionInbox. The reader has no read
+ * timeout — a quiet stream must never kill it.
  */
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
 class LanRealSocketTest {
 
     // Simulated "think time" delay — no actual socket timeout set
-    // (production uses THINK_DELAY_MS=0 with periodic PING for disconnect detection)
+    // (production uses no read timeout, with periodic PING for disconnect detection)
     private static final int THINK_DELAY_MS = 200;
 
     private ServerSocket serverSocket;
@@ -42,6 +45,9 @@ class LanRealSocketTest {
 
     private Hero localHero;   // heroes[0]  — local on this device (host)
     private Hero remoteHero;  // heroes[1]  — remote (client's hero)
+
+    // Per-client contiguous request counter (v3 leader dedupes by clientSeq)
+    private int clientSeq = 0;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -57,7 +63,7 @@ class LanRealSocketTest {
         try { hostSideSocket = serverSide.get(2, TimeUnit.SECONDS); }
         catch (InterruptedException | ExecutionException | TimeoutException e) { throw new IOException("setup failed", e); }
 
-        // No socket timeout — matches production (THINK_DELAY_MS=0)
+        // No socket timeout — matches production
 
         hostIn   = new DataInputStream(hostSideSocket.getInputStream());
         hostOut  = new DataOutputStream(hostSideSocket.getOutputStream());
@@ -79,14 +85,17 @@ class LanRealSocketTest {
         NetworkManager.lanMode = true;
         NetworkManager.setIsHostForTesting(true);     // host reads from ins.get(0)
         NetworkManager.localPlayerIndex = 0;          // hero[0] is local (host)
-        NetworkManager.resetActionReaderForTesting(); // reset singleton guard
+        NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
     }
 
     @AfterEach
     void tearDown() throws IOException {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         if (clientSocket    != null && !clientSocket.isClosed())    clientSocket.close();
         if (hostSideSocket  != null && !hostSideSocket.isClosed())  hostSideSocket.close();
         if (serverSocket    != null && !serverSocket.isClosed())    serverSocket.close();
@@ -100,26 +109,29 @@ class LanRealSocketTest {
     // Helpers
     // -------------------------------------------------------------------------
 
-    /** Write an ACTION packet from the client to the host (simulates peer moving). */
+    /** Client submits a Move op to the leader (simulates peer moving). heroId is
+     *  implicit in v3 — the leader stamps the player index from the socket slot. */
     void clientSendsAction(int heroId, int targetPos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(heroId);
-        clientOut.writeByte(0); // Move action type
-        clientOut.writeInt(targetPos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++clientSeq, (byte) 0, targetPos);
     }
 
-    /** Run the remote-hero wait as Hero.act() does it. */
+    /** Run the remote-hero wait as Hero.act() does it: wait for an inbox commit. */
     boolean runRemoteWait(Hero h, long maxMs) throws InterruptedException {
         synchronized (h.lanActionLock) {
             long deadline = System.currentTimeMillis() + maxMs;
-            while (h.curAction == null && NetworkManager.lanMode) {
+            while (h.lanActionInbox.isEmpty() && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 h.lanActionLock.wait(rem);
             }
+            return !h.lanActionInbox.isEmpty();
         }
-        return h.curAction != null;
+    }
+
+    NetworkManager.Commit takeCommit(Hero h) {
+        synchronized (h.lanActionLock) {
+            return h.lanActionInbox.pollFirst();
+        }
     }
 
     // =========================================================================
@@ -135,23 +147,25 @@ class LanRealSocketTest {
 
         boolean got = runRemoteWait(remoteHero, 2000);
         assertTrue(got, "Immediate delivery must be received");
-        assertNotNull(remoteHero.curAction);
+        NetworkManager.Commit c = takeCommit(remoteHero);
+        assertNotNull(c);
+        assertEquals(42, c.targetPos);
     }
 
     // =========================================================================
-    // Test 2: action arrives AFTER socket timeout fires
+    // Test 2: action arrives AFTER a long quiet period
     //
-    // With current code: reader gets SocketTimeoutException → breaks loop →
-    // nobody ever sets curAction → game freezes.
-    // This test SHOULD FAIL with the unfixed code.
+    // With the old per-turn reader: the reader got SocketTimeoutException,
+    // broke its loop, and the action was lost — permanent freeze.
+    // v3: the persistent reader has no read timeout and must stay alive.
     // =========================================================================
 
     @Test
     void actionAfterSocketTimeout_mustNotFreezeGame() throws Exception {
-        // Start the real reader (uses actual hostIn socket)
+        // Start the real readers (use the actual hostIn socket)
         NetworkManager.receiveActionAsync(remoteHero);
 
-        // Wait longer than THINK_DELAY_MS so the reader's readByte() times out
+        // Wait longer than the old socket timeout used to be
         Thread.sleep(THINK_DELAY_MS + 100);
 
         // NOW send the action — with broken code the reader is dead, so this is lost
@@ -160,28 +174,30 @@ class LanRealSocketTest {
         // Game must still receive the action within 2s
         boolean got = runRemoteWait(remoteHero, 2000);
         assertTrue(got,
-                "Action arriving AFTER socket timeout must still be received. " +
-                "If this fails, the reader exited on SocketTimeoutException and " +
+                "Action arriving AFTER a quiet period must still be received. " +
+                "If this fails, the reader died on the quiet stream and " +
                 "the game is permanently frozen — this is the real-world deadlock.");
+        assertEquals(99, takeCommit(remoteHero).targetPos);
     }
 
     // =========================================================================
-    // Test 3: multiple timeouts then action
+    // Test 3: multiple quiet periods then action
     // =========================================================================
 
     @Test
     void threeTimeoutsThenAction_mustStillReceive() throws Exception {
         NetworkManager.receiveActionAsync(remoteHero);
 
-        // Let the reader time out 3 times (3 × THINK_DELAY_MS)
+        // Stay quiet for 3 × the old timeout period
         Thread.sleep((THINK_DELAY_MS + 50) * 3);
 
-        // Send action after multiple timeouts
+        // Send action after the long quiet period
         clientSendsAction(1, 7);
 
         boolean got = runRemoteWait(remoteHero, 2000);
         assertTrue(got,
-                "After 3 socket timeouts the reader must still be alive and receive the action");
+                "After a long quiet period the reader must still be alive and receive the action");
+        assertEquals(7, takeCommit(remoteHero).targetPos);
     }
 
     // =========================================================================
@@ -200,8 +216,7 @@ class LanRealSocketTest {
         Thread.sleep(20);
         clientSendsAction(1, 2);
         assertTrue(runRemoteWait(remoteHero, 2000), "Round 2: remote must receive action");
-        remoteHero.curAction = null;
-        remoteHero.next();
+        assertEquals(2, takeCommit(remoteHero).targetPos);
 
         // Round 3: local hero acts again
         localHero.curAction = new HeroAction.Move(3);
@@ -210,16 +225,15 @@ class LanRealSocketTest {
     }
 
     // =========================================================================
-    // Test 5: slow peer (think time > socket timeout) across multiple rounds
+    // Test 5: slow peer (think time > old socket timeout) across multiple rounds
     // =========================================================================
 
     @Test
     void slowPeer_multipleRounds_noFreeze() throws Exception {
         for (int round = 0; round < 3; round++) {
-            remoteHero.curAction = null;
             NetworkManager.receiveActionAsync(remoteHero);
 
-            // Peer "thinks" for longer than socket timeout
+            // Peer "thinks" for longer than the old socket timeout
             Thread.sleep(THINK_DELAY_MS + 80);
 
             // Then sends action
@@ -228,31 +242,47 @@ class LanRealSocketTest {
             boolean got = runRemoteWait(remoteHero, 2000);
             assertTrue(got,
                     "Slow peer round " + round + ": action must be received even after think time > socket timeout");
-            remoteHero.curAction = null;
-            remoteHero.next();
+            assertEquals(round * 10, takeCommit(remoteHero).targetPos);
         }
     }
 
     // =========================================================================
-    // Test 6: reader must survive disconnect then reconnect path
+    // Test 6: repeated ensureGameplayReaders calls are idempotent — no duplicate
+    // readers, and the (single) persistent reader keeps receiving
     // =========================================================================
 
     @Test
     void readerSurvivesTimeout_singletonGuardResets() throws Exception {
-        // Start reader
+        // Start readers
         NetworkManager.receiveActionAsync(remoteHero);
+        int before = countNetReaderThreads();
+        assertTrue(before >= 1, "A persistent net-reader thread must be running");
 
-        // Wait for timeout to fire
+        // Long quiet period (the old code's timeout would fire here)
         Thread.sleep(THINK_DELAY_MS + 100);
 
-        // actionReaderRunning should be false again so a new reader can start
-        // (if the reader broke on timeout and reset the flag)
-        // OR it should still be true (if the reader continued instead of breaking)
-        // Either way, calling receiveActionAsync again must work
-        NetworkManager.receiveActionAsync(remoteHero); // second call — must not be a no-op forever
+        // Calling receiveActionAsync again must be a safe no-op: the SAME
+        // persistent reader keeps serving, no duplicate thread is spawned.
+        NetworkManager.receiveActionAsync(remoteHero);
+        int after = countNetReaderThreads();
+        assertTrue(after <= before,
+                "Repeated receiveActionAsync must not spawn duplicate net-reader threads"
+                        + " (before=" + before + " after=" + after + ")");
 
         clientSendsAction(1, 55);
         boolean got = runRemoteWait(remoteHero, 2000);
-        assertTrue(got, "After reader restart, action must be receivable");
+        assertTrue(got, "After repeated ensure calls, action must be receivable");
+        assertEquals(55, takeCommit(remoteHero).targetPos);
+    }
+
+    /** Counts live persistent gameplay reader threads. */
+    static int countNetReaderThreads() {
+        Thread[] all = new Thread[Thread.activeCount() * 2 + 16];
+        int n = Thread.enumerate(all);
+        int count = 0;
+        for (int i = 0; i < n; i++) {
+            if (all[i] != null && all[i].isAlive() && all[i].getName().startsWith("net-reader-")) count++;
+        }
+        return count;
     }
 }

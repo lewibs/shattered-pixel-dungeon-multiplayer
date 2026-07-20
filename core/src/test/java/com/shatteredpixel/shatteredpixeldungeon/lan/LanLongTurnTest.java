@@ -12,7 +12,6 @@ import java.net.*;
 import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.atomic.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,8 +22,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * wildly variable), the game must never freeze and must always deliver the
  * action when it finally arrives.
  *
- * These tests preserve the old "wait in the middle" style so we remain
- * confident that long turns work alongside the new no-timeout + PING design.
+ * v3 leader-sequenced commit protocol: this device is the LEADER. The remote
+ * player (player 1) submits REQUEST frames after "thinking"; the leader
+ * sequences each into a COMMIT delivered to remoteHero.lanActionInbox. The
+ * persistent per-socket reader has no read timeout, so arbitrarily long
+ * think times (with or without PING keepalives) must never lose an op.
  */
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
 class LanLongTurnTest {
@@ -38,6 +40,9 @@ class LanLongTurnTest {
     private DataOutputStream clientOut;
     private Hero localHero;
     private Hero remoteHero;
+
+    // Per-client contiguous request counter (v3 leader dedupes by clientSeq)
+    private int clientSeq = 0;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -69,13 +74,16 @@ class LanLongTurnTest {
         NetworkManager.setIsHostForTesting(true);
         NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
     }
 
     @AfterEach
     void tearDown() throws IOException {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
         if (hostSideSocket != null && !hostSideSocket.isClosed()) hostSideSocket.close();
         if (serverSocket   != null && !serverSocket.isClosed())   serverSocket.close();
@@ -89,39 +97,41 @@ class LanLongTurnTest {
     // -------------------------------------------------------------------------
 
     void sendAction(int pos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1);
-        clientOut.writeByte(0);
-        clientOut.writeInt(pos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++clientSeq, (byte) 0, pos);
     }
 
     void sendPing() throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.PING);
-        clientOut.flush();
+        synchronized (clientOut) {
+            clientOut.writeByte(NetworkManager.PacketType.PING);
+            clientOut.flush();
+        }
     }
 
     boolean waitFor(Hero h, long maxMs) throws InterruptedException {
         synchronized (h.lanActionLock) {
             long deadline = System.currentTimeMillis() + maxMs;
-            while (h.curAction == null && NetworkManager.lanMode) {
+            while (h.lanActionInbox.isEmpty() && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 h.lanActionLock.wait(rem);
             }
+            return !h.lanActionInbox.isEmpty();
         }
-        return h.curAction != null;
+    }
+
+    NetworkManager.Commit takeCommit(Hero h) {
+        synchronized (h.lanActionLock) {
+            return h.lanActionInbox.pollFirst();
+        }
     }
 
     void remoteTurn(int pos, long thinkMs) throws Exception {
-        remoteHero.curAction = null;
         NetworkManager.receiveActionAsync(remoteHero);
         Thread.sleep(thinkMs);   // peer "thinking" — no timeout fires
         sendAction(pos);
         assertTrue(waitFor(remoteHero, 3000), "Action must arrive after " + thinkMs + "ms think");
-        assertEquals(pos, ((HeroAction.Move) remoteHero.curAction).dst);
-        remoteHero.curAction = null;
-        remoteHero.next();
+        NetworkManager.Commit c = takeCommit(remoteHero);
+        assertEquals(pos, c.targetPos);
     }
 
     void localTurn(int pos) {
@@ -194,12 +204,11 @@ class LanLongTurnTest {
     @Test
     void longThinkWithPings_p1p2p1p2_noFreeze() throws Exception {
         // Production: pings every 5s during think time
-        // Test: pings every 50ms during 500ms think
+        // Test: pings every 60ms during think
 
         localTurn(1);
 
-        // Remote turn: reader starts, pings arrive during think, then real action
-        remoteHero.curAction = null;
+        // Remote turn: readers running, pings arrive during think, then real request
         NetworkManager.receiveActionAsync(remoteHero);
         for (int p = 0; p < 5; p++) {
             Thread.sleep(60);
@@ -207,12 +216,11 @@ class LanLongTurnTest {
         }
         sendAction(20);
         assertTrue(waitFor(remoteHero, 3000), "Action after pings must arrive");
-        remoteHero.curAction = null; remoteHero.next();
+        assertEquals(20, takeCommit(remoteHero).targetPos);
 
         localTurn(3);
 
         // Third move — the original freeze scenario, now with pings
-        remoteHero.curAction = null;
         NetworkManager.receiveActionAsync(remoteHero);
         for (int p = 0; p < 5; p++) {
             Thread.sleep(60);
@@ -220,7 +228,7 @@ class LanLongTurnTest {
         }
         sendAction(40);
         assertTrue(waitFor(remoteHero, 3000), "Third move with pings must not freeze");
-        remoteHero.curAction = null; remoteHero.next();
+        assertEquals(40, takeCommit(remoteHero).targetPos);
     }
 
     @Test
@@ -231,6 +239,7 @@ class LanLongTurnTest {
         Thread.sleep(600);
         sendAction(77);
         assertTrue(waitFor(remoteHero, 3000), "Action after pings + long wait must arrive");
+        assertEquals(77, takeCommit(remoteHero).targetPos);
     }
 
     // =========================================================================
@@ -239,7 +248,7 @@ class LanLongTurnTest {
 
     @Test
     void waitInMiddle_thenAction_originalStyle() throws Exception {
-        // Original test style: reader starts, nothing happens for a while, then action
+        // Original test style: readers start, nothing happens for a while, then action
         NetworkManager.receiveActionAsync(remoteHero);
         // Deliberately wait without sending anything — simulating a slow peer
         Thread.sleep(800);
@@ -247,18 +256,18 @@ class LanLongTurnTest {
         sendAction(55);
         boolean got = waitFor(remoteHero, 3000);
         assertTrue(got, "Action must be received after 800ms gap");
+        assertEquals(55, takeCommit(remoteHero).targetPos);
     }
 
     @Test
     void waitInMiddle_multipleRounds() throws Exception {
         for (int round = 0; round < 4; round++) {
             localTurn(round * 2 + 1);
-            remoteHero.curAction = null;
             NetworkManager.receiveActionAsync(remoteHero);
             Thread.sleep(300 + round * 100L);  // 300, 400, 500, 600ms
             sendAction(round * 2 + 2);
             assertTrue(waitFor(remoteHero, 3000), "Round " + round + " must not freeze");
-            remoteHero.curAction = null; remoteHero.next();
+            assertEquals(round * 2 + 2, takeCommit(remoteHero).targetPos);
         }
     }
 
@@ -268,7 +277,7 @@ class LanLongTurnTest {
 
     @Test
     void localActsWhileRemoteThinks_noInterference() throws Exception {
-        // Remote starts thinking (waiting for packet)
+        // Remote starts thinking (readers waiting for its request)
         NetworkManager.receiveActionAsync(remoteHero);
 
         // Local hero acts while remote is thinking — must not interfere
@@ -281,6 +290,7 @@ class LanLongTurnTest {
         Thread.sleep(400);
         sendAction(2);
         assertTrue(waitFor(remoteHero, 3000), "Remote action must still arrive after local acted");
+        assertEquals(2, takeCommit(remoteHero).targetPos);
     }
 
     // =========================================================================
@@ -289,24 +299,24 @@ class LanLongTurnTest {
 
     @Test
     void actionAlwaysMatchesTurn_5rounds() throws Exception {
-        // remoteTurn() already asserts the correct dst before clearing curAction
+        // remoteTurn() already asserts the correct targetPos before consuming the commit
         for (int round = 0; round < 5; round++) {
             localTurn(round * 2 + 1);
-            remoteTurn(round * 100 + 7, 200); // remoteTurn asserts dst matches
+            remoteTurn(round * 100 + 7, 200); // remoteTurn asserts targetPos matches
         }
     }
 
     @Test
     void noCrossContamination_longThink() throws Exception {
-        // Round 1: remoteTurn verifies pos=111 was received, then clears curAction
+        // Round 1: remoteTurn verifies pos=111 was received, then consumes the commit
         localTurn(1);
         remoteTurn(111, 300);
-        assertNull(remoteHero.curAction, "curAction must be null between turns");
+        assertTrue(remoteHero.lanActionInbox.isEmpty(), "inbox must be empty between turns");
 
         // Round 2: remoteTurn verifies pos=222 — must not see round 1's action
         localTurn(3);
         remoteTurn(222, 300);
-        assertNull(remoteHero.curAction, "curAction must be null after round 2");
+        assertTrue(remoteHero.lanActionInbox.isEmpty(), "inbox must be empty after round 2");
     }
 
     // =========================================================================

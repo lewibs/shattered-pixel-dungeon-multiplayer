@@ -124,7 +124,15 @@ public class NetworkManager {
     public static OnClassUpdate onClassUnclaimedReceived = null;
 
     // Protocol version for HANDSHAKE version negotiation (EC-6.5)
-    public static final int PROTOCOL_VERSION = 1;
+    // v2: HANDSHAKE carries the host's challenge mask after the seed
+    // v3: leader-sequenced commit protocol — gameplay ops flow as
+    //     REQUEST → COMMIT with acks, dedup, retransmit and state checks
+    public static final int PROTOCOL_VERSION = 3;
+
+    // Challenge mask for the current LAN run. Host sets it from local settings when
+    // sending the handshake; clients set it from the received handshake. Dungeon.init
+    // reads this instead of local settings so every device runs the same rules.
+    public static int lanChallenges = 0;
 
     // Maximum players supported (EC-6.3)
     public static final int MAX_PLAYERS = 4;
@@ -163,6 +171,16 @@ public class NetworkManager {
         public static final byte KICK             = 19; // host → client: kicked by host
         public static final byte HOST_DISCONNECTED = 20; // host → clients: host leaving lobby
         public static final byte STATE_HASH       = 21; // host → clients: state hash for desync detection
+        public static final byte ITEM_CHOICE      = 22; // sender resolved an item prompt mid-action
+        public static final byte CELL_CHOICE      = 23; // sender resolved a cell prompt mid-action
+        public static final byte OPTION_CHOICE    = 24; // sender resolved an option dialog mid-action (-1 = cancelled)
+        // Leader-sequenced commit protocol (v3)
+        public static final byte REQUEST          = 25; // follower → leader: please sequence this op
+        public static final byte COMMIT           = 26; // leader → followers: sequenced op, apply in order
+        public static final byte ACK              = 27; // follower → leader: highest contiguous commit applied
+        public static final byte STATE_CHECK      = 28; // leader → followers: leader's state hash at a commit's pre-execution point
+        public static final byte SNAPSHOT_REQUEST = 29; // follower → leader: my state diverged, send authoritative state
+        public static final byte SNAPSHOT         = 30; // leader → follower: full game+level bundle for resync
     }
 
     // HeroAction type constants for serialization
@@ -177,7 +195,12 @@ public class NetworkManager {
         public static final byte BUY = 7;
         public static final byte MINE = 8;
         public static final byte ALCHEMY = 9;
-        public static final byte REST = 10;
+        public static final byte REST     = 10;
+        public static final byte USE_ITEM = 11;
+        public static final byte SEARCH   = 12;
+        public static final byte USE_ITEM_AT = 13;
+        public static final byte SHOP_BUY    = 14;
+        public static final byte SHOP_SELL   = 15;
     }
 
     /**
@@ -187,6 +210,7 @@ public class NetworkManager {
     public static void hostGame(int port) throws IOException {
         try {
             serverSocket = new ServerSocket(port);
+            resetCommitProtocolState();
             lanMode = true;
             isHost = true;
             localPlayerIndex = 0;
@@ -216,6 +240,7 @@ public class NetworkManager {
             clientIn = new DataInputStream(clientSocket.getInputStream());
             clientOut = new DataOutputStream(clientSocket.getOutputStream());
 
+            resetCommitProtocolState();
             lanMode = true;
             isHost = false;
 
@@ -279,192 +304,1083 @@ public class NetworkManager {
     }
 
     /**
-     * Sends an action to all connected peers.
-     * Serializes the HeroAction into an ACTION packet and writes to all output streams.
+     * Sends a hero action through the leader-sequenced commit protocol.
+     * On the leader this sequences and broadcasts the commit immediately; on a
+     * follower it sends a REQUEST and BLOCKS until the leader's COMMIT echo
+     * returns (pessimistic execution). Returns the commit's globalSeq, or -1
+     * if the op could not be sequenced.
      */
-    public static void sendAction(HeroAction action, int heroId) {
-        if (!lanMode) return;
+    public static int sendAction(HeroAction action, int heroId) {
+        if (!lanMode) return -1;
+        byte actionType = encodeHeroAction(action);
+        int targetPos = getActionTargetPos(action);
+        lanLog("sendAction | heroId=%d actionType=%d pos=%d isHost=%b",
+                heroId, actionType, targetPos, isHost);
+        return submitLocalOp(InnerOp.ACTION, actionType, targetPos, null, true);
+    }
 
+    // ------------------------------------------------------------------
+    // Interactive prompt sync (EC: identify/upgrade scrolls, chains, etc.)
+    //
+    // Some item effects prompt the player mid-execution (pick an item to
+    // identify, pick a cell to chain to). In LAN games both devices execute
+    // the same queued action; on the owning device the prompt shows normally
+    // and the resolved choice is broadcast, while on remote devices the
+    // prompt is suppressed and its listener parked here until the ITEM_CHOICE
+    // / CELL_CHOICE packet arrives.
+    // ------------------------------------------------------------------
+
+    /** True while a REMOTE hero's queued item action is executing on this device. */
+    public static volatile boolean remoteItemExecution = false;
+    /** The remote hero whose action is executing (choice packets resolve against its belongings). */
+    public static volatile Hero remoteExecutionHero = null;
+    /** True while the LOCAL hero's queued item action is executing on this device. */
+    public static volatile boolean localItemExecution = false;
+
+    public static volatile com.shatteredpixel.shatteredpixeldungeon.windows.WndBag.ItemSelector pendingRemoteItemSelector = null;
+    public static volatile com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector.Listener pendingRemoteCellListener = null;
+
+    /** A parked option-dialog choice on a remote device (see LanChoiceWindow). */
+    public interface LanChoiceHandler { void onLanChoice(int choice); }
+    public static volatile LanChoiceHandler pendingRemoteOptionHandler = null;
+
+    /** Sender: broadcast which option the player picked in a mid-action dialog (-1 = cancelled). */
+    public static void sendOptionChoice(int index) {
+        submitLocalOp(InnerOp.OPTION_CHOICE, (byte) 0, index, null, false);
+    }
+
+    /**
+     * Owner-side resolution of a mid-action choice (item pick, cell pick, option
+     * dialog). Runs the effect with the deterministic sim RNG and with
+     * localItemExecution set, so any NESTED prompt the effect raises is wrapped
+     * and broadcast too — mirroring how the remote reader resolves the same
+     * choice under remoteItemExecution.
+     */
+    public static void resolveLocalChoice(Runnable effect) {
+        boolean wasLocal = localItemExecution;
+        localItemExecution = true;
+        com.watabou.utils.Random.enterSimContext();
         try {
-            byte actionType = encodeHeroAction(action);
-            int targetPos = getActionTargetPos(action);
-            lanLog("sendAction | heroId=%d actionType=%d pos=%d isHost=%b outs=%d clientOut=%b",
-                    heroId, actionType, targetPos, isHost, outs.size(), clientOut != null);
+            effect.run();
+        } finally {
+            com.watabou.utils.Random.exitSimContext();
+            localItemExecution = wasLocal;
+        }
+    }
 
-            if (isHost) {
-                for (int i = 0; i < outs.size(); i++) {
-                    DataOutputStream out = outs.get(i);
-                    Object lock = i < outLocks.size() ? outLocks.get(i) : out;
-                    synchronized (lock) {
-                        out.writeByte(PacketType.ACTION);
-                        out.writeInt(heroId);
-                        out.writeByte(actionType);
-                        out.writeInt(targetPos);
-                        out.flush();
+    /** Sender: broadcast which item the player picked in a mid-action prompt (-1/-1 = cancelled). */
+    public static void sendItemChoice(int bagOrdinal, int slot) {
+        int payload = (bagOrdinal < 0 || slot < 0) ? -1 : ((bagOrdinal << 16) | (slot & 0xFFFF));
+        submitLocalOp(InnerOp.ITEM_CHOICE, (byte) 0, payload, null, false);
+    }
+
+    /** Sender: broadcast which cell the player picked in a mid-action prompt (-1 = cancelled). */
+    public static void sendCellChoice(int cell) {
+        submitLocalOp(InnerOp.CELL_CHOICE, (byte) 0, cell, null, false);
+    }
+
+    /** Wraps a sender-side item selector so the resolved choice is broadcast before it is applied. */
+    public static com.shatteredpixel.shatteredpixeldungeon.windows.WndBag.ItemSelector
+            wrapItemSelectorForLan(final com.shatteredpixel.shatteredpixeldungeon.windows.WndBag.ItemSelector inner) {
+        return new com.shatteredpixel.shatteredpixeldungeon.windows.WndBag.ItemSelector() {
+            @Override public String textPrompt() { return inner.textPrompt(); }
+            @Override public Class<? extends com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag> preferredBag() { return inner.preferredBag(); }
+            @Override public boolean hideAfterSelecting() { return inner.hideAfterSelecting(); }
+            @Override public boolean itemSelectable(Item item) { return inner.itemSelectable(item); }
+            @Override public void onSelect(Item item) {
+                int bag = -1, slot = -1;
+                if (item != null && Dungeon.hero != null) {
+                    java.util.ArrayList<com.shatteredpixel.shatteredpixeldungeon.items.bags.Bag> bags = Dungeon.hero.belongings.getBags();
+                    for (int b = 0; b < bags.size(); b++) {
+                        int idx = bags.get(b).items.indexOf(item);
+                        if (idx >= 0) { bag = b; slot = idx; break; }
                     }
                 }
-                lanLog("sendAction | sent to %d clients", outs.size());
-            } else {
-                if (clientOut != null) {
-                    synchronized (clientOutLock) {
-                        clientOut.writeByte(PacketType.ACTION);
-                        clientOut.writeInt(heroId);
-                        clientOut.writeByte(actionType);
-                        clientOut.writeInt(targetPos);
-                        clientOut.flush();
-                    }
-                    lanLog("sendAction | sent to host");
-                } else {
-                    lanLog("sendAction | WARN clientOut is null — packet NOT sent!");
-                }
+                sendItemChoice(bag, slot);
+                // resolves sim effects on the render thread while the actor loop is
+                // parked — sim RNG + nested-prompt wrapping, see resolveLocalChoice
+                resolveLocalChoice(() -> inner.onSelect(item));
             }
-        } catch (IOException e) {
-            GLog.n("Failed to send action: %s", e.getMessage());
-            lanLog("sendAction | IOException: %s", e.getMessage());
+        };
+    }
+
+    /** Wraps a sender-side cell listener so the resolved choice is broadcast before it is applied. */
+    public static com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector.Listener
+            wrapCellListenerForLan(final com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector.Listener inner) {
+        return new com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector.Listener() {
+            @Override public void onSelect(Integer cell) {
+                sendCellChoice(cell == null ? -1 : cell);
+                resolveLocalChoice(() -> inner.onSelect(cell));
+            }
+            @Override public String prompt() { return inner.prompt(); }
+        };
+    }
+
+    /**
+     * Remote-side resolution of a mid-action choice packet. The effect resolves
+     * simulation state, so it needs the deterministic sim RNG, and it may raise
+     * a NESTED prompt (e.g. a picked scroll that then asks for a target) — so
+     * remoteItemExecution is set for its duration to park those prompts too.
+     */
+    private static void resolveRemoteChoice(Hero remoteHero, Runnable effect) {
+        boolean wasRemote = remoteItemExecution;
+        remoteItemExecution = true;
+        remoteExecutionHero = remoteHero;
+        com.watabou.utils.Random.enterSimContext();
+        try {
+            effect.run();
+        } finally {
+            com.watabou.utils.Random.exitSimContext();
+            remoteItemExecution = wasRemote;
+        }
+        synchronized (remoteHero.lanActionLock) {
+            remoteHero.lanActionLock.notifyAll();
         }
     }
 
     /**
-     * Starts a background thread to receive actions from a remote hero.
-     * Reads ACTION packets and updates the hero's curAction, then notifies the Actor thread.
-     *
-     * Only one reader thread is ever active at a time (enforced by actionReaderRunning).
-     * Re-entrant calls while the thread is running are no-ops.
+     * Compatibility shim for the old per-turn reader API. The v3 protocol uses
+     * one PERSISTENT reader thread per socket (see ensureGameplayReaders); this
+     * method now just makes sure those readers are running. Idempotent.
      */
     public static void receiveActionAsync(Hero remoteHero) {
-        if (!lanMode || remoteHero == null) return;
+        if (!lanMode) return;
+        ensureGameplayReaders();
+    }
 
-        // EC-6.7: per-stream guard keyed by heroIndex - 1 for 3+ player games.
-        // Each remote hero gets its own reader thread on its own stream; the old
-        // global singleton guard prevented concurrent readers for hero[1] and hero[2].
-        int heroIndex = (Dungeon.heroes != null) ? Dungeon.heroes.indexOf(remoteHero) : 0;
-        int streamIndex = isHost ? Math.max(0, heroIndex - 1) : 0; // ins.get(0) for hero[1], ins.get(1) for hero[2]
+    // ==================================================================
+    // Leader-sequenced commit protocol (protocol v3)
+    //
+    // Every gameplay op flows through the leader (host):
+    //
+    //   follower input : follower --REQUEST(clientSeq, op)--> leader
+    //   leader         : stamps globalSeq --COMMIT--> ALL followers
+    //                    (+ applies remote ops locally)
+    //   follower       : applies commits in globalSeq order, sends ACK
+    //
+    // The op's owner does not execute until its own commit echo returns
+    // (pessimistic execution). The leader keeps a ring buffer of recent
+    // commits and retransmits when a follower's ACK stalls; followers
+    // dedupe by globalSeq (stale commits are re-acked and dropped) and
+    // the leader dedupes retransmitted requests by per-player clientSeq.
+    //
+    // Desync safety net: at the shared pre-execution sim point of every
+    // ACTION commit each device computes a state hash. The leader
+    // broadcasts its hash (STATE_CHECK); followers compare and, on
+    // mismatch, request a full authoritative snapshot (SNAPSHOT) which
+    // is applied by reloading the game — divergence self-heals.
+    // ==================================================================
 
-        synchronized (NetworkManager.class) {
-            if (streamIndex >= 0 && streamIndex < actionReaderRunningPerStream.length) {
-                if (actionReaderRunningPerStream[streamIndex]) {
-                    lanLog("receiveActionAsync | guard true stream=%d heroIdx=%d — no-op", streamIndex, heroIndex);
-                    return;
-                }
-                actionReaderRunningPerStream[streamIndex] = true;
-            } else {
-                if (actionReaderRunning) {
-                    lanLog("receiveActionAsync | global guard true heroIdx=%d — no-op", heroIndex);
-                    return;
-                }
-                actionReaderRunning = true;
-            }
+    /** Inner op kinds carried by REQUEST/COMMIT envelopes. */
+    public static class InnerOp {
+        public static final byte ACTION          = 0;
+        public static final byte ITEM_CHOICE     = 1;
+        public static final byte CELL_CHOICE     = 2;
+        public static final byte OPTION_CHOICE   = 3;
+        public static final byte ITEM_IDENTIFIED = 4;
+    }
+
+    /** One sequenced gameplay op. Immutable; also the ring-buffer entry. */
+    public static class Commit {
+        public final int globalSeq;   // leader-assigned total order
+        public final int player;      // originating player index (== heroId)
+        public final int clientSeq;   // originator's request counter (echo matching / dedup)
+        public final byte inner;      // InnerOp.*
+        public final byte actionType; // ActionType.* when inner == ACTION
+        public final int targetPos;   // action target, or choice payload
+        public final String utf;      // class name for ITEM_IDENTIFIED, else null
+
+        public Commit(int globalSeq, int player, int clientSeq,
+                      byte inner, byte actionType, int targetPos, String utf) {
+            this.globalSeq = globalSeq;
+            this.player = player;
+            this.clientSeq = clientSeq;
+            this.inner = inner;
+            this.actionType = actionType;
+            this.targetPos = targetPos;
+            this.utf = utf;
+        }
+    }
+
+    // --- leader state ---
+    private static final Object seqLock = new Object();
+    private static int globalSeqCounter = 0;
+    private static final java.util.ArrayDeque<Commit> commitLog = new java.util.ArrayDeque<>();
+    private static final int COMMIT_LOG_CAP = 1024;
+    private static int[]  lastClientSeqSeen = new int[MAX_PLAYERS]; // request dedup, per player
+    private static int[]  lastAckedSeq      = new int[MAX_PLAYERS];
+    private static long[] lastAckAt         = new long[MAX_PLAYERS];
+    private static long[] lastResendAt      = new long[MAX_PLAYERS];
+
+    // --- follower state ---
+    private static final Object applyLock = new Object();
+    private static int lastAppliedSeq = 0;
+    private static final java.util.TreeMap<Integer, Commit> reorderBuffer = new java.util.TreeMap<>();
+
+    // --- this device's outgoing requests ---
+    private static final Object requestLock = new Object();
+    private static int clientSeqCounter = 0;
+    private static final java.util.Map<Integer, PendingRequest> pendingRequests =
+            java.util.Collections.synchronizedMap(new java.util.HashMap<Integer, PendingRequest>());
+
+    /** How long a follower blocks waiting for its own commit echo before giving up. Test seam. */
+    public static volatile int commitEchoTimeoutMs = 10000;
+    private static final int REQUEST_RESEND_MS = 1000;
+    private static final int COMMIT_RESEND_MS  = 1500;
+
+    private static class PendingRequest {
+        final int clientSeq;
+        final byte inner, actionType;
+        final int targetPos;
+        final String utf;
+        volatile long lastSentAt = 0;
+        volatile int globalSeq = -1; // set by the commit echo
+
+        PendingRequest(int clientSeq, byte inner, byte actionType, int targetPos, String utf) {
+            this.clientSeq = clientSeq;
+            this.inner = inner;
+            this.actionType = actionType;
+            this.targetPos = targetPos;
+            this.utf = utf;
+        }
+    }
+
+    // --- reader / retransmit lifecycle ---
+    private static final java.util.Set<DataInputStream> readerCovered =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<DataInputStream, Boolean>());
+    private static volatile boolean retransmitLoopRunning = false;
+
+    // --- state-check bookkeeping (follower side) ---
+    private static final Object hashLock = new Object();
+    private static final int HASH_WINDOW = 256;
+    private static final java.util.LinkedHashMap<Integer, Long> leaderHashes = new java.util.LinkedHashMap<>();
+    private static final java.util.LinkedHashMap<Integer, Long> localHashes  = new java.util.LinkedHashMap<>();
+    private static volatile long lastSnapshotRequestAt = 0;
+    private static volatile boolean resyncInProgress = false;
+    private static final int SNAPSHOT_REQUEST_COOLDOWN_MS = 5000;
+
+    // --- choice stash: commit arrived before the local sim parked its prompt ---
+    private static final Object choiceLock = new Object();
+    private static Commit stashedItemChoice   = null;
+    private static Commit stashedCellChoice   = null;
+    private static Commit stashedOptionChoice = null;
+
+    /**
+     * Sequences one locally-originated op into the commit stream.
+     * Leader: assigns a globalSeq and broadcasts immediately (never blocks).
+     * Follower: sends a REQUEST; when block=true, parks the calling thread
+     * until the leader's COMMIT echo arrives (pessimistic execution),
+     * re-sending the request every REQUEST_RESEND_MS (the leader dedupes).
+     * Returns the assigned globalSeq, or -1 if unsequenced.
+     */
+    private static int submitLocalOp(byte inner, byte actionType, int targetPos, String utf, boolean block) {
+        if (!lanMode) return -1;
+
+        // The echo gate can only release if a reader is consuming commits.
+        ensureGameplayReaders();
+
+        if (isHost) {
+            Commit c = leaderSequence(localPlayerIndex, nextClientSeq(), inner, actionType, targetPos, utf);
+            return c != null ? c.globalSeq : -1;
         }
 
-        lanLog("receiveActionAsync | reader starting heroIdx=%d stream=%d isHost=%b", heroIndex, streamIndex, isHost);
-        final int finalStreamIndex = streamIndex;
+        if (clientOut == null) {
+            // No leader connection at all (offline follower / headless test):
+            // never park the sim on an echo that cannot arrive.
+            lanLog("submitLocalOp | no leader stream — op proceeds unsequenced (inner=%d)", inner);
+            return -1;
+        }
 
-        new Thread(() -> {
-            try {
-                DataInputStream in;
-                if (isHost) {
-                    in = (finalStreamIndex < ins.size()) ? ins.get(finalStreamIndex) : null;
-                } else {
-                    in = clientIn;
+        PendingRequest pr = new PendingRequest(nextClientSeq(), inner, actionType, targetPos, utf);
+        pendingRequests.put(pr.clientSeq, pr);
+        sendRequestPacket(pr);
+
+        if (!block) return -1;
+
+        long deadline = System.currentTimeMillis() + commitEchoTimeoutMs;
+        synchronized (pr) {
+            while (lanMode && pr.globalSeq < 0 && System.currentTimeMillis() < deadline) {
+                long wait = Math.min(REQUEST_RESEND_MS, deadline - System.currentTimeMillis());
+                if (wait <= 0) break;
+                try {
+                    pr.wait(wait);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
-                if (in == null) {
-                    lanLog("receiveActionAsync | ERROR stream null stream=%d", finalStreamIndex);
+                if (lanMode && pr.globalSeq < 0
+                        && System.currentTimeMillis() - pr.lastSentAt >= REQUEST_RESEND_MS) {
+                    sendRequestPacket(pr); // leader dedupes by clientSeq
+                }
+            }
+        }
+        if (pr.globalSeq < 0) {
+            pendingRequests.remove(pr.clientSeq);
+            lanLog("submitLocalOp | echo timeout clientSeq=%d inner=%d — proceeding unsequenced", pr.clientSeq, inner);
+        }
+        return pr.globalSeq;
+    }
+
+    private static int nextClientSeq() {
+        synchronized (requestLock) {
+            return ++clientSeqCounter;
+        }
+    }
+
+    /** Leader: assign the next globalSeq, log it, broadcast it. Null if the request is a stale duplicate. */
+    private static Commit leaderSequence(int player, int clientSeq, byte inner, byte actionType, int targetPos, String utf) {
+        Commit c;
+        synchronized (seqLock) {
+            if (player >= 0 && player < lastClientSeqSeen.length && player != localPlayerIndex) {
+                if (clientSeq <= lastClientSeqSeen[player]) {
+                    lanLog("leaderSequence | dup request player=%d clientSeq=%d — dropped", player, clientSeq);
+                    return null;
+                }
+                lastClientSeqSeen[player] = clientSeq;
+            }
+            c = new Commit(++globalSeqCounter, player, clientSeq, inner, actionType, targetPos, utf);
+            commitLog.addLast(c);
+            if (commitLog.size() > COMMIT_LOG_CAP) commitLog.removeFirst();
+        }
+        broadcastCommit(c);
+        return c;
+    }
+
+    private static void broadcastCommit(Commit c) {
+        for (int i = 0; i < outs.size(); i++) {
+            DataOutputStream out = outs.get(i);
+            Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+            try {
+                writeCommitTo(out, lock, c);
+            } catch (IOException e) {
+                // Dead stream: the ping sender / reader will fire the disconnect signal.
+                lanLog("broadcastCommit | write failed stream=%d seq=%d: %s", i, c.globalSeq, e.getMessage());
+            }
+        }
+    }
+
+    private static void writeCommitTo(DataOutputStream out, Object lock, Commit c) throws IOException {
+        synchronized (lock) {
+            out.writeByte(PacketType.COMMIT);
+            out.writeInt(c.globalSeq);
+            out.writeInt(c.player);
+            out.writeInt(c.clientSeq);
+            out.writeByte(c.inner);
+            out.writeByte(c.actionType);
+            out.writeInt(c.targetPos);
+            if (c.inner == InnerOp.ITEM_IDENTIFIED) out.writeUTF(c.utf != null ? c.utf : "");
+            out.flush();
+        }
+    }
+
+    private static void sendRequestPacket(PendingRequest pr) {
+        DataOutputStream out = clientOut;
+        if (out == null) {
+            lanLog("sendRequestPacket | WARN clientOut is null — request NOT sent!");
+            return;
+        }
+        try {
+            synchronized (clientOutLock) {
+                out.writeByte(PacketType.REQUEST);
+                out.writeInt(pr.clientSeq);
+                out.writeByte(pr.inner);
+                out.writeByte(pr.actionType);
+                out.writeInt(pr.targetPos);
+                if (pr.inner == InnerOp.ITEM_IDENTIFIED) out.writeUTF(pr.utf != null ? pr.utf : "");
+                out.flush();
+            }
+            pr.lastSentAt = System.currentTimeMillis();
+        } catch (IOException e) {
+            GLog.w("Failed to send request: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Starts the persistent gameplay readers (one per socket) and the
+     * retransmit loop. Idempotent — safe to call every remote hero turn.
+     */
+    public static synchronized void ensureGameplayReaders() {
+        if (!lanMode) return;
+        if (isHost) {
+            for (int i = 0; i < ins.size(); i++) {
+                final DataInputStream in = ins.get(i);
+                if (in == null || !readerCovered.add(in)) continue;
+                final int slot = i + 1; // stream i belongs to player slot i+1
+                lastAckAt[slot] = System.currentTimeMillis();
+                new Thread(() -> gameplayReaderLoop(in, slot), "net-reader-p" + slot).start();
+            }
+        } else {
+            final DataInputStream in = clientIn;
+            if (in != null && readerCovered.add(in)) {
+                new Thread(() -> gameplayReaderLoop(in, -1), "net-reader-leader").start();
+            }
+        }
+        startRetransmitLoop();
+    }
+
+    /**
+     * The persistent per-socket reader. On the leader, playerSlot is the
+     * connected player's index (reads REQUEST/ACK); on a follower it is -1
+     * (reads COMMIT/STATE_CHECK/SNAPSHOT).
+     */
+    private static void gameplayReaderLoop(DataInputStream in, int playerSlot) {
+        lanLog("gameplayReader | started slot=%d isHost=%b", playerSlot, isHost);
+        try {
+            while (lanMode) {
+                byte type;
+                try {
+                    type = in.readByte();
+                } catch (IOException e) {
+                    handleReaderDisconnect(playerSlot, e);
+                    break;
+                }
+                try {
+                    if (type == PacketType.REQUEST && playerSlot > 0) {
+                        int clientSeq = in.readInt();
+                        byte inner = in.readByte();
+                        byte actionType = in.readByte();
+                        int targetPos = in.readInt();
+                        String utf = (inner == InnerOp.ITEM_IDENTIFIED) ? in.readUTF() : null;
+                        Commit c = leaderSequence(playerSlot, clientSeq, inner, actionType, targetPos, utf);
+                        if (c != null) dispatchCommit(c); // apply the remote op on the leader too
+
+                    } else if (type == PacketType.COMMIT) {
+                        int globalSeq = in.readInt();
+                        int player = in.readInt();
+                        int clientSeq = in.readInt();
+                        byte inner = in.readByte();
+                        byte actionType = in.readByte();
+                        int targetPos = in.readInt();
+                        String utf = (inner == InnerOp.ITEM_IDENTIFIED) ? in.readUTF() : null;
+                        onCommitReceived(new Commit(globalSeq, player, clientSeq, inner, actionType, targetPos, utf));
+
+                    } else if (type == PacketType.ACK && playerSlot > 0) {
+                        int acked = in.readInt();
+                        synchronized (seqLock) {
+                            if (acked > lastAckedSeq[playerSlot]) lastAckedSeq[playerSlot] = acked;
+                            lastAckAt[playerSlot] = System.currentTimeMillis();
+                        }
+
+                    } else if (type == PacketType.STATE_CHECK) {
+                        int seq = in.readInt();
+                        long hash = in.readLong();
+                        onStateCheckReceived(seq, hash);
+
+                    } else if (type == PacketType.SNAPSHOT_REQUEST && playerSlot > 0) {
+                        lanLog("gameplayReader | SNAPSHOT_REQUEST from player %d", playerSlot);
+                        final int slot = playerSlot;
+                        new Thread(() -> buildAndSendSnapshot(slot), "net-snapshot-builder").start();
+
+                    } else if (type == PacketType.SNAPSHOT) {
+                        int seqAt = in.readInt();
+                        int depth = in.readInt();
+                        int branch = in.readInt();
+                        byte[] gameBytes = new byte[in.readInt()];
+                        in.readFully(gameBytes);
+                        byte[] levelBytes = new byte[in.readInt()];
+                        in.readFully(levelBytes);
+                        applySnapshot(seqAt, depth, branch, gameBytes, levelBytes);
+
+                    } else if (type == PacketType.ITEM_IDENTIFIED) {
+                        // Legacy path kept for stray packets: apply directly.
+                        applyItemIdentified(in.readUTF());
+
+                    } else if (type == PacketType.PING) {
+                        // Heartbeat — proves the connection is alive.
+                    } else {
+                        // Unknown/legacy type: framing is type-implicit, so we cannot
+                        // skip its payload. Log loudly; subsequent reads may misparse.
+                        lanLog("gameplayReader | UNEXPECTED packet type=%d slot=%d", type, playerSlot);
+                    }
+                } catch (IOException e) {
+                    handleReaderDisconnect(playerSlot, e);
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            if (e instanceof InterruptedIOException) Thread.currentThread().interrupt();
+            lanLog("gameplayReader | fatal %s slot=%d", e.getClass().getSimpleName(), playerSlot);
+        } finally {
+            readerCovered.remove(in);
+            lanLog("gameplayReader | stopped slot=%d", playerSlot);
+        }
+    }
+
+    private static void handleReaderDisconnect(int playerSlot, IOException e) {
+        if (!lanMode || Thread.currentThread().isInterrupted()) return;
+        GLog.w("Peer disconnected: %s", e.getClass().getSimpleName());
+        Hero hero = heroForPlayer(playerSlot > 0 ? playerSlot : 0);
+        releaseAllEchoGates();
+        peerDisconnectSignal.dispatch(new PeerDisconnected(hero));
+        try {
+            com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread();
+        } catch (Throwable ignored) {}
+    }
+
+    /** Follower: buffer, dedupe and apply commits strictly in globalSeq order. */
+    private static void onCommitReceived(Commit c) {
+        java.util.ArrayList<Commit> toApply = null;
+        synchronized (applyLock) {
+            if (c.globalSeq <= lastAppliedSeq) {
+                lanLog("onCommitReceived | stale seq=%d (applied=%d) — re-acking", c.globalSeq, lastAppliedSeq);
+                sendAckNow();
+                return;
+            }
+            reorderBuffer.put(c.globalSeq, c);
+            if (!resyncInProgress) {
+                while (!reorderBuffer.isEmpty() && reorderBuffer.firstKey() == lastAppliedSeq + 1) {
+                    Commit n = reorderBuffer.pollFirstEntry().getValue();
+                    lastAppliedSeq = n.globalSeq;
+                    if (toApply == null) toApply = new java.util.ArrayList<>();
+                    toApply.add(n);
+                }
+            }
+        }
+        if (toApply != null) {
+            for (Commit n : toApply) dispatchCommit(n);
+        }
+        sendAckNow();
+    }
+
+    /** Applies one commit to the local simulation (or releases the owner's echo gate). */
+    private static void dispatchCommit(Commit c) {
+        if (c.player == localPlayerIndex) {
+            releaseEchoGate(c);
+            return;
+        }
+        switch (c.inner) {
+            case InnerOp.ACTION: {
+                Hero h = heroForPlayer(c.player);
+                if (h == null) {
+                    lanLog("dispatchCommit | ACTION seq=%d for unknown player %d — dropped", c.globalSeq, c.player);
                     return;
                 }
+                synchronized (h.lanActionLock) {
+                    h.lanActionInbox.addLast(c);
+                    h.lanActionLock.notifyAll();
+                }
+                try {
+                    com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread();
+                } catch (Throwable ignored) {}
+                break;
+            }
+            case InnerOp.ITEM_CHOICE:
+                deliverChoiceCommit(c);
+                break;
+            case InnerOp.CELL_CHOICE:
+                deliverChoiceCommit(c);
+                break;
+            case InnerOp.OPTION_CHOICE:
+                deliverChoiceCommit(c);
+                break;
+            case InnerOp.ITEM_IDENTIFIED:
+                applyItemIdentified(c.utf);
+                break;
+            default:
+                lanLog("dispatchCommit | unknown inner=%d seq=%d", c.inner, c.globalSeq);
+        }
+    }
 
-                lanLog("receiveActionAsync | waiting on readByte stream=%d", finalStreamIndex);
-                while (lanMode && remoteHero != null) {
+    private static void releaseEchoGate(Commit c) {
+        PendingRequest pr = pendingRequests.remove(c.clientSeq);
+        if (pr != null) {
+            synchronized (pr) {
+                pr.globalSeq = c.globalSeq;
+                pr.notifyAll();
+            }
+        }
+    }
+
+    private static void releaseAllEchoGates() {
+        java.util.ArrayList<PendingRequest> gates;
+        synchronized (pendingRequests) {
+            gates = new java.util.ArrayList<>(pendingRequests.values());
+            pendingRequests.clear();
+        }
+        for (PendingRequest pr : gates) {
+            synchronized (pr) {
+                pr.notifyAll();
+            }
+        }
+    }
+
+    private static Hero heroForPlayer(int player) {
+        if (Dungeon.heroes == null || player < 0 || player >= Dungeon.heroes.size()) return null;
+        return Dungeon.heroes.get(player);
+    }
+
+    private static void applyItemIdentified(String className) {
+        if (className == null || className.isEmpty()) return;
+        Game.runOnRenderThread(() -> {
+            try {
+                Class<?> cls = Class.forName(className);
+                Item item = (Item) Reflection.newInstance(cls);
+                if (item != null) item.identify(false);
+            } catch (Exception e) {
+                GLog.w("Could not apply remote identification: %s", e.getMessage());
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Choice commits: a choice may arrive before this device's sim has
+    // reached the prompt (persistent readers dispatch eagerly). The
+    // commit is stashed and applied the moment the prompt parks.
+    // ------------------------------------------------------------------
+
+    private static void deliverChoiceCommit(Commit c) {
+        Runnable apply = null;
+        synchronized (choiceLock) {
+            if (c.inner == InnerOp.ITEM_CHOICE) {
+                com.shatteredpixel.shatteredpixeldungeon.windows.WndBag.ItemSelector sel = pendingRemoteItemSelector;
+                pendingRemoteItemSelector = null;
+                if (sel == null) {
+                    stashedItemChoice = c;
+                    lanLog("deliverChoiceCommit | ITEM_CHOICE seq=%d stashed (prompt not parked yet)", c.globalSeq);
+                } else {
+                    apply = () -> applyItemChoice(sel, c);
+                }
+            } else if (c.inner == InnerOp.CELL_CHOICE) {
+                com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector.Listener sel = pendingRemoteCellListener;
+                pendingRemoteCellListener = null;
+                if (sel == null) {
+                    stashedCellChoice = c;
+                    lanLog("deliverChoiceCommit | CELL_CHOICE seq=%d stashed (prompt not parked yet)", c.globalSeq);
+                } else {
+                    apply = () -> applyCellChoice(sel, c);
+                }
+            } else if (c.inner == InnerOp.OPTION_CHOICE) {
+                LanChoiceHandler handler = pendingRemoteOptionHandler;
+                pendingRemoteOptionHandler = null;
+                if (handler == null) {
+                    stashedOptionChoice = c;
+                    lanLog("deliverChoiceCommit | OPTION_CHOICE seq=%d stashed (prompt not parked yet)", c.globalSeq);
+                } else {
+                    apply = () -> applyOptionChoice(handler, c);
+                }
+            }
+        }
+        if (apply != null) apply.run();
+    }
+
+    private static void applyItemChoice(com.shatteredpixel.shatteredpixeldungeon.windows.WndBag.ItemSelector sel, Commit c) {
+        Hero h = heroForPlayer(c.player);
+        Item chosen = null;
+        if (c.targetPos != -1 && h != null) {
+            chosen = h.itemAt((c.targetPos >>> 16) & 0xFFFF, c.targetPos & 0xFFFF);
+        }
+        lanLog("applyItemChoice | seq=%d payload=%d item=%s", c.globalSeq, c.targetPos,
+                chosen != null ? chosen.getClass().getSimpleName() : "null");
+        final Item finalChosen = chosen;
+        resolveRemoteChoice(h, () -> sel.onSelect(finalChosen));
+    }
+
+    private static void applyCellChoice(com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector.Listener sel, Commit c) {
+        lanLog("applyCellChoice | seq=%d cell=%d", c.globalSeq, c.targetPos);
+        resolveRemoteChoice(heroForPlayer(c.player), () -> sel.onSelect(c.targetPos == -1 ? null : c.targetPos));
+    }
+
+    private static void applyOptionChoice(LanChoiceHandler handler, Commit c) {
+        lanLog("applyOptionChoice | seq=%d index=%d", c.globalSeq, c.targetPos);
+        resolveRemoteChoice(heroForPlayer(c.player), () -> handler.onLanChoice(c.targetPos));
+    }
+
+    /**
+     * Parks a remote item prompt. If the choice commit already arrived it is
+     * applied immediately (on a fresh thread, mirroring reader-thread context).
+     */
+    public static void parkRemoteItemSelector(com.shatteredpixel.shatteredpixeldungeon.windows.WndBag.ItemSelector sel) {
+        Commit c;
+        synchronized (choiceLock) {
+            c = stashedItemChoice;
+            stashedItemChoice = null;
+            if (c == null) {
+                pendingRemoteItemSelector = sel;
+                return;
+            }
+        }
+        final Commit fc = c;
+        new Thread(() -> applyItemChoice(sel, fc), "net-choice-replay").start();
+    }
+
+    /** Parks a remote cell prompt; applies a stashed choice commit if one already arrived. */
+    public static void parkRemoteCellListener(com.shatteredpixel.shatteredpixeldungeon.scenes.CellSelector.Listener sel) {
+        Commit c;
+        synchronized (choiceLock) {
+            c = stashedCellChoice;
+            stashedCellChoice = null;
+            if (c == null) {
+                pendingRemoteCellListener = sel;
+                return;
+            }
+        }
+        final Commit fc = c;
+        new Thread(() -> applyCellChoice(sel, fc), "net-choice-replay").start();
+    }
+
+    /** Parks a remote option-dialog handler; applies a stashed choice commit if one already arrived. */
+    public static void parkRemoteOptionHandler(LanChoiceHandler handler) {
+        Commit c;
+        synchronized (choiceLock) {
+            c = stashedOptionChoice;
+            stashedOptionChoice = null;
+            if (c == null) {
+                pendingRemoteOptionHandler = handler;
+                return;
+            }
+        }
+        final Commit fc = c;
+        new Thread(() -> applyOptionChoice(handler, fc), "net-choice-replay").start();
+    }
+
+    private static void sendAckNow() {
+        DataOutputStream out = clientOut;
+        if (out == null) return;
+        int seq;
+        synchronized (applyLock) {
+            seq = lastAppliedSeq;
+        }
+        try {
+            synchronized (clientOutLock) {
+                out.writeByte(PacketType.ACK);
+                out.writeInt(seq);
+                out.flush();
+            }
+        } catch (IOException ignored) {
+            // Dead stream — disconnect detection handles it.
+        }
+    }
+
+    /**
+     * Retransmit loop. Leader: re-sends commits to followers whose ACK has
+     * stalled. Follower: re-sends requests that never got a commit echo.
+     */
+    private static synchronized void startRetransmitLoop() {
+        if (retransmitLoopRunning || !lanMode) return;
+        retransmitLoopRunning = true;
+        new Thread(() -> {
+            try {
+                while (lanMode) {
                     try {
-                        byte type = in.readByte();
-                        lanLog("receiveActionAsync | got packet type=%d stream=%d", type, finalStreamIndex);
-                        if (type == PacketType.ACTION) {
-                            int heroId = in.readInt();
-                            byte actionType = in.readByte();
-                            int targetPos = in.readInt();
-
-                            HeroAction decodedAction = decodeHeroAction(actionType, targetPos);
-                            lanLog("receiveActionAsync | ACTION heroId=%d actionType=%d pos=%d decoded=%s",
-                                    heroId, actionType, targetPos, decodedAction != null ? decodedAction.getClass().getSimpleName() : "null");
-
-                            // Reset guard BEFORE notifyAll so that any thread woken by notifyAll
-                            // can immediately call receiveActionAsync for the next turn without
-                            // seeing a stale guard=true (the race: guard was only cleared in the
-                            // finally block, which runs after break — too late).
-                            synchronized (NetworkManager.class) {
-                                if (finalStreamIndex >= 0 && finalStreamIndex < actionReaderRunningPerStream.length) {
-                                    actionReaderRunningPerStream[finalStreamIndex] = false;
-                                }
-                                actionReaderRunning = false;
-                            }
-
-                            synchronized (remoteHero.lanActionLock) {
-                                if (decodedAction != null) {
-                                    remoteHero.curAction = decodedAction;
-                                }
-                                remoteHero.lanActionLock.notifyAll();
-                                lanLog("receiveActionAsync | notifyAll fired curAction=%s",
-                                        remoteHero.curAction != null ? remoteHero.curAction.getClass().getSimpleName() : "null");
-                            }
-                            break;
-                        } else if (type == PacketType.STATE_HASH) {
-                            // EC-6.4: desync detection
-                            int turn = in.readInt();
-                            long remoteHash = in.readLong();
-                            long localHash = computeStateHash();
-                            if (localHash != remoteHash) {
-                                GLog.n("DESYNC DETECTED at turn %d: local=%d remote=%d", turn, localHash, remoteHash);
-                                desyncDetectedSignal.dispatch(new DesyncDetected(localHash, remoteHash));
-                            }
-                        } else if (type == PacketType.ITEM_IDENTIFIED) {
-                            String className = in.readUTF();
-                            Game.runOnRenderThread(() -> {
-                                try {
-                                    Class<?> cls = Class.forName(className);
-                                    Item item = (Item) Reflection.newInstance(cls);
-                                    if (item != null) item.identify(false);
-                                } catch (Exception e) {
-                                    GLog.w("Could not apply remote identification: %s", e.getMessage());
-                                }
-                            });
-                        } else if (type == PacketType.CLASS_CLAIMED) {
-                            int pidx = in.readInt();
-                            byte ord = in.readByte();
-                            HeroClass cls = ordinalToHeroClass(ord);
-                            if (onClassClaimedReceived != null)
-                                onClassClaimedReceived.call(pidx, cls);
-                        } else if (type == PacketType.CLASS_UNCLAIMED) {
-                            int pidx = in.readInt();
-                            byte ord = in.readByte();
-                            HeroClass cls = ordinalToHeroClass(ord);
-                            if (onClassUnclaimedReceived != null)
-                                onClassUnclaimedReceived.call(pidx, cls);
-                        } else if (type == PacketType.PING) {
-                            // Heartbeat — silently discard, just proves the connection is alive
-                        }
-                    } catch (IOException e) {
-                        if (!Thread.currentThread().isInterrupted()) {
-                            GLog.w("Peer disconnected: %s", e.getClass().getSimpleName());
-                            peerDisconnectSignal.dispatch(new PeerDisconnected(remoteHero));
-                            com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene.notifyActorThread();
-                        }
+                        Thread.sleep(500);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                         break;
                     }
-                }
-            } catch (Exception e) {
-                if (e instanceof InterruptedIOException) {
-                    Thread.currentThread().interrupt();
+                    if (!lanMode) break;
+                    long now = System.currentTimeMillis();
+                    if (isHost) {
+                        int latest;
+                        synchronized (seqLock) {
+                            latest = globalSeqCounter;
+                        }
+                        for (int i = 0; i < outs.size(); i++) {
+                            int slot = i + 1;
+                            if (slot >= MAX_PLAYERS) break;
+                            boolean stalled;
+                            int from;
+                            synchronized (seqLock) {
+                                stalled = lastAckedSeq[slot] < latest
+                                        && now - lastAckAt[slot] > COMMIT_RESEND_MS
+                                        && now - lastResendAt[slot] > COMMIT_RESEND_MS;
+                                from = lastAckedSeq[slot];
+                            }
+                            if (stalled) {
+                                lastResendAt[slot] = now;
+                                resendCommitsTo(i, from);
+                            }
+                        }
+                    } else {
+                        java.util.ArrayList<PendingRequest> stale = new java.util.ArrayList<>();
+                        synchronized (pendingRequests) {
+                            for (PendingRequest pr : pendingRequests.values()) {
+                                if (now - pr.lastSentAt >= REQUEST_RESEND_MS) stale.add(pr);
+                            }
+                        }
+                        for (PendingRequest pr : stale) sendRequestPacket(pr);
+                    }
                 }
             } finally {
-                synchronized (NetworkManager.class) {
-                    if (finalStreamIndex >= 0 && finalStreamIndex < actionReaderRunningPerStream.length) {
-                        actionReaderRunningPerStream[finalStreamIndex] = false;
-                    }
-                    actionReaderRunning = false;
-                }
-                lanLog("receiveActionAsync | guard reset stream=%d — reader done", finalStreamIndex);
+                retransmitLoopRunning = false;
             }
-        }, "net-reader-action").start();
+        }, "net-retransmit").start();
     }
+
+    /** Leader: replay all logged commits after fromSeq to one follower's stream. */
+    private static void resendCommitsTo(int streamIndex, int fromSeq) {
+        java.util.ArrayList<Commit> replay = new java.util.ArrayList<>();
+        synchronized (seqLock) {
+            for (Commit c : commitLog) {
+                if (c.globalSeq > fromSeq) replay.add(c);
+            }
+            if (!replay.isEmpty() && replay.get(0).globalSeq != fromSeq + 1) {
+                // Oldest needed commit already evicted from the ring — the follower
+                // cannot catch up incrementally. It will hash-mismatch and snapshot.
+                lanLog("resendCommitsTo | GAP: need seq %d but log starts at %d", fromSeq + 1, replay.get(0).globalSeq);
+            }
+        }
+        if (replay.isEmpty()) return;
+        lanLog("resendCommitsTo | stream=%d replaying %d commits from seq %d", streamIndex, replay.size(), fromSeq + 1);
+        if (streamIndex >= outs.size()) return;
+        DataOutputStream out = outs.get(streamIndex);
+        Object lock = streamIndex < outLocks.size() ? outLocks.get(streamIndex) : out;
+        for (Commit c : replay) {
+            try {
+                writeCommitTo(out, lock, c);
+            } catch (IOException e) {
+                lanLog("resendCommitsTo | write failed stream=%d: %s", streamIndex, e.getMessage());
+                return;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // State checks + snapshot resync: mobs (and everything else) may
+    // never STAY diverged. Every device passes through the identical sim
+    // point "about to execute commit K"; the leader broadcasts its hash
+    // there, followers compare theirs and self-heal via snapshot.
+    // ------------------------------------------------------------------
+
+    /**
+     * Called at the pre-execution sim point of an ACTION commit — by the
+     * owner right after its echo gate releases, and by every other device
+     * when it consumes the commit from the hero's inbox.
+     */
+    public static void onAboutToExecuteCommit(int globalSeq) {
+        if (!lanMode || globalSeq <= 0) return;
+        long hash = computeStateHash();
+        if (isHost) {
+            for (int i = 0; i < outs.size(); i++) {
+                DataOutputStream out = outs.get(i);
+                Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+                try {
+                    synchronized (lock) {
+                        out.writeByte(PacketType.STATE_CHECK);
+                        out.writeInt(globalSeq);
+                        out.writeLong(hash);
+                        out.flush();
+                    }
+                } catch (IOException ignored) {}
+            }
+        } else {
+            Long leader;
+            synchronized (hashLock) {
+                leader = leaderHashes.remove(globalSeq);
+                if (leader == null) {
+                    localHashes.put(globalSeq, hash);
+                    trimHashWindow(localHashes);
+                    return;
+                }
+            }
+            compareStateHashes(globalSeq, hash, leader);
+        }
+    }
+
+    private static void onStateCheckReceived(int globalSeq, long leaderHash) {
+        Long mine;
+        synchronized (hashLock) {
+            mine = localHashes.remove(globalSeq);
+            if (mine == null) {
+                leaderHashes.put(globalSeq, leaderHash);
+                trimHashWindow(leaderHashes);
+                return;
+            }
+        }
+        compareStateHashes(globalSeq, mine, leaderHash);
+    }
+
+    private static void trimHashWindow(java.util.LinkedHashMap<Integer, Long> map) {
+        java.util.Iterator<?> it = map.entrySet().iterator();
+        while (map.size() > HASH_WINDOW && it.hasNext()) {
+            it.next();
+            it.remove();
+        }
+    }
+
+    private static void compareStateHashes(int globalSeq, long local, long leader) {
+        if (local == leader) return;
+        GLog.n("DESYNC DETECTED at commit %d: local=%d leader=%d — requesting resync", globalSeq, local, leader);
+        lanLog("compareStateHashes | MISMATCH seq=%d local=%d leader=%d", globalSeq, local, leader);
+        desyncDetectedSignal.dispatch(new DesyncDetected(local, leader));
+        requestSnapshotResync();
+    }
+
+    /** Follower: ask the leader for its authoritative state. Rate-limited. */
+    public static void requestSnapshotResync() {
+        if (!lanMode || isHost) return;
+        long now = System.currentTimeMillis();
+        if (now - lastSnapshotRequestAt < SNAPSHOT_REQUEST_COOLDOWN_MS) return;
+        lastSnapshotRequestAt = now;
+        resyncInProgress = true;
+        DataOutputStream out = clientOut;
+        if (out == null) return;
+        try {
+            synchronized (clientOutLock) {
+                out.writeByte(PacketType.SNAPSHOT_REQUEST);
+                out.flush();
+            }
+            lanLog("requestSnapshotResync | sent");
+        } catch (IOException e) {
+            GLog.w("Failed to request snapshot: %s", e.getMessage());
+            resyncInProgress = false;
+        }
+    }
+
+    /**
+     * Leader: freeze sequencing, wait for the sim to quiesce, save, and ship
+     * the full game+level bundles to the desynced follower. Runs on its own
+     * thread (never the reader thread that received the request).
+     */
+    private static void buildAndSendSnapshot(int playerSlot) {
+        if (!isHost || !lanMode) return;
+        byte[] gameBytes, levelBytes;
+        int seqAt, depth, branch;
+        synchronized (seqLock) {
+            try {
+                // Wait for the sim to quiesce: the actor thread parks either at
+                // its normal wait point (Actor.processing() == false) or blocked
+                // on seqLock inside leaderSequence — both are pre-mutation points.
+                long quiesceDeadline = System.currentTimeMillis() + 2000;
+                while (com.shatteredpixel.shatteredpixeldungeon.actors.Actor.processing()
+                        && System.currentTimeMillis() < quiesceDeadline) {
+                    Thread.sleep(50);
+                }
+            } catch (Throwable ignored) {}
+            try {
+                Dungeon.saveAll();
+                int slot = com.shatteredpixel.shatteredpixeldungeon.GamesInProgress.curSlot;
+                depth = Dungeon.depth;
+                branch = Dungeon.branch;
+                gameBytes = com.watabou.utils.FileUtils.bundleToBytes(
+                        com.watabou.utils.FileUtils.bundleFromFile(
+                                com.shatteredpixel.shatteredpixeldungeon.GamesInProgress.gameFile(slot)));
+                levelBytes = com.watabou.utils.FileUtils.bundleToBytes(
+                        com.watabou.utils.FileUtils.bundleFromFile(
+                                com.shatteredpixel.shatteredpixeldungeon.GamesInProgress.depthFile(slot, depth, branch)));
+                seqAt = globalSeqCounter;
+            } catch (Exception e) {
+                GLog.n("Failed to build snapshot: %s", e.getMessage());
+                lanLog("buildAndSendSnapshot | FAILED: %s", e);
+                return;
+            }
+        }
+        int streamIndex = playerSlot - 1;
+        if (streamIndex < 0 || streamIndex >= outs.size()) return;
+        DataOutputStream out = outs.get(streamIndex);
+        Object lock = streamIndex < outLocks.size() ? outLocks.get(streamIndex) : out;
+        try {
+            synchronized (lock) {
+                out.writeByte(PacketType.SNAPSHOT);
+                out.writeInt(seqAt);
+                out.writeInt(depth);
+                out.writeInt(branch);
+                out.writeInt(gameBytes.length);
+                out.write(gameBytes);
+                out.writeInt(levelBytes.length);
+                out.write(levelBytes);
+                out.flush();
+            }
+            lanLog("buildAndSendSnapshot | sent to player %d: seq=%d game=%dB level=%dB",
+                    playerSlot, seqAt, gameBytes.length, levelBytes.length);
+        } catch (IOException e) {
+            GLog.w("Failed to send snapshot: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Follower: adopt the leader's authoritative state. Writes the bundles to
+     * the local save slot, fast-forwards the applied-commit cursor, clears all
+     * in-flight protocol state, and reloads the game via InterlevelScene.
+     */
+    private static void applySnapshot(int seqAt, int depth, int branch, byte[] gameBytes, byte[] levelBytes) {
+        lanLog("applySnapshot | seq=%d depth=%d game=%dB level=%dB", seqAt, depth, branch, gameBytes.length);
+        try {
+            int slot = com.shatteredpixel.shatteredpixeldungeon.GamesInProgress.curSlot;
+            com.watabou.utils.FileUtils.bundleToFile(
+                    com.shatteredpixel.shatteredpixeldungeon.GamesInProgress.gameFile(slot),
+                    com.watabou.utils.FileUtils.bundleFromBytes(gameBytes));
+            com.watabou.utils.FileUtils.bundleToFile(
+                    com.shatteredpixel.shatteredpixeldungeon.GamesInProgress.depthFile(slot, depth, branch),
+                    com.watabou.utils.FileUtils.bundleFromBytes(levelBytes));
+        } catch (Exception e) {
+            GLog.n("Failed to apply snapshot: %s", e.getMessage());
+            resyncInProgress = false;
+            return;
+        }
+
+        synchronized (applyLock) {
+            lastAppliedSeq = seqAt;
+            reorderBuffer.headMap(seqAt + 1).clear();
+        }
+        synchronized (hashLock) {
+            leaderHashes.clear();
+            localHashes.clear();
+        }
+        synchronized (choiceLock) {
+            stashedItemChoice = stashedCellChoice = stashedOptionChoice = null;
+        }
+        pendingRemoteItemSelector = null;
+        pendingRemoteCellListener = null;
+        pendingRemoteOptionHandler = null;
+        releaseAllEchoGates();
+        if (Dungeon.heroes != null) {
+            for (Hero h : Dungeon.heroes) {
+                if (h == null) continue;
+                synchronized (h.lanActionLock) {
+                    h.lanActionInbox.clear();
+                    h.lanActionLock.notifyAll();
+                }
+            }
+        }
+        sendAckNow();
+
+        Game.runOnRenderThread(() -> {
+            try {
+                com.shatteredpixel.shatteredpixeldungeon.scenes.InterlevelScene.mode =
+                        com.shatteredpixel.shatteredpixeldungeon.scenes.InterlevelScene.Mode.CONTINUE;
+                Game.switchScene(com.shatteredpixel.shatteredpixeldungeon.scenes.InterlevelScene.class);
+            } catch (Throwable t) {
+                GLog.n("Snapshot reload failed: %s", t.getMessage());
+            }
+        });
+
+        // Once the reload finishes, drain any commits that queued up meanwhile.
+        new Thread(() -> {
+            try {
+                for (int i = 0; i < 40; i++) {
+                    Thread.sleep(250);
+                    if (Dungeon.heroes != null && !com.shatteredpixel.shatteredpixeldungeon.scenes.InterlevelScene.mode.equals(
+                            com.shatteredpixel.shatteredpixeldungeon.scenes.InterlevelScene.Mode.CONTINUE)) break;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            resyncInProgress = false;
+            drainReorderBuffer();
+            lanLog("applySnapshot | resync complete, protocol resumed");
+        }, "net-resync-drain").start();
+    }
+
+    /** Applies any contiguous commits waiting in the reorder buffer. */
+    private static void drainReorderBuffer() {
+        java.util.ArrayList<Commit> toApply = null;
+        synchronized (applyLock) {
+            while (!reorderBuffer.isEmpty() && reorderBuffer.firstKey() == lastAppliedSeq + 1) {
+                Commit n = reorderBuffer.pollFirstEntry().getValue();
+                lastAppliedSeq = n.globalSeq;
+                if (toApply == null) toApply = new java.util.ArrayList<>();
+                toApply.add(n);
+            }
+        }
+        if (toApply != null) {
+            for (Commit n : toApply) dispatchCommit(n);
+            sendAckNow();
+        }
+    }
+
+    // ==================================================================
+    // End of leader-sequenced commit protocol
+    // ==================================================================
 
     /**
      * Starts a background thread that sends a PING packet to all peers every
@@ -522,32 +1438,11 @@ public class NetworkManager {
     }
 
     /**
-     * Sends an item identification packet to broadcast that an item has been identified.
+     * Broadcasts that an item has been identified, as a sequenced commit.
      * The class name is sent so peers can instantiate and identify the same item.
      */
     public static void sendItemIdentified(String itemClassName) {
-        if (!lanMode) return;
-        try {
-            if (isHost) {
-                for (int i = 0; i < outs.size(); i++) {
-                    DataOutputStream out = outs.get(i);
-                    Object lock = i < outLocks.size() ? outLocks.get(i) : out;
-                    synchronized (lock) {
-                        out.writeByte(PacketType.ITEM_IDENTIFIED);
-                        out.writeUTF(itemClassName);
-                        out.flush();
-                    }
-                }
-            } else if (clientOut != null) {
-                synchronized (clientOutLock) {
-                    clientOut.writeByte(PacketType.ITEM_IDENTIFIED);
-                    clientOut.writeUTF(itemClassName);
-                    clientOut.flush();
-                }
-            }
-        } catch (IOException e) {
-            GLog.w("Failed to send item identification: %s", e.getMessage());
-        }
+        submitLocalOp(InnerOp.ITEM_IDENTIFIED, (byte) 0, 0, itemClassName, false);
     }
 
     /**
@@ -793,7 +1688,11 @@ public class NetworkManager {
                 }
             }
             if (Dungeon.level != null && Dungeon.level.mobs != null) {
-                for (com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob m : Dungeon.level.mobs) {
+                // Sort by position for deterministic hash — HashSet order differs per JVM.
+                java.util.List<com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob> sortedMobs =
+                        new java.util.ArrayList<>(Dungeon.level.mobs);
+                sortedMobs.sort((a, b) -> Integer.compare(a.pos, b.pos));
+                for (com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob m : sortedMobs) {
                     if (m != null) {
                         hash ^= (long) m.pos * 0xbf58476d1ce4e5b9L;
                         hash ^= (long) m.HP  * 0x94d049bb133111ebL;
@@ -857,11 +1756,15 @@ public class NetworkManager {
      * Host: Broadcasts a START packet to all connected clients and marks the game as started.
      */
     public static void sendStart(int playerCount, long seed) throws IOException {
-        for (DataOutputStream out : outs) {
-            out.writeByte(PacketType.START);
-            out.writeInt(playerCount);
-            out.writeLong(seed);
-            out.flush();
+        for (int i = 0; i < outs.size(); i++) {
+            DataOutputStream out = outs.get(i);
+            Object lock = i < outLocks.size() ? outLocks.get(i) : out;
+            synchronized (lock) {
+                out.writeByte(PacketType.START);
+                out.writeInt(playerCount);
+                out.writeLong(seed);
+                out.flush();
+            }
         }
         gameStarted = true;
         GLog.p("START sent: playerCount=%d seed=%d", playerCount, seed);
@@ -981,7 +1884,71 @@ public class NetworkManager {
         playerNames = new String[4];  // reset player names array
         localPlayerIndex = 0;
         actionReaderRunningPerStream = new boolean[MAX_PLAYERS]; // EC-6.7: reset per-stream guards
+        remoteItemExecution = false;
+        localItemExecution = false;
+        remoteExecutionHero = null;
+        pendingRemoteItemSelector = null;
+        pendingRemoteCellListener = null;
+        pendingRemoteOptionHandler = null;
+        lanChallenges = 0;
 
+        resetCommitProtocolState();
+    }
+
+    /** Resets all leader-sequenced protocol state. Called on cleanup and at the start of every hosted/joined game. */
+    public static void resetCommitProtocolState() {
+        releaseAllEchoGates();
+        synchronized (seqLock) {
+            globalSeqCounter = 0;
+            commitLog.clear();
+            lastClientSeqSeen = new int[MAX_PLAYERS];
+            lastAckedSeq = new int[MAX_PLAYERS];
+            lastAckAt = new long[MAX_PLAYERS];
+            lastResendAt = new long[MAX_PLAYERS];
+        }
+        synchronized (applyLock) {
+            lastAppliedSeq = 0;
+            reorderBuffer.clear();
+        }
+        synchronized (requestLock) {
+            clientSeqCounter = 0;
+        }
+        synchronized (hashLock) {
+            leaderHashes.clear();
+            localHashes.clear();
+        }
+        synchronized (choiceLock) {
+            stashedItemChoice = stashedCellChoice = stashedOptionChoice = null;
+        }
+        readerCovered.clear();
+        resyncInProgress = false;
+        lastSnapshotRequestAt = 0;
+    }
+
+    // Test seams — leader-sequenced commit protocol
+    public static int getGlobalSeqForTesting() {
+        synchronized (seqLock) { return globalSeqCounter; }
+    }
+    public static int getLastAppliedSeqForTesting() {
+        synchronized (applyLock) { return lastAppliedSeq; }
+    }
+    public static int getLastAckedSeqForTesting(int playerSlot) {
+        synchronized (seqLock) { return lastAckedSeq[playerSlot]; }
+    }
+    public static int getPendingRequestCountForTesting() {
+        return pendingRequests.size();
+    }
+    public static void setEchoTimeoutForTesting(int ms) {
+        commitEchoTimeoutMs = ms;
+    }
+    /**
+     * The monitor guarding writes to clientOut. Tests that simulate this
+     * device's own outgoing frames by writing to the injected clientOut
+     * directly must hold this lock, so their writes don't interleave with the
+     * reader thread's ACK writes (which also go out clientOut).
+     */
+    public static Object clientOutLockForTesting() {
+        return clientOutLock;
     }
 
     // Test seam — expose connectedPlayerCount for assertions
@@ -1007,11 +1974,12 @@ public class NetworkManager {
     // Test seam — override host flag for unit tests
     public static void setIsHostForTesting(boolean host) { isHost = host; }
 
-    // Test seam — fire sendAction check without touching sockets
-    public static void sendActionIfLocal(HeroAction action, int heroId) {
-        if (!lanMode) return;
-        if (sendActionOverride != null) { sendActionOverride.accept(action, heroId); return; }
-        sendAction(action, heroId);
+    // Test seam — fire sendAction check without touching sockets.
+    // Returns the commit's globalSeq (-1 when overridden or unsequenced).
+    public static int sendActionIfLocal(HeroAction action, int heroId) {
+        if (!lanMode) return -1;
+        if (sendActionOverride != null) { sendActionOverride.accept(action, heroId); return -1; }
+        return sendAction(action, heroId);
     }
 
     // Test seam — whether a remote hero's act() should block waiting for a packet
@@ -1091,9 +2059,9 @@ public class NetworkManager {
 
     /**
      * Encodes a HeroAction into a byte action type for the wire protocol.
-     * Package-private so tests can verify round-trip symmetry.
+     * Public so tests in other packages can verify round-trip symmetry.
      */
-    static byte encodeAction(HeroAction action) {
+    public static byte encodeAction(HeroAction action) {
         if (action == null)                          return ActionType.REST;
         if (action instanceof HeroAction.Move)       return ActionType.MOVE;
         if (action instanceof HeroAction.Attack)     return ActionType.ATTACK;
@@ -1105,14 +2073,19 @@ public class NetworkManager {
         if (action instanceof HeroAction.Buy)        return ActionType.BUY;
         if (action instanceof HeroAction.Mine)       return ActionType.MINE;
         if (action instanceof HeroAction.Alchemy)    return ActionType.ALCHEMY;
+        if (action instanceof HeroAction.UseItem)    return ActionType.USE_ITEM;
+        if (action instanceof HeroAction.UseItemAt)  return ActionType.USE_ITEM_AT;
+        if (action instanceof HeroAction.ShopBuy)     return ActionType.SHOP_BUY;
+        if (action instanceof HeroAction.ShopSell)    return ActionType.SHOP_SELL;
+        if (action instanceof HeroAction.Search)     return ActionType.SEARCH;
         return ActionType.REST;
     }
 
     /**
      * Extracts the target position from a HeroAction for the wire protocol.
-     * Package-private so tests can verify round-trip symmetry.
+     * Public so tests in other packages can verify round-trip symmetry.
      */
-    static int getTargetPos(HeroAction action) {
+    public static int getTargetPos(HeroAction action) {
         if (action instanceof HeroAction.Attack) {
             HeroAction.Attack a = (HeroAction.Attack) action;
             return a.target != null ? a.target.pos : a.dst;
@@ -1121,15 +2094,29 @@ public class NetworkManager {
             HeroAction.Interact i = (HeroAction.Interact) action;
             return i.ch != null ? i.ch.pos : i.dst;
         }
+        if (action instanceof HeroAction.UseItem) {
+            HeroAction.UseItem u = (HeroAction.UseItem) action;
+            return (u.bagOrdinal << 28) | ((u.slotIndex & 0x3FF) << 18)
+                    | ((u.actionIdx & 0xFF) << 10);
+        }
+        if (action instanceof HeroAction.UseItemAt) {
+            HeroAction.UseItemAt u = (HeroAction.UseItemAt) action;
+            return (u.bagOrdinal << 28) | ((u.slotIndex & 0x3FF) << 18)
+                    | ((u.verb & 0x3) << 16) | (u.cell & 0xFFFF);
+        }
+        if (action instanceof HeroAction.ShopSell) {
+            HeroAction.ShopSell u = (HeroAction.ShopSell) action;
+            return (u.bagOrdinal << 28) | ((u.slotIndex & 0x3FF) << 18) | (u.all ? 1 : 0);
+        }
         return action != null ? action.dst : 0;
     }
 
     /**
      * Decodes a wire protocol byte + position back into a HeroAction.
      * For Attack/Interact the receiver looks up the Char by position at simulation time.
-     * Package-private so tests can verify round-trip symmetry.
+     * Public so tests in other packages can verify round-trip symmetry.
      */
-    static HeroAction decodeAction(byte actionType, int targetPos) {
+    public static HeroAction decodeAction(byte actionType, int targetPos) {
         if (actionType == ActionType.MOVE)           return new HeroAction.Move(targetPos);
         if (actionType == ActionType.ATTACK) {
             com.shatteredpixel.shatteredpixeldungeon.actors.Char target =
@@ -1152,7 +2139,30 @@ public class NetworkManager {
         if (actionType == ActionType.BUY)            return new HeroAction.Buy(targetPos);
         if (actionType == ActionType.MINE)           return new HeroAction.Mine(targetPos);
         if (actionType == ActionType.ALCHEMY)        return new HeroAction.Alchemy(targetPos);
-        if (actionType == ActionType.REST)           return null;
+        if (actionType == ActionType.USE_ITEM) {
+            int bagOrdinal = (targetPos >>> 28) & 0xF;
+            int slotIndex  = (targetPos >>> 18) & 0x3FF;
+            int actionIdx  = (targetPos >>> 10) & 0xFF;
+            return new HeroAction.UseItem(bagOrdinal, slotIndex, actionIdx);
+        }
+        if (actionType == ActionType.SHOP_BUY)       return new HeroAction.ShopBuy(targetPos);
+        if (actionType == ActionType.SHOP_SELL) {
+            int bagOrdinal = (targetPos >>> 28) & 0xF;
+            int slotIndex  = (targetPos >>> 18) & 0x3FF;
+            boolean all    = (targetPos & 1) != 0;
+            return new HeroAction.ShopSell(bagOrdinal, slotIndex, all);
+        }
+        if (actionType == ActionType.USE_ITEM_AT) {
+            int bagOrdinal = (targetPos >>> 28) & 0xF;
+            int slotIndex  = (targetPos >>> 18) & 0x3FF;
+            int verb       = (targetPos >>> 16) & 0x3;
+            int cell       = targetPos & 0xFFFF;
+            return new HeroAction.UseItemAt(bagOrdinal, slotIndex, verb, cell);
+        }
+        // REST decodes to a real action — it used to decode to null, which left the
+        // remote hero waiting forever on a packet that had already been consumed
+        if (actionType == ActionType.REST)           return new HeroAction.Rest(targetPos == 1);
+        if (actionType == ActionType.SEARCH)         return new HeroAction.Search();
         return null;
     }
 
@@ -1207,6 +2217,9 @@ public class NetworkManager {
     public static void sendHandshake(long seed, HeroClass[] classes) {
         if (!lanMode || !isHost) return;
 
+        // Host plays with its local challenge selection; clients adopt it below
+        lanChallenges = com.shatteredpixel.shatteredpixeldungeon.SPDSettings.challenges();
+
         try {
             for (int i = 0; i < outs.size(); i++) {
                 DataOutputStream out = outs.get(i);
@@ -1215,6 +2228,7 @@ public class NetworkManager {
                     out.writeByte(PacketType.HANDSHAKE);
                     out.writeInt(PROTOCOL_VERSION); // EC-6.5: version field before seed
                     out.writeLong(seed);
+                    out.writeInt(lanChallenges);
                     out.writeInt(classes.length);
                     for (HeroClass cls : classes) {
                         out.writeByte(cls.ordinal());
@@ -1307,9 +2321,12 @@ public class NetworkManager {
         try {
             if (playerIndex >= 0 && playerIndex < outs.size()) {
                 DataOutputStream out = outs.get(playerIndex);
-                out.writeByte(PacketType.CLASS_REJECTED);
-                out.writeInt(playerIndex);
-                out.flush();
+                Object lock = playerIndex < outLocks.size() ? outLocks.get(playerIndex) : out;
+                synchronized (lock) {
+                    out.writeByte(PacketType.CLASS_REJECTED);
+                    out.writeInt(playerIndex);
+                    out.flush();
+                }
             }
         } catch (IOException e) {
             GLog.n("Failed to send CLASS_REJECTED: %s", e.getMessage());
@@ -1437,6 +2454,7 @@ public class NetworkManager {
                         throw new IOException("Protocol version mismatch: remote=" + remoteVersion + " local=" + PROTOCOL_VERSION);
                     }
                     long seed = in.readLong();
+                    lanChallenges = in.readInt(); // adopt the host's challenge selection
                     int playerCount = in.readInt();
                     // EC-6.3: validate playerCount range
                     if (playerCount < 1 || playerCount > MAX_PLAYERS) {

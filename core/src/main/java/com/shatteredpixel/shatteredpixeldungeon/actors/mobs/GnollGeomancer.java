@@ -254,7 +254,7 @@ public class GnollGeomancer extends Mob {
 						sprite.idle();
 					}
 
-					Sample.INSTANCE.play(Assets.Sounds.MINE, 1f, Random.Float(0.85f, 1.15f));
+					Sample.INSTANCE.play(Assets.Sounds.MINE, 1f, Random.cosmeticFloat(0.85f, 1.15f));
 					Invisibility.dispel(Dungeon.hero);
 					Dungeon.hero.spendAndNext(p.delayFactor(GnollGeomancer.this));
 				}
@@ -402,7 +402,7 @@ public class GnollGeomancer extends Mob {
 
 		for (int i : cells){
 			if (Dungeon.level.map[i] == Terrain.WALL_DECO){
-				Dungeon.level.drop(new DarkGold(), i).sprite.drop();
+				Dungeon.level.dropAndShow(new DarkGold(), i);
 				Dungeon.level.map[i] = Terrain.EMPTY_DECO;
 			} else if (Dungeon.level.solid[i]){
 				if (Random.Int(3) == 0){

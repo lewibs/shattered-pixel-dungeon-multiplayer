@@ -253,8 +253,9 @@ public class AscensionChallenge extends Buff {
 			Statistics.highestAscent = Dungeon.depth;
 			justAscended = true;
 			if (Dungeon.bossLevel()){
-				Dungeon.hero.buff(Hunger.class).satisfy(Hunger.STARVING);
-				Buff.affect(Dungeon.hero, Healing.class).setHeal(Dungeon.hero.HT, 0, 20);
+				//LAN: this buff's carrier, not the device-local Dungeon.hero
+				if (target.buff(Hunger.class) != null) target.buff(Hunger.class).satisfy(Hunger.STARVING);
+				Buff.affect(target, Healing.class).setHeal(target.HT, 0, 20);
 			} else {
 				stacks += 2f;
 

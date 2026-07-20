@@ -84,11 +84,16 @@ public class LaboratoryRoom extends SpecialRoom {
 		}
 		
 		//guide pages
+		//LAN: page drops depend on per-device meta progression AND consume a varying
+		//number of draws from the shared level-gen generator — devices would build
+		//entirely different levels downstream. Skip pages in LAN games.
 		Collection<String> allPages = Document.ALCHEMY_GUIDE.pageNames();
 		ArrayList<String> missingPages = new ArrayList<>();
-		for ( String page : allPages){
-			if (!Document.ALCHEMY_GUIDE.isPageFound(page)){
-				missingPages.add(page);
+		if (!com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+			for ( String page : allPages){
+				if (!Document.ALCHEMY_GUIDE.isPageFound(page)){
+					missingPages.add(page);
+				}
 			}
 		}
 		

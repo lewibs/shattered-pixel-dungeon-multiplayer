@@ -116,7 +116,7 @@ public class Pasty extends Food {
 				//...but it also awards an extra item that restores 150 hunger
 				FishLeftover left = new FishLeftover();
 				if (!left.collect()){
-					Dungeon.level.drop(left, hero.pos).sprite.drop();
+					Dungeon.level.dropAndShow(left, hero.pos);
 				}
 				break;
 			case APRIL_FOOLS:

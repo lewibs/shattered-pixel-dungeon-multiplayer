@@ -220,11 +220,12 @@ public class Game implements ApplicationListener {
 	}
 	
 	public static Scene scene() {
-		return instance.scene;
+		//null-safe: headless contexts (tests, early startup) have no Game instance
+		return instance == null ? null : instance.scene;
 	}
 
 	public static boolean switchingScene() {
-		return instance.requestedReset;
+		return instance != null && instance.requestedReset;
 	}
 	
 	protected void step() {

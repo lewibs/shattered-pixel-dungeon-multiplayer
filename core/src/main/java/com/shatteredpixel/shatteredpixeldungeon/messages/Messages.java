@@ -77,7 +77,15 @@ public class Messages {
 
 	static{
 		formatters = new HashMap<>();
-		setup(SPDSettings.language());
+		if (com.badlogic.gdx.Gdx.app != null) {
+			setup(SPDSettings.language());
+		} else {
+			// Headless (unit test) mode: skip LibGDX bundle loading.
+			// Messages.get() will return the raw key string as a fallback.
+			Messages.lang = Languages.ENGLISH;
+			locale = Locale.ENGLISH;
+			bundles = new ArrayList<>();
+		}
 	}
 
 	public static void setup( Languages lang ){

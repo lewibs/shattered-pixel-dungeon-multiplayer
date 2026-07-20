@@ -78,10 +78,12 @@ public class Sheep extends NPC {
 	@Override
 	public boolean interact(Char c) {
 		Bestiary.setSeen(getClass());
-		sprite.showStatus( CharSprite.NEUTRAL, Messages.get(this, Random.element( LINE_KEYS )) );
-		if (c == Dungeon.hero) {
-			Dungeon.hero.spendAndNext(1f);
-			Sample.INSTANCE.play(Assets.Sounds.SHEEP, 1, Random.Float(0.91f, 1.1f));
+		if (sprite != null) sprite.showStatus( CharSprite.NEUTRAL, Messages.get(this, Random.element( LINE_KEYS )) );
+		//LAN: ANY hero spends the turn — gating on the device-local Dungeon.hero
+		//made the remote device skip the time spend and desync the schedule
+		if (c instanceof com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero) {
+			((com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero) c).spendAndNext(1f);
+			Sample.INSTANCE.play(Assets.Sounds.SHEEP, 1, Random.cosmeticFloat(0.91f, 1.1f));
 			//sheep summoned by woolly bomb can be dispelled by interacting
 			if (lifespan >= 20){
 				spend(-cooldown());

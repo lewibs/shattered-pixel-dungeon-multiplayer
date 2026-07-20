@@ -168,7 +168,8 @@ public class Stasis extends ClericSpell {
 			}
 
 			if (stasisAlly.buff(LifeLink.class) != null){
-				Buff.prolong(Dungeon.hero, LifeLink.class, stasisAlly.buff(LifeLink.class).cooldown()).object = stasisAlly.id();
+				//LAN: this buff's carrier is the casting hero — never Dungeon.hero
+				Buff.prolong(target, LifeLink.class, stasisAlly.buff(LifeLink.class).cooldown()).object = stasisAlly.id();
 			}
 
 			ScrollOfTeleportation.appear(stasisAlly, stasisAlly.pos);

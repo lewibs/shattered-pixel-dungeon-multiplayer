@@ -88,7 +88,7 @@ public class TelekineticGrab extends TargetedSpell {
 
 				} else {
 					GLog.w(Messages.get(this, "cant_grab"));
-					Dungeon.level.drop(item, ch.pos).sprite.drop();
+					Dungeon.level.dropAndShow(item, ch.pos);
 					break;
 				}
 

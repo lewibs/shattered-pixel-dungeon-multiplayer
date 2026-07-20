@@ -1,8 +1,11 @@
 {
+  "prUrl": "https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1",
   "bugFiles": [
-    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-31-lan-fov-interrupt-freeze.md"
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-05-31-lan-fov-interrupt-freeze.md",
+    "/home/lewibs/github/shattered-pixel-dungeon-multiplayer/docs/bugs/2026-06-03-lan-mob-death-dungeon-hero-desync.md"
   ],
   "notes": [
-    "debugger-agent: root cause was Hero.checkVisibleMobs() using the shared heroFOV array (always recomputed for hero[0]) instead of a per-hero FOV, causing spurious interrupt() for remote heroes and LAN deadlock when curAction was cleared. Fixed in Hero.java checkVisibleMobs(): added LAN guard that recomputes fieldOfView from the remote hero's own position before checking mob visibility."
+    "debugger-agent: root cause was Hero.checkVisibleMobs() using the shared heroFOV array (always recomputed for hero[0]) instead of a per-hero FOV, causing spurious interrupt() for remote heroes and LAN deadlock when curAction was cleared. Fixed in Hero.java checkVisibleMobs(): added LAN guard that recomputes fieldOfView from the remote hero's own position before checking mob visibility.",
+    "pr-agent: opened PR at https://github.com/lewibs/shattered-pixel-dungeon-multiplayer/pull/1 with fixes for two LAN desync bugs: (1) Mob.die() using Dungeon.hero instead of killer hero for EXP/loot/talents, (2) receiveActionAsync() race condition in per-stream guard reset. Also extended computeStateHash() to detect desyncs sooner."
   ]
 }

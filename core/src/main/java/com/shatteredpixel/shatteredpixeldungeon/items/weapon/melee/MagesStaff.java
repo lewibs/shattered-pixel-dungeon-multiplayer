@@ -63,6 +63,11 @@ public class MagesStaff extends MeleeWeapon {
 
 	private Wand wand;
 
+	//LAN: remote devices resolve USE_ITEM_AT zaps through the staff slot
+	public Wand wandForZap() {
+		return wand;
+	}
+
 	public static final String AC_IMBUE = "IMBUE";
 	public static final String AC_ZAP	= "ZAP";
 
@@ -223,8 +228,9 @@ public class MagesStaff extends MeleeWeapon {
 
 		int oldStaffcharges = this.wand != null ? this.wand.curCharges : 0;
 
-		if (owner == Dungeon.hero && Dungeon.hero.hasTalent(Talent.WAND_PRESERVATION)){
-			Talent.WandPreservationCounter counter = Buff.affect(Dungeon.hero, Talent.WandPreservationCounter.class);
+		//LAN: key off the imbuing owner, not the device-local Dungeon.hero
+		if (owner instanceof Hero && ((Hero)owner).hasTalent(Talent.WAND_PRESERVATION)){
+			Talent.WandPreservationCounter counter = Buff.affect(owner, Talent.WandPreservationCounter.class);
 			if (counter.count() == 0){
 				counter.countUp(1);
 				this.wand.level(0);

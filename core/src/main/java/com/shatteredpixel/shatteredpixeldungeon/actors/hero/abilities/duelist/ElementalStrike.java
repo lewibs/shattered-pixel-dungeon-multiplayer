@@ -210,7 +210,7 @@ public class ElementalStrike extends ArmorAbility {
 					}
 				}
 
-				perCellEffect(cone, finalEnchantment);
+				perCellEffect(cone, hero, finalEnchantment);
 
 				perCharEffect(cone, hero, enemy, finalEnchantment);
 
@@ -284,7 +284,7 @@ public class ElementalStrike extends ArmorAbility {
 	public static class ElementalStrikeFurrowCounter extends CounterBuff{{revivePersists = true;}};
 
 	//effects that affect the cells of the environment themselves
-	private void perCellEffect(ConeAOE cone, Weapon.Enchantment ench){
+	private void perCellEffect(ConeAOE cone, Hero hero, Weapon.Enchantment ench){
 
 		int targetsHit = 0;
 		for (Char ch : Actor.chars()){
@@ -323,13 +323,14 @@ public class ElementalStrike extends ArmorAbility {
 			// each hero level is worth 20 normal uses, but just 5 if no enemies are present
 			// cap of 40/10 uses
 			int highGrassType = Terrain.HIGH_GRASS;
-			if (Buff.affect(Dungeon.hero, ElementalStrikeFurrowCounter.class).count() >= 40){
+			//LAN: the striking hero, not the device-local Dungeon.hero
+			if (Buff.affect(hero, ElementalStrikeFurrowCounter.class).count() >= 40){
 				highGrassType = Terrain.FURROWED_GRASS;
 			} else {
-				if (Dungeon.hero.visibleEnemies() == 0 && targetsHit == 0) {
-					Buff.count(Dungeon.hero, ElementalStrikeFurrowCounter.class, 4f);
+				if (hero.visibleEnemies() == 0 && targetsHit == 0) {
+					Buff.count(hero, ElementalStrikeFurrowCounter.class, 4f);
 				} else {
-					Buff.count(Dungeon.hero, ElementalStrikeFurrowCounter.class, 1f);
+					Buff.count(hero, ElementalStrikeFurrowCounter.class, 1f);
 				}
 			}
 
@@ -424,7 +425,7 @@ public class ElementalStrike extends ArmorAbility {
 				if (ch.alignment == Char.Alignment.ENEMY
 						&& Random.Float() < 0.125f*powerMulti
 						&& ch.buff(ElementalStrikeLuckyTracker.class) == null) {
-					Dungeon.level.drop(Lucky.genLoot(), ch.pos).sprite.drop();
+					Dungeon.level.dropAndShow(Lucky.genLoot(), ch.pos);
 					Lucky.showFlare(ch.sprite);
 					Buff.affect(ch, ElementalStrikeLuckyTracker.class);
 				}

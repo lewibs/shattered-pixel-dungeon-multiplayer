@@ -2,7 +2,6 @@ package com.shatteredpixel.shatteredpixeldungeon.lan;
 
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
-import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction;
 import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.Timeout;
@@ -15,18 +14,18 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests that reproduce the persistent-reader deadlock:
+ * Historical context: the old per-turn reader could deliver turn-(N+1)'s
+ * packet into curAction while turn N was still processing; ready() then wiped
+ * it and the game froze ("few moves then freeze").
  *
- * Root cause: the reader thread loops indefinitely (while lanMode &&
- * remoteHero != null). After delivering turn-N's action it immediately
- * reads turn-(N+1)'s bytes from the stream. If those bytes arrive while
- * the game is still processing turn N, the reader delivers them into
- * curAction BEFORE ready() clears curAction at the end of turn N.
- * ready() then wipes that pre-delivered action and turn N+1 hangs forever.
+ * v3 leader-sequenced commit protocol: readers are PERSISTENT (one per
+ * socket) and every sequenced op is queued in the hero's per-hero inbox
+ * (hero.lanActionInbox), so early / back-to-back / buffered packets can never
+ * be lost or wiped. These tests pin down those invariants:
  *
- * Fix: break out of the reader loop after delivering ONE action packet and
- * reset the actionReaderRunning guard, so receiveActionAsync() starts a
- * fresh reader for each remote turn.
+ *  - ops sent before the previous one is consumed are queued, not lost
+ *  - repeated ensureGameplayReaders calls never spawn duplicate readers
+ *  - long sequences of back-to-back ops all arrive, in order
  */
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
 class LanPersistentReaderDeadlockTest {
@@ -42,6 +41,9 @@ class LanPersistentReaderDeadlockTest {
 
     private Hero localHero;
     private Hero remoteHero;
+
+    // Per-client contiguous request counter (v3 leader dedupes by clientSeq)
+    private int clientSeq = 0;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -75,13 +77,16 @@ class LanPersistentReaderDeadlockTest {
         NetworkManager.setIsHostForTesting(true);
         NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
     }
 
     @AfterEach
     void tearDown() throws IOException {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
+        NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         if (clientSocket    != null && !clientSocket.isClosed())    clientSocket.close();
         if (hostSideSocket  != null && !hostSideSocket.isClosed())  hostSideSocket.close();
         if (serverSocket    != null && !serverSocket.isClosed())    serverSocket.close();
@@ -96,114 +101,110 @@ class LanPersistentReaderDeadlockTest {
     // -------------------------------------------------------------------------
 
     void clientSendsMove(int targetPos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1);   // heroId = 1
-        clientOut.writeByte(0);  // MOVE
-        clientOut.writeInt(targetPos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++clientSeq, (byte) 0, targetPos);
     }
 
     /**
-     * Simulates exactly what Hero.act() does for a remote hero:
-     * - calls receiveActionAsync() (idempotent guard)
-     * - waits on lanActionLock until curAction != null
-     * - returns curAction
-     * - sets curAction = null (simulates ready() clearing it)
+     * Simulates what Hero.act() does for a remote hero in v3:
+     * - calls receiveActionAsync() (persistent readers, idempotent)
+     * - waits on lanActionLock until a commit is in the inbox
+     * - consumes and returns the commit (ready() no longer wipes anything —
+     *   the inbox is only drained at execution time)
      */
-    HeroAction simulateRemoteAct(long maxWaitMs) throws InterruptedException {
+    NetworkManager.Commit simulateRemoteAct(long maxWaitMs) throws InterruptedException {
         synchronized (remoteHero.lanActionLock) {
             NetworkManager.receiveActionAsync(remoteHero);
             long deadline = System.currentTimeMillis() + maxWaitMs;
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
+            while (remoteHero.lanActionInbox.isEmpty() && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 remoteHero.lanActionLock.wait(rem);
             }
+            return remoteHero.lanActionInbox.pollFirst();
         }
-        HeroAction received = remoteHero.curAction;
-        // Simulate ready() clearing curAction at end of turn
-        remoteHero.curAction = null;
-        return received;
+    }
+
+    /** Counts live persistent gameplay reader threads. */
+    static int countNetReaderThreads() {
+        Thread[] all = new Thread[Thread.activeCount() * 2 + 16];
+        int n = Thread.enumerate(all);
+        int count = 0;
+        for (int i = 0; i < n; i++) {
+            if (all[i] != null && all[i].isAlive() && all[i].getName().startsWith("net-reader-")) count++;
+        }
+        return count;
     }
 
     // =========================================================================
-    // Bug 1: Pre-delivered action wiped by ready()
+    // Invariant 1: Pre-sent turn-2 op is never lost
     //
-    // Scenario: remote sends BOTH turn-1 and turn-2 packets back-to-back before
-    // the host has consumed turn-1. The persistent reader reads turn-2 into
-    // curAction, then ready() at the end of turn-1 clears it. Turn-2 hangs.
-    //
-    // Before fix: turn2Action == null (deadlock / 5-second timeout)
-    // After  fix: turn2Action != null (correct)
+    // Scenario: remote sends BOTH turn-1 and turn-2 ops back-to-back before
+    // the host has consumed turn-1. With the old per-turn reader, turn-2's
+    // packet was read into curAction and then wiped by ready() — deadlock.
+    // v3: both commits queue in the per-hero inbox and are consumed in order.
     // =========================================================================
 
     @Test
     void preSentTurnTwoPacket_notLostWhenReadyClears() throws Exception {
-        // Client sends BOTH actions before the host processes either
-        clientSendsMove(10); // turn 1 action
-        clientSendsMove(20); // turn 2 action — arrives while turn 1 still processing
-        Thread.sleep(20);    // let both bytes reach the TCP receive buffer
+        // Client sends BOTH ops before the host processes either
+        clientSendsMove(10); // turn 1 op
+        clientSendsMove(20); // turn 2 op — arrives while turn 1 still processing
+        Thread.sleep(20);    // let both frames reach the TCP receive buffer
 
         // --- Turn 1 ---
-        HeroAction turn1 = simulateRemoteAct(2000);
-        assertNotNull(turn1, "Turn 1 action must be received");
-        assertEquals(10, ((HeroAction.Move) turn1).dst, "Turn 1: wrong destination");
-        // ready() already cleared curAction in simulateRemoteAct
+        NetworkManager.Commit turn1 = simulateRemoteAct(2000);
+        assertNotNull(turn1, "Turn 1 op must be received");
+        assertEquals(10, turn1.targetPos, "Turn 1: wrong destination");
 
         // --- Turn 2 ---
-        // With the buggy persistent reader, turn-2 bytes were consumed by the reader
-        // during turn-1 processing and stored in curAction, then ready() wiped them.
-        // The reader is still blocked waiting for turn-3 bytes that never come.
-        // receiveActionAsync() is a no-op (guard still true).
-        // curAction stays null → simulateRemoteAct times out → test FAILS before fix.
-        HeroAction turn2 = simulateRemoteAct(2000);
+        // The pre-sent op must be waiting in the inbox — nothing may wipe it.
+        NetworkManager.Commit turn2 = simulateRemoteAct(2000);
         assertNotNull(turn2,
-                "Turn 2 action must be received. " +
-                "If null: persistent reader consumed turn-2 bytes but ready() wiped curAction " +
-                "before act() could read it. This is the recurring LAN freeze.");
-        assertEquals(20, ((HeroAction.Move) turn2).dst, "Turn 2: wrong destination");
+                "Turn 2 op must be received. " +
+                "If null: the early-delivered commit was lost instead of queued in " +
+                "the per-hero inbox. This is the recurring LAN freeze.");
+        assertEquals(20, turn2.targetPos, "Turn 2: wrong destination");
     }
 
     // =========================================================================
-    // Bug 2: Guard never resets — second turn hangs even without pre-send
-    //
-    // If the reader exits (IOException / loop condition false) but the guard
-    // actionReaderRunningPerStream[0] stays true, the second receiveActionAsync()
-    // call is a no-op and turn 2 hangs.
-    //
-    // This test verifies the guard IS reset after each action so a new reader
-    // can start for the next turn.
+    // Invariant 2: readers are a per-stream singleton — repeated
+    // ensureGameplayReaders / receiveActionAsync calls spawn no duplicates,
+    // and turn 2 still arrives (v3 replacement for the dead per-turn
+    // actionReaderRunning guard-reset mechanic)
     // =========================================================================
 
     @Test
     void guardResetsAfterActionDelivered_newReaderStartsForTurn2() throws Exception {
         // Turn 1: send + receive
         clientSendsMove(11);
-        HeroAction turn1 = simulateRemoteAct(2000);
+        NetworkManager.Commit turn1 = simulateRemoteAct(2000);
         assertNotNull(turn1, "Turn 1 must be received");
-        assertEquals(11, ((HeroAction.Move) turn1).dst);
+        assertEquals(11, turn1.targetPos);
 
-        // After turn 1 the guard must be reset so a new reader can start
-        // Give the reader thread a moment to exit its finally block
-        Thread.sleep(50);
-        assertFalse(NetworkManager.isActionReaderRunningForStream(0),
-                "Guard must be false after action delivered so turn-2 reader can start");
+        // The persistent reader must still be running, and calling
+        // receiveActionAsync again for the next turn must NOT spawn a duplicate.
+        int before = countNetReaderThreads();
+        assertTrue(before >= 1, "Persistent reader must still be alive after turn 1");
+        for (int i = 0; i < 5; i++) {
+            NetworkManager.receiveActionAsync(remoteHero);
+        }
+        int after = countNetReaderThreads();
+        assertTrue(after <= before,
+                "Repeated receiveActionAsync must not spawn duplicate net-reader threads"
+                        + " (before=" + before + " after=" + after + ")");
 
-        // Turn 2: new reader starts because guard is false
+        // Turn 2: the same persistent reader serves it
         clientSendsMove(22);
-        HeroAction turn2 = simulateRemoteAct(2000);
+        NetworkManager.Commit turn2 = simulateRemoteAct(2000);
         assertNotNull(turn2,
-                "Turn 2 must be received after guard reset. " +
-                "If null: guard stayed true, receiveActionAsync() was a no-op, deadlock.");
-        assertEquals(22, ((HeroAction.Move) turn2).dst);
+                "Turn 2 must be received by the persistent reader. " +
+                "If null: the reader died after one op, deadlock.");
+        assertEquals(22, turn2.targetPos);
     }
 
     // =========================================================================
-    // Bug 3: Five-turn alternating sequence (the reported "few moves then freeze")
-    //
-    // Each remote turn: host processes previous turn then calls receiveActionAsync()
-    // for next turn. The persistent reader must NOT still be blocking on the stream
-    // for turn-2 bytes when we start turn-3's reader.
+    // Invariant 3: Five-turn alternating sequence (the reported "few moves
+    // then freeze") — every sequential commit is delivered
     // =========================================================================
 
     @Test
@@ -211,49 +212,49 @@ class LanPersistentReaderDeadlockTest {
         int[] positions = {10, 20, 30, 40, 50};
         for (int i = 0; i < positions.length; i++) {
             clientSendsMove(positions[i]);
-            HeroAction action = simulateRemoteAct(2000);
-            assertNotNull(action, "Turn " + (i + 1) + " must not freeze");
-            assertEquals(positions[i], ((HeroAction.Move) action).dst,
+            NetworkManager.Commit c = simulateRemoteAct(2000);
+            assertNotNull(c, "Turn " + (i + 1) + " must not freeze");
+            assertEquals(positions[i], c.targetPos,
                     "Turn " + (i + 1) + " wrong position");
         }
     }
 
     // =========================================================================
-    // Bug 4: Remote sends action while previous is being processed
+    // Invariant 4: Remote sends op while previous is being processed
     //
-    // Models the real-world case: network latency is low, remote player is fast.
-    // Remote player's turn-N+1 packet arrives before host finishes turn-N.
+    // Models the real-world case: network latency is low, remote player is
+    // fast. Remote player's turn-N+1 op arrives before host finishes turn-N.
     // =========================================================================
 
     @Test
     void fastRemotePlayer_actionArrivesEarly_neverLost() throws Exception {
-        // Turn 1: start reader, send action immediately
+        // Turn 1: send op, consume it
         clientSendsMove(1);
-        HeroAction turn1 = simulateRemoteAct(2000);
+        NetworkManager.Commit turn1 = simulateRemoteAct(2000);
         assertNotNull(turn1, "Fast remote: turn 1 must be received");
 
-        // Remote sends turn-2 action while host is "still processing" turn 1
+        // Remote sends turn-2 op while host is "still processing" turn 1
         // (simulated by sending before we call simulateRemoteAct for turn 2)
         clientSendsMove(2);
-        Thread.sleep(10); // packet in flight, reader might grab it immediately
+        Thread.sleep(10); // frame in flight, reader will queue it immediately
 
         // Turn 2 must still be receivable
-        HeroAction turn2 = simulateRemoteAct(2000);
+        NetworkManager.Commit turn2 = simulateRemoteAct(2000);
         assertNotNull(turn2, "Fast remote: turn 2 must not be lost even if delivered early");
-        assertEquals(2, ((HeroAction.Move) turn2).dst);
+        assertEquals(2, turn2.targetPos);
     }
 
     // =========================================================================
-    // Bug 5: Ten rapid back-to-back turns without freeze
+    // Invariant 5: Ten rapid back-to-back turns without freeze
     // =========================================================================
 
     @Test
     void tenRapidTurns_noFreeze() throws Exception {
         for (int i = 1; i <= 10; i++) {
             clientSendsMove(i * 7);
-            HeroAction action = simulateRemoteAct(2000);
-            assertNotNull(action, "Rapid turn " + i + " must not freeze");
-            assertEquals(i * 7, ((HeroAction.Move) action).dst,
+            NetworkManager.Commit c = simulateRemoteAct(2000);
+            assertNotNull(c, "Rapid turn " + i + " must not freeze");
+            assertEquals(i * 7, c.targetPos,
                     "Rapid turn " + i + " wrong position");
         }
     }

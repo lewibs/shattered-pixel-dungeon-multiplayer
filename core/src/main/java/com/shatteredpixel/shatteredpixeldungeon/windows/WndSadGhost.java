@@ -46,12 +46,30 @@ public class WndSadGhost extends Window {
 	private static final int GAP		= 2;
 
 	Ghost ghost;
-	
-	public WndSadGhost( final Ghost ghost, final int type ) {
+	com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero;
+
+	//LAN: reward choice broadcast — see WndWandmaker
+	private boolean lanChoiceSent = false;
+	private void sendLanChoice(int idx){
+		if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode && !lanChoiceSent){
+			lanChoiceSent = true;
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.sendOptionChoice(idx);
+		}
+	}
+
+	@Override
+	public void hide() {
+		sendLanChoice(-1);
+		super.hide();
+	}
+
+	public WndSadGhost( final Ghost ghost, final int type,
+	                    final com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero ) {
 		
 		super();
 
 		this.ghost = ghost;
+		this.hero = hero;
 		
 		IconTitle titlebar = new IconTitle();
 		RenderedTextBlock message;
@@ -105,9 +123,28 @@ public class WndSadGhost extends Window {
 	}
 	
 	private void selectReward( Item reward ) {
-		
+
+		if (reward == null) {
+			hide();
+			return;
+		}
+
+		int idx = reward == Ghost.Quest.weapon ? 0 : 1;
+		sendLanChoice(idx);
 		hide();
-		
+
+		if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+			com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.resolveLocalChoice(
+					() -> performReward(hero, ghost, idx));
+		} else {
+			performReward(hero, ghost, idx);
+		}
+	}
+
+	/** Applies the quest reward — identical on the choosing and remote devices. */
+	public static void performReward( com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero hero,
+	                                  Ghost ghost, int idx ) {
+		Item reward = idx == 0 ? Ghost.Quest.weapon : idx == 1 ? Ghost.Quest.armor : null;
 		if (reward == null) return;
 
 		if (reward instanceof Weapon && Ghost.Quest.enchant != null){
@@ -117,13 +154,13 @@ public class WndSadGhost extends Window {
 		}
 		
 		reward.identify(false);
-		if (reward.doPickUp( Dungeon.hero )) {
-			GLog.i( Messages.capitalize(Messages.get(Dungeon.hero, "you_now_have", reward.name())) );
+		if (reward.doPickUp( hero )) {
+			GLog.i( Messages.capitalize(Messages.get(hero, "you_now_have", reward.name())) );
 		} else {
-			Dungeon.level.drop( reward, ghost.pos ).sprite.drop();
+			Dungeon.level.dropAndShow( reward, ghost.pos );
 		}
 		
-		ghost.yell( Messages.get(this, "farewell") );
+		ghost.yell( Messages.get(WndSadGhost.class, "farewell") );
 		ghost.die( null );
 		
 		Ghost.Quest.complete();

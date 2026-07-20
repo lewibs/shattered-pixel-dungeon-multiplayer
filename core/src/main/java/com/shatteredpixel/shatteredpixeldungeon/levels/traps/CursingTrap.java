@@ -63,8 +63,11 @@ public class CursingTrap extends Trap {
 			}
 		}
 
-		if (Dungeon.hero.pos == pos && !Dungeon.hero.flying){
-			curse(Dungeon.hero);
+		//curse whichever hero actually stands on the trap — Dungeon.hero is the
+		//device-local hero and differs per device in LAN games
+		com.shatteredpixel.shatteredpixeldungeon.actors.Char ch = com.shatteredpixel.shatteredpixeldungeon.actors.Actor.findChar(pos);
+		if (ch instanceof Hero && !ch.flying){
+			curse((Hero) ch);
 		}
 	}
 

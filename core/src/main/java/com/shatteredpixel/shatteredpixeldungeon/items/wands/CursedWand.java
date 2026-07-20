@@ -1176,7 +1176,7 @@ public class CursedWand {
 			} else {
 				GLog.w( Messages.get(CursedWand.class, "transmogrify_other") );
 			}
-			Dungeon.level.drop(result, user.pos).sprite.drop();
+			Dungeon.level.dropAndShow(result, user.pos);
 			return true;
 		}
 	}
@@ -1206,7 +1206,8 @@ public class CursedWand {
 	public static class SuperNova extends CursedEffect {
 		@Override
 		public boolean effect(Item origin, Char user, Ballistica bolt, boolean positiveOnly) {
-			SuperNovaTracker nova = Buff.append(Dungeon.hero, SuperNovaTracker.class);
+			//LAN: carrier must be deterministic — the caster if a hero, else the reference hero
+			SuperNovaTracker nova = Buff.append(user instanceof Hero ? user : Dungeon.referenceHero(), SuperNovaTracker.class);
 			nova.pos = bolt.collisionPos;
 			nova.harmsAllies = !positiveOnly;
 			if (positiveOnly){
@@ -1249,7 +1250,7 @@ public class CursedWand {
 					}
 				}
 			}
-			PitfallTrap.DelayedPit p = Buff.append(Dungeon.hero, PitfallTrap.DelayedPit.class, 1);
+			PitfallTrap.DelayedPit p = Buff.append(user instanceof Hero ? user : Dungeon.referenceHero(), PitfallTrap.DelayedPit.class, 1);
 			p.depth = Dungeon.depth;
 			p.branch = Dungeon.branch;
 			p.setPositions(positions);

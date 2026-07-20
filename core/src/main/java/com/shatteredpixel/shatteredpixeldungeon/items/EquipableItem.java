@@ -111,7 +111,7 @@ public abstract class EquipableItem extends Item {
 	}
 
 	public static void equipCursed( Hero hero ) {
-		hero.sprite.emitter().burst( ShadowParticle.CURSE, 6 );
+		if (hero.sprite != null) hero.sprite.emitter().burst( ShadowParticle.CURSE, 6 );
 		Sample.INSTANCE.play( Assets.Sounds.CURSED );
 	}
 
@@ -145,7 +145,7 @@ public abstract class EquipableItem extends Item {
 			onDetach();
 			Dungeon.quickslot.clearItem(this);
 			updateQuickslot();
-			if (collect) Dungeon.level.drop( this, hero.pos ).sprite.drop();
+			if (collect) Dungeon.level.dropAndShow( this, hero.pos );
 		}
 		keptThoughLostInvent = wasKept;
 

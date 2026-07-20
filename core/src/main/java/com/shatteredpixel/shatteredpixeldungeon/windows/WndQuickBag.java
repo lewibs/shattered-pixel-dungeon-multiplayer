@@ -104,7 +104,7 @@ public class WndQuickBag extends Window {
 					}
 
 					hide();
-					item.execute(Dungeon.hero);
+					Dungeon.hero.executeOrQueue(item); //LAN: route through the action queue
 					if (item.usesTargeting && bag != null){
 						int idx = Dungeon.quickslot.getSlot(WndQuickBag.bag);
 						if (idx != -1){

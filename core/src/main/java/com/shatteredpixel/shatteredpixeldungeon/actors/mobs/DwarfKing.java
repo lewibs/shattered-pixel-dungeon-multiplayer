@@ -64,6 +64,7 @@ import com.shatteredpixel.shatteredpixeldungeon.sprites.KingSprite;
 import com.shatteredpixel.shatteredpixeldungeon.ui.BossHealthBar;
 import com.shatteredpixel.shatteredpixeldungeon.ui.BuffIndicator;
 import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.watabou.noosa.Game;
 import com.watabou.noosa.audio.Music;
 import com.watabou.noosa.audio.Sample;
@@ -562,7 +563,7 @@ public class DwarfKing extends Mob {
 		if (pos == CityBossLevel.throne){
 			Dungeon.level.drop(new KingsCrown(), pos + Dungeon.level.width()).sprite.drop(pos);
 		} else {
-			Dungeon.level.drop(new KingsCrown(), pos).sprite.drop();
+			Dungeon.level.dropAndShow(new KingsCrown(), pos);
 		}
 
 		Badges.validateBossSlain();
@@ -629,7 +630,7 @@ public class DwarfKing extends Mob {
 
 		@Override
 		protected void zap() {
-			if (enemy == Dungeon.hero){
+			if (enemy instanceof Hero){
 				Statistics.bossScores[3] -= 400;
 			}
 			super.zap();
@@ -713,7 +714,7 @@ public class DwarfKing extends Mob {
 							target.damage(target.HT/12, new KingDamager());
 						}
 					}
-					if (!ch.isAlive() && ch == Dungeon.hero) {
+					if (!ch.isAlive() && ch instanceof Hero) {
 						Dungeon.fail(DwarfKing.class);
 						GLog.n( Messages.capitalize(Messages.get(Char.class, "kill", Messages.get(DwarfKing.class, "name"))));
 					}

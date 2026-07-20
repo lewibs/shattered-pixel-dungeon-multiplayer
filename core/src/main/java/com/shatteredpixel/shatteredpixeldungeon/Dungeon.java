@@ -240,7 +240,14 @@ public class Dungeon {
 	public static void init() {
 
 		initialVersion = version = Game.versionCode;
-		challenges = SPDSettings.challenges();
+		if (NetworkManager.lanMode) {
+			// LAN: challenges must be identical on every device — the host's
+			// selection is distributed via the handshake. Local settings would
+			// silently produce a different simulation per device.
+			challenges = NetworkManager.lanChallenges;
+		} else {
+			challenges = SPDSettings.challenges();
+		}
 		mobsToChampion = 1;
 
 		Actor.clear();
@@ -259,6 +266,15 @@ public class Dungeon {
 			Generator.fullReset();
 
 		Random.resetGenerators();
+
+		// LAN lockstep: bind the shared deterministic gameplay generator. Every
+		// device seeds it identically from the run seed, so combat rolls, mob AI,
+		// and respawns stay in sync as long as the simulations stay in lockstep.
+		if (NetworkManager.lanMode) {
+			Random.bindSimGenerator( seed );
+		} else {
+			Random.unbindSimGenerator();
+		}
 		
 		Statistics.reset();
 		Notes.reset();
@@ -318,6 +334,34 @@ public class Dungeon {
 		heroes.add( h );
 		if (heroes.size() == 1) hero = h; // first hero is the active singleton
 		return h;
+	}
+
+	/**
+	 * A hero reference that is IDENTICAL on every device. Dungeon.hero is the
+	 * device-local hero and differs per device in LAN games — sim code that just
+	 * needs "a hero" (buff carriers, credit fallbacks) must use this instead.
+	 */
+	public static Hero referenceHero() {
+		if (NetworkManager.lanMode && heroes != null && !heroes.isEmpty()) {
+			return heroes.get(0);
+		}
+		return hero;
+	}
+
+	/**
+	 * Distance from a cell to the nearest living hero — the deterministic
+	 * replacement for `level.distance(Dungeon.hero.pos, cell)` in sim code.
+	 */
+	public static int distanceToNearestHero( int cell ) {
+		int min = Integer.MAX_VALUE;
+		if (heroes != null && !heroes.isEmpty()) {
+			for (Hero h : heroes) {
+				if (h.isAlive()) min = Math.min(min, level.distance(h.pos, cell));
+			}
+		} else if (hero != null) {
+			min = level.distance(hero.pos, cell);
+		}
+		return min;
 	}
 
 	public static boolean isChallenged( int mask ) {
@@ -696,6 +740,7 @@ public class Dungeon {
 	private static final String CHAPTERS	= "chapters";
 	private static final String QUESTS		= "quests";
 	private static final String BADGES		= "badges";
+	private static final String SIM_RNG_STATE = "sim_rng_state";
 	
 	public static void saveGame( int save ) {
 		try {
@@ -724,6 +769,11 @@ public class Dungeon {
 			bundle.put( "heroArmorTiers", heroArmorTiers );
 			bundle.put( "heroLevels", heroLevels );
 			bundle.put( "isMultiplayerSave", NetworkManager.lanMode && NetworkManager.isHostMode() );
+			if (Random.simGeneratorBound()) {
+				// LAN lockstep: persist the deterministic gameplay RNG so a resumed
+				// game continues the exact same roll sequence on every device
+				bundle.put( SIM_RNG_STATE, Random.getSimGeneratorState() );
+			}
 			bundle.put( DEPTH, depth );
 			bundle.put( BRANCH, branch );
 
@@ -847,6 +897,19 @@ public class Dungeon {
 
 		Dungeon.challenges = bundle.getInt( CHALLENGES );
 		Dungeon.mobsToChampion = bundle.getFloat( MOBS_TO_CHAMPION );
+
+		// LAN lockstep: restore the deterministic gameplay RNG exactly where it
+		// left off, so a resumed game stays in sync across devices
+		if (NetworkManager.lanMode) {
+			if (bundle.contains( SIM_RNG_STATE )) {
+				Random.bindSimGeneratorState( bundle.getLong( SIM_RNG_STATE ) );
+			} else {
+				// pre-fix save without RNG state — reseed identically on all devices
+				Random.bindSimGenerator( seed );
+			}
+		} else {
+			Random.unbindSimGenerator();
+		}
 		
 		Dungeon.level = null;
 		Dungeon.depth = -1;
@@ -1063,7 +1126,21 @@ public class Dungeon {
 		
 		level.updateFieldOfView(hero, level.heroFOV);
 		if (heroes != null) {
-			if (heroes.size() > 1) {
+			if (heroes.size() > 1 && NetworkManager.lanMode) {
+				// LAN lockstep: heroFOV feeds simulation logic (mimic wake-ups, AoE
+				// item targeting, thief escapes), so it must be identical on every
+				// device — union every hero's FOV. Co-op players share vision.
+				boolean[] tmpFOV = new boolean[level.heroFOV.length];
+				for (Hero h : heroes) {
+					if (h == hero) continue;
+					if (!h.isAlive()) continue;
+					// Skip heroes that are mid-fall (their pos may be invalid / off-map)
+					if (h.buff(Chasm.WaitingToFall.class) != null) continue;
+					level.updateFieldOfView(h, tmpFOV);
+					BArray.or(level.heroFOV, tmpFOV, level.heroFOV);
+					GameScene.updateFog(h.pos, h.viewDistance + 1);
+				}
+			} else if (heroes.size() > 1) {
 				// Pass-and-play: only the active hero's FOV is visible.
 				// Dungeon.hero is already the active hero via Hero.activate().
 				// Still refresh fog rendering at other heroes' positions.

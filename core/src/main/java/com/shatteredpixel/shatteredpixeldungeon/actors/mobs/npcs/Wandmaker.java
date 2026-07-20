@@ -24,6 +24,7 @@ package com.shatteredpixel.shatteredpixeldungeon.actors.mobs.npcs;
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.AscensionChallenge;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Elemental;
@@ -102,11 +103,17 @@ public class Wandmaker extends NPC {
 	
 	@Override
 	public boolean interact(Char c) {
-		sprite.turnTo( pos, Dungeon.hero.pos );
+		if (sprite != null) sprite.turnTo( pos, c.pos );
 
-		if (c != Dungeon.hero){
+		//LAN: interact runs on EVERY device with c = the interacting hero. Sim
+		//mutations (quest flags, rewards) must run everywhere; only the dialogs
+		//are gated to the hero's own device, with reward choices synced via
+		//OPTION_CHOICE packets.
+		if (!(c instanceof Hero)){
 			return true;
 		}
+		final Hero hero = (Hero) c;
+		final boolean localHero = !hero.isRemoteLanHero();
 
 		if (Quest.given) {
 			
@@ -114,34 +121,40 @@ public class Wandmaker extends NPC {
 			switch (Quest.type) {
 				case 1:
 				default:
-					item = Dungeon.hero.belongings.getItem(CorpseDust.class);
+					item = hero.belongings.getItem(CorpseDust.class);
 					break;
 				case 2:
-					item = Dungeon.hero.belongings.getItem(Embers.class);
+					item = hero.belongings.getItem(Embers.class);
 					break;
 				case 3:
-					item = Dungeon.hero.belongings.getItem(Rotberry.Seed.class);
+					item = hero.belongings.getItem(Rotberry.Seed.class);
 					break;
 			}
 
 			if (item != null) {
-				Game.runOnRenderThread(new Callback() {
-					@Override
-					public void call() {
-						GameScene.show( new WndWandmaker( Wandmaker.this, item ) );
-					}
-				});
-			} else {
+				final Item questItem = item;
+				if (localHero) {
+					Game.runOnRenderThread(new Callback() {
+						@Override
+						public void call() {
+							GameScene.show( new WndWandmaker( Wandmaker.this, questItem, hero ) );
+						}
+					});
+				} else {
+					com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.pendingRemoteOptionHandler =
+							idx -> WndWandmaker.performReward( hero, Wandmaker.this, questItem, idx );
+				}
+			} else if (localHero) {
 				String msg;
 				switch(Quest.type){
 					case 1: default:
-						msg = Messages.get(this, "reminder_dust", Messages.titleCase(Dungeon.hero.name()));
+						msg = Messages.get(this, "reminder_dust", Messages.titleCase(hero.name()));
 						break;
 					case 2:
-						msg = Messages.get(this, "reminder_ember", Messages.titleCase(Dungeon.hero.name()));
+						msg = Messages.get(this, "reminder_ember", Messages.titleCase(hero.name()));
 						break;
 					case 3:
-						msg = Messages.get(this, "reminder_berry", Messages.titleCase(Dungeon.hero.name()));
+						msg = Messages.get(this, "reminder_berry", Messages.titleCase(hero.name()));
 						break;
 				}
 				Game.runOnRenderThread(new Callback() {
@@ -156,7 +169,7 @@ public class Wandmaker extends NPC {
 
 			String msg1 = "";
 			String msg2 = "";
-			switch(Dungeon.hero.heroClass){
+			switch(hero.heroClass){
 				case WARRIOR:
 					msg1 += Messages.get(this, "intro_warrior");
 					break;
@@ -164,7 +177,7 @@ public class Wandmaker extends NPC {
 					msg1 += Messages.get(this, "intro_rogue");
 					break;
 				case MAGE:
-					msg1 += Messages.get(this, "intro_mage", Messages.titleCase(Dungeon.hero.name()));
+					msg1 += Messages.get(this, "intro_mage", Messages.titleCase(hero.name()));
 					break;
 				case HUNTRESS:
 					msg1 += Messages.get(this, "intro_huntress");
@@ -194,20 +207,23 @@ public class Wandmaker extends NPC {
 			msg2 += Messages.get(this, "intro_2");
 			final String msg1Final = msg1;
 			final String msg2Final = msg2;
-			
-			Game.runOnRenderThread(new Callback() {
-				@Override
-				public void call() {
-					GameScene.show(new WndQuest(Wandmaker.this, msg1Final){
-						@Override
-						public void hide() {
-							super.hide();
-							GameScene.show(new WndQuest(Wandmaker.this, msg2Final));
-						}
-					});
-				}
-			});
 
+			if (localHero) {
+				Game.runOnRenderThread(new Callback() {
+					@Override
+					public void call() {
+						GameScene.show(new WndQuest(Wandmaker.this, msg1Final){
+							@Override
+							public void hide() {
+								super.hide();
+								GameScene.show(new WndQuest(Wandmaker.this, msg2Final));
+							}
+						});
+					}
+				});
+			}
+
+			//quest state is simulation state — set on every device
 			Quest.given = true;
 		}
 

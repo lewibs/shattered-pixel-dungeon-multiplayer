@@ -299,7 +299,16 @@ public class MagicMissile extends Emitter {
 			y += sy * d;
 			if ((time -= d) <= 0) {
 				on = false;
-				if (callback != null ) callback.call();
+				if (callback != null ) {
+					//sim context: bolt arrivals resolve wand/spell effects on the render
+					//thread — RNG must come from the deterministic sim generator in LAN
+					com.watabou.utils.Random.enterSimContext();
+					try {
+						callback.call();
+					} finally {
+						com.watabou.utils.Random.exitSimContext();
+					}
+				}
 			}
 		}
 	}

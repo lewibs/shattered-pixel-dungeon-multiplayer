@@ -202,8 +202,7 @@ public class Blandfruit extends Food {
 
 			Catalog.countUse(getClass());
 			potionAttrib.shatter( cell );
-			Dungeon.level.drop(new Chunks(), cell).sprite.drop();
-			
+			Dungeon.level.dropAndShow(new Chunks(), cell);
 		} else {
 			super.onThrow( cell );
 		}

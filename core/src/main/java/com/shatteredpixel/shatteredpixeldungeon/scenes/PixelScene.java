@@ -404,6 +404,7 @@ public class PixelScene extends Scene {
 	}
 	
 	public static void shake( float magnitude, float duration){
+		if (Camera.main == null) return;
 		magnitude *= SPDSettings.screenShake();
 		Camera.main.shake(magnitude, duration);
 	}

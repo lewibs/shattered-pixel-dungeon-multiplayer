@@ -10,8 +10,16 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
+
+    // headless libGDX so tests can run real level generation (sprite sheet /
+    // Pixmap loads) without OpenGL
+    testImplementation "com.badlogicgames.gdx:gdx-backend-headless:$gdxVersion"
+    testRuntimeOnly "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop"
+
 }
 
 test {
     useJUnitPlatform()
+    // headless libGDX resolves internal files relative to the working dir
+    workingDir = file('src/main/assets')
 }

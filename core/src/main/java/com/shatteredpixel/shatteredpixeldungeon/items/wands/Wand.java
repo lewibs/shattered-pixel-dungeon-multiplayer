@@ -208,36 +208,41 @@ public abstract class Wand extends Item {
 
 	//TODO Consider externalizing char awareness buff
 	protected static void wandProc(Char target, int wandLevel, int chargesUsed){
-		if (Dungeon.hero.hasTalent(Talent.ARCANE_VISION)) {
-			int dur = 5 + 5*Dungeon.hero.pointsInTalent(Talent.ARCANE_VISION);
-			Buff.append(Dungeon.hero, TalismanOfForesight.CharAwareness.class, dur).charID = target.id();
+		//LAN: key everything off the ZAPPING hero. Dungeon.hero is the device-local
+		//hero; gating these branches (some of which draw sim RNG!) on it made each
+		//device draw a different number of rolls and desynced the RNG stream.
+		Hero zapper = curUser != null ? curUser : Dungeon.hero;
+
+		if (zapper.hasTalent(Talent.ARCANE_VISION)) {
+			int dur = 5 + 5*zapper.pointsInTalent(Talent.ARCANE_VISION);
+			Buff.append(zapper, TalismanOfForesight.CharAwareness.class, dur).charID = target.id();
 		}
 
-		if (target != Dungeon.hero &&
-				Dungeon.hero.subClass == HeroSubClass.WARLOCK &&
+		if (target != zapper &&
+				zapper.subClass == HeroSubClass.WARLOCK &&
 				//standard 1 - 0.92^x chance, plus 7%. Starts at 15%
 				Random.Float() > (Math.pow(0.92f, (wandLevel*chargesUsed)+1) - 0.07f)){
 			SoulMark.prolong(target, SoulMark.class, SoulMark.DURATION + wandLevel);
 		}
 
-		if (Dungeon.hero.subClass == HeroSubClass.PRIEST && target.buff(GuidingLight.Illuminated.class) != null) {
+		if (zapper.subClass == HeroSubClass.PRIEST && target.buff(GuidingLight.Illuminated.class) != null) {
 			target.buff(GuidingLight.Illuminated.class).detach();
-			target.damage(Dungeon.hero.lvl+5, GuidingLight.INSTANCE);
+			target.damage(zapper.lvl+5, GuidingLight.INSTANCE);
 		}
 
 		if (target.alignment != Char.Alignment.ALLY
-				&& Dungeon.hero.heroClass != HeroClass.CLERIC
-				&& Dungeon.hero.hasTalent(Talent.SEARING_LIGHT)
-				&& Dungeon.hero.buff(Talent.SearingLightCooldown.class) == null){
+				&& zapper.heroClass != HeroClass.CLERIC
+				&& zapper.hasTalent(Talent.SEARING_LIGHT)
+				&& zapper.buff(Talent.SearingLightCooldown.class) == null){
 			Buff.affect(target, GuidingLight.Illuminated.class);
-			Buff.affect(Dungeon.hero, Talent.SearingLightCooldown.class, 20f);
+			Buff.affect(zapper, Talent.SearingLightCooldown.class, 20f);
 		}
 
 		if (target.alignment != Char.Alignment.ALLY
-				&& Dungeon.hero.heroClass != HeroClass.CLERIC
-				&& Dungeon.hero.hasTalent(Talent.SUNRAY)){
+				&& zapper.heroClass != HeroClass.CLERIC
+				&& zapper.hasTalent(Talent.SUNRAY)){
 			// 15/25% chance
-			if (Random.Int(20) < 1 + 2*Dungeon.hero.pointsInTalent(Talent.SUNRAY)){
+			if (Random.Int(20) < 1 + 2*zapper.pointsInTalent(Talent.SUNRAY)){
 				Buff.prolong(target, Blindness.class, 4f);
 			}
 		}
@@ -455,11 +460,14 @@ public abstract class Wand extends Item {
 	}
 
 	public void wandUsed() {
+		//LAN note: everything in here must key off curUser (the hero who zapped),
+		//never Dungeon.hero — that is the device-local hero and differs per device,
+		//which desynced buffs and even the sim RNG draw count (CLEANSE roll)
 		if (!isIdentified()) {
-			float uses = Math.min( availableUsesToID, Talent.itemIDSpeedFactor(Dungeon.hero, this) );
+			float uses = Math.min( availableUsesToID, Talent.itemIDSpeedFactor(curUser, this) );
 			availableUsesToID -= uses;
 			usesLeftToID -= uses;
-			if (usesLeftToID <= 0 || Dungeon.hero.pointsInTalent(Talent.SCHOLARS_INTUITION) == 2) {
+			if (usesLeftToID <= 0 || curUser.pointsInTalent(Talent.SCHOLARS_INTUITION) == 2) {
 				if (ShardOfOblivion.passiveIDDisabled()){
 					if (usesLeftToID > -1){
 						GLog.p(Messages.get(ShardOfOblivion.class, "identify_ready"), name());
@@ -477,11 +485,11 @@ public abstract class Wand extends Item {
 		}
 
 		//inside staff
-		if (charger != null && charger.target == Dungeon.hero && !Dungeon.hero.belongings.contains(this)){
-			if (Dungeon.hero.hasTalent(Talent.EXCESS_CHARGE) && curCharges >= maxCharges){
-				int shieldToGive = Math.round(buffedLvl()*0.67f*Dungeon.hero.pointsInTalent(Talent.EXCESS_CHARGE));
-				Buff.affect(Dungeon.hero, Barrier.class).setShield(shieldToGive);
-				Dungeon.hero.sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(shieldToGive), FloatingText.SHIELDING);
+		if (charger != null && charger.target == curUser && !curUser.belongings.contains(this)){
+			if (curUser.hasTalent(Talent.EXCESS_CHARGE) && curCharges >= maxCharges){
+				int shieldToGive = Math.round(buffedLvl()*0.67f*curUser.pointsInTalent(Talent.EXCESS_CHARGE));
+				Buff.affect(curUser, Barrier.class).setShield(shieldToGive);
+				if (curUser.sprite != null) curUser.sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(shieldToGive), FloatingText.SHIELDING);
 			}
 		}
 		
@@ -503,40 +511,40 @@ public abstract class Wand extends Item {
 		}
 
 		//If hero owns wand but it isn't in belongings it must be in the staff
-		if (Dungeon.hero.hasTalent(Talent.EMPOWERED_STRIKE)
-				&& charger != null && charger.target == Dungeon.hero
-				&& !Dungeon.hero.belongings.contains(this)){
+		if (curUser.hasTalent(Talent.EMPOWERED_STRIKE)
+				&& charger != null && charger.target == curUser
+				&& !curUser.belongings.contains(this)){
 
-			Buff.prolong(Dungeon.hero, Talent.EmpoweredStrikeTracker.class, 10f);
+			Buff.prolong(curUser, Talent.EmpoweredStrikeTracker.class, 10f);
 		}
 
-		if (Dungeon.hero.hasTalent(Talent.LINGERING_MAGIC)
-				&& charger != null && charger.target == Dungeon.hero){
+		if (curUser.hasTalent(Talent.LINGERING_MAGIC)
+				&& charger != null && charger.target == curUser){
 
-			Buff.prolong(Dungeon.hero, Talent.LingeringMagicTracker.class, 5f);
+			Buff.prolong(curUser, Talent.LingeringMagicTracker.class, 5f);
 		}
 
-		if (Dungeon.hero.heroClass != HeroClass.CLERIC
-				&& Dungeon.hero.hasTalent(Talent.DIVINE_SENSE)){
-			Buff.prolong(Dungeon.hero, DivineSense.DivineSenseTracker.class, Dungeon.hero.cooldown()+1);
+		if (curUser.heroClass != HeroClass.CLERIC
+				&& curUser.hasTalent(Talent.DIVINE_SENSE)){
+			Buff.prolong(curUser, DivineSense.DivineSenseTracker.class, curUser.cooldown()+1);
 		}
 
 		// 10/20/30%
-		if (Dungeon.hero.heroClass != HeroClass.CLERIC
-				&& Dungeon.hero.hasTalent(Talent.CLEANSE)
-				&& Random.Int(10) < Dungeon.hero.pointsInTalent(Talent.CLEANSE)){
+		if (curUser.heroClass != HeroClass.CLERIC
+				&& curUser.hasTalent(Talent.CLEANSE)
+				&& Random.Int(10) < curUser.pointsInTalent(Talent.CLEANSE)){
 			boolean removed = false;
-			for (Buff b : Dungeon.hero.buffs()) {
+			for (Buff b : curUser.buffs()) {
 				if (b.type == Buff.buffType.NEGATIVE
 						&& !(b instanceof LostInventory)) {
 					b.detach();
 					removed = true;
 				}
 			}
-			if (removed) new Flare( 6, 32 ).color(0xFF4CD2, true).show( Dungeon.hero.sprite, 2f );
+			if (removed && curUser.sprite != null) new Flare( 6, 32 ).color(0xFF4CD2, true).show( curUser.sprite, 2f );
 		}
 
-		Invisibility.dispel();
+		Invisibility.dispel(curUser);
 		updateQuickslot();
 
 		curUser.spendAndNext( TIME_TO_ZAP );
@@ -675,6 +683,50 @@ public abstract class Wand extends Item {
 					return;
 				}
 
+				// LAN: the zap must execute on the actor thread and be broadcast to
+				// peers — route it through the action queue. The wand may sit in a
+				// bag directly or inside the mage's staff. On remote devices this
+				// listener can fire via a CELL_CHOICE packet; it must not zap
+				// directly — the owner's USE_ITEM_AT broadcast is the single
+				// execution (see Item.thrower).
+				if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+					if (!curUser.isRemoteLanHero()) {
+						com.shatteredpixel.shatteredpixeldungeon.items.Item queueItem = curWand;
+						if (!curUser.belongings.contains(queueItem)) {
+							com.shatteredpixel.shatteredpixeldungeon.items.weapon.melee.MagesStaff staff =
+									curUser.belongings.getItem(com.shatteredpixel.shatteredpixeldungeon.items.weapon.melee.MagesStaff.class);
+							if (staff != null && staff.wandForZap() == curWand) {
+								queueItem = staff;
+							}
+						}
+						if (!curUser.queueUseItemAt(queueItem,
+								com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction.UseItemAt.VERB_ZAP, target)) {
+							GLog.w( Messages.get(Wand.class, "fizzles") );
+						}
+					}
+					return;
+				}
+
+				performZap(curUser, curWand, target);
+			}
+		}
+		
+		@Override
+		public String prompt() {
+			return Messages.get(Wand.class, "prompt");
+		}
+	};
+
+	/**
+	 * Executes a wand zap at a target cell. Extracted from the zapper cell
+	 * listener so LAN games can run it on the actor thread (on every device)
+	 * with the target delivered by packet instead of a local prompt.
+	 */
+	public static void performZap( Hero user, final Wand wand, final int target ) {
+				curUser = user;
+				curItem = wand;
+				final Wand curWand = wand;
+
 				final Ballistica shot = new Ballistica( curUser.pos, target, curWand.collisionProperties(target));
 				int cell = shot.collisionPos;
 				
@@ -787,15 +839,7 @@ public abstract class Wand extends Item {
 					curWand.cursedKnown = true;
 					
 				}
-				
-			}
-		}
-		
-		@Override
-		public String prompt() {
-			return Messages.get(Wand.class, "prompt");
-		}
-	};
+	}
 	
 	public class Charger extends Buff {
 		

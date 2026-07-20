@@ -181,7 +181,15 @@ public class MissileSprite extends ItemSprite implements Tweener.Listener {
 	public void onComplete( Tweener tweener ) {
 		kill();
 		if (callback != null) {
-			callback.call();
+			//sim context: throw completions resolve item effects (damage, tipped
+			//dart procs) on the render thread — their RNG draws must come from
+			//the deterministic sim generator in LAN games
+			com.watabou.utils.Random.enterSimContext();
+			try {
+				callback.call();
+			} finally {
+				com.watabou.utils.Random.exitSimContext();
+			}
 		}
 	}
 }

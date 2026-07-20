@@ -189,7 +189,7 @@ public class Item implements Bundlable {
 	
 	protected void onThrow( int cell ) {
 		Heap heap = Dungeon.level.drop( this, cell );
-		if (!heap.isEmpty()) {
+		if (!heap.isEmpty() && heap.sprite != null) {
 			heap.sprite.drop( cell );
 		}
 	}
@@ -250,7 +250,7 @@ public class Item implements Bundlable {
 								{ actPriority = VFX_PRIO; }
 								@Override
 								protected boolean act() {
-									Dungeon.level.drop(d, Dungeon.hero.pos).sprite.drop();
+									Dungeon.level.dropAndShow(d, Dungeon.hero.pos);
 									Actor.remove(this);
 									return true;
 								}
@@ -714,6 +714,18 @@ public class Item implements Bundlable {
 		@Override
 		public void onSelect( Integer target ) {
 			if (target != null) {
+				// LAN: throws must execute on the actor thread and be broadcast to
+				// peers — route through the action queue with the chosen cell.
+				// On remote devices this listener can fire via a CELL_CHOICE packet;
+				// it must NOT cast directly — the owner's USE_ITEM_AT broadcast is
+				// the single execution, casting here would run the throw twice.
+				if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+					if (!curUser.isRemoteLanHero()) {
+						curUser.queueUseItemAt(curItem,
+								com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction.UseItemAt.VERB_THROW, target);
+					}
+					return;
+				}
 				curItem.cast( curUser, target );
 			}
 		}

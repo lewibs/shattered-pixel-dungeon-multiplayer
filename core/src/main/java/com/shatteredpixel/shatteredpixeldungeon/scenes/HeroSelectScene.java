@@ -502,6 +502,7 @@ public class HeroSelectScene extends PixelScene {
 		Dungeon.daily = Dungeon.dailyReplay = false;
 		ActionIndicator.clearAction();
 		NetworkManager.startPingSender(); // keep connections alive; detect real disconnects
+		NetworkManager.ensureGameplayReaders(); // persistent commit-protocol readers
 		InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
 		Game.switchScene(InterlevelScene.class);
 	}
@@ -637,6 +638,7 @@ public class HeroSelectScene extends PixelScene {
 					Dungeon.daily = Dungeon.dailyReplay = false;
 					ActionIndicator.clearAction();
 					NetworkManager.startPingSender();
+					NetworkManager.ensureGameplayReaders(); // persistent commit-protocol readers
 					InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
 					Game.switchScene(InterlevelScene.class);
 				}

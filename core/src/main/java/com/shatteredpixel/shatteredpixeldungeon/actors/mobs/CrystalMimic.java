@@ -185,10 +185,12 @@ public class CrystalMimic extends Mimic {
 	private class Fleeing extends Mob.Fleeing {
 		@Override
 		protected void escaped() {
-			if (!Dungeon.level.heroFOV[pos] && Dungeon.level.distance(Dungeon.hero.pos, pos) >= 6) {
+			//LAN: nearest-hero distance — whether this mob leaves the sim must be
+			//identical on every device
+			if (!Dungeon.level.heroFOV[pos] && Dungeon.distanceToNearestHero(pos) >= 6) {
 				GLog.n(Messages.get(CrystalMimic.class, "escaped"));
 				destroy();
-				sprite.killAndErase();
+				if (sprite != null) sprite.killAndErase();
 			} else {
 				state = WANDERING;
 			}

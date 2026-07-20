@@ -11,32 +11,29 @@ import java.io.*;
 import java.net.*;
 import java.util.ArrayList;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests that reproduce and verify the fix for the REMAINING LAN freeze bug:
+ * v3 (leader-sequenced commit protocol) regression tests for the OLD
+ * multi-step walk freeze bug.
  *
- * Root cause: In the pre-fix code, Hero.act() called receiveActionAsync()
- * unconditionally on EVERY act() call for a remote hero — including intermediate
- * steps of a multi-step walk where curAction is already set. This started a
- * stale reader that blocked on readByte() and consumed the NEXT turn's action
- * packet early. When the walk completed, ready() cleared curAction. The next
- * remote turn found the action already consumed and cleared — permanent freeze.
+ * The old v2 bug: Hero.act() started a per-turn reader thread on EVERY act()
+ * call for a remote hero, including intermediate steps of a multi-step walk.
+ * The stale reader consumed the NEXT turn's action packet early; when the walk
+ * completed, ready() cleared curAction and the action was lost — permanent
+ * freeze.
  *
- * Fix: In Hero.act() LAN block, only call receiveActionAsync() when curAction
- * is null. During intermediate steps of a multi-step walk, curAction is already
- * set, so no stale reader is started.
+ * In v3 that failure mode is structurally impossible:
+ *   - readers are PERSISTENT (one per client stream, "net-reader-p<slot>"),
+ *     started idempotently by ensureGameplayReaders()/receiveActionAsync();
+ *   - a commit is never "consumed" by a reader — it is buffered in the owning
+ *     hero's lanActionInbox and stays there until the hero's turn drains it;
+ *   - a multi-step walk consumes commits one per step, none can be stolen.
  *
- * Test strategy: The tests directly reproduce the bug at the network protocol
- * level by simulating both the buggy and fixed code paths in the same test:
- *
- *   Buggy path:  calls receiveActionAsync() even when curAction != null
- *   Fixed path:  guards with (curAction == null) before calling receiveActionAsync()
- *
- * This approach lets us test the network behavior without needing full act()
- * invocation (which requires sprites, levels, etc.).
+ * These tests drive the real leader-side protocol over a real loopback socket:
+ * this device is the LEADER (isHost=true, localPlayerIndex=0); the test plays
+ * the remote client, feeding REQUEST frames with a contiguous clientSeq.
  */
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
 class LanMultiStepWalkFreezeTest {
@@ -52,6 +49,9 @@ class LanMultiStepWalkFreezeTest {
 
     private Hero localHero;
     private Hero remoteHero;
+
+    /** contiguous per-client request counter — the leader dedupes on it */
+    private int clientSeq;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -71,8 +71,10 @@ class LanMultiStepWalkFreezeTest {
         clientIn  = new DataInputStream(clientSocket.getInputStream());
         clientOut = new DataOutputStream(clientSocket.getOutputStream());
 
+        // LEADER device: reads REQUESTs from ins.get(0) = hostIn. The test
+        // holds the raw client end (clientOut) and never injects it.
         NetworkManager.injectHostStreamsForTesting(hostIn, hostOut);
-        NetworkManager.injectClientStreamsForTesting(clientIn, clientOut);
+        NetworkManager.injectClientStreamsForTesting(null, null);
 
         localHero  = new Hero(); localHero.HP  = localHero.HT  = 20;
         remoteHero = new Hero(); remoteHero.HP = remoteHero.HT = 20;
@@ -81,20 +83,29 @@ class LanMultiStepWalkFreezeTest {
         Dungeon.heroes.add(remoteHero);
         Dungeon.hero = localHero;
 
-        NetworkManager.lanMode = true;
         NetworkManager.setIsHostForTesting(true);
         NetworkManager.localPlayerIndex = 0;
         NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
+        clientSeq = 0;
+
+        // let readers from previous test classes drain before counting threads
+        awaitNetReaderCount(0, 2000);
+
+        NetworkManager.lanMode = true;
     }
 
     @AfterEach
     void tearDown() throws IOException {
         NetworkManager.lanMode = false;
         NetworkManager.setIsHostForTesting(false);
-        NetworkManager.resetActionReaderForTesting();
+        // Close sockets first: unblocks the persistent reader's readByte()
         if (clientSocket   != null && !clientSocket.isClosed())   clientSocket.close();
         if (hostSideSocket != null && !hostSideSocket.isClosed()) hostSideSocket.close();
         if (serverSocket   != null && !serverSocket.isClosed())   serverSocket.close();
+        awaitNetReaderCount(0, 2000);
+        NetworkManager.resetActionReaderForTesting();
+        NetworkManager.resetCommitProtocolState();
         NetworkManager.injectHostStreamsForTesting(null, null);
         NetworkManager.injectClientStreamsForTesting(null, null);
         Dungeon.heroes = null;
@@ -105,353 +116,277 @@ class LanMultiStepWalkFreezeTest {
     // Helpers
     // -------------------------------------------------------------------------
 
+    /** The remote client asks the leader to sequence a MOVE op. */
     void clientSendsMove(int targetPos) throws IOException {
-        clientOut.writeByte(NetworkManager.PacketType.ACTION);
-        clientOut.writeInt(1);   // heroId = 1 (remote hero)
-        clientOut.writeByte(0);  // MOVE
-        clientOut.writeInt(targetPos);
-        clientOut.flush();
+        LanTestProtocol.writeActionRequest(clientOut, ++clientSeq,
+                NetworkManager.ActionType.MOVE, targetPos);
     }
 
     /**
-     * Standard start-of-turn: receiveActionAsync only when curAction is null.
-     * This is the FIXED code path.
+     * Start-of-turn as Hero.act() does it in v3: make sure the persistent
+     * readers run, then drain the next commit from the hero's inbox and decode
+     * it at execution time. Returns null on timeout (no commit available).
      */
-    HeroAction fixedTurnStart(long maxWaitMs) throws InterruptedException {
+    HeroAction turnStart(long maxWaitMs) throws InterruptedException {
+        NetworkManager.receiveActionAsync(remoteHero); // idempotent shim
         synchronized (remoteHero.lanActionLock) {
-            // FIXED: only start reader when curAction is null
-            if (remoteHero.curAction == null) {
-                NetworkManager.receiveActionAsync(remoteHero);
-            }
             long deadline = System.currentTimeMillis() + maxWaitMs;
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
+            while (remoteHero.lanActionInbox.isEmpty() && NetworkManager.lanMode) {
                 long rem = deadline - System.currentTimeMillis();
                 if (rem <= 0) break;
                 remoteHero.lanActionLock.wait(rem);
             }
+            NetworkManager.Commit c = remoteHero.lanActionInbox.pollFirst();
+            if (c == null) return null;
+            remoteHero.curAction = NetworkManager.decodeAction(c.actionType, c.targetPos);
+            return remoteHero.curAction;
         }
-        return remoteHero.curAction;
     }
 
-    /**
-     * Simulates the BUGGY intermediate-step code path (before the fix):
-     * calls receiveActionAsync() unconditionally even when curAction is already set.
-     * This is the code path that starts a stale reader.
-     */
-    void buggyIntermediateStep() {
+    int inboxSize() {
         synchronized (remoteHero.lanActionLock) {
-            // BUG: receiveActionAsync called even when curAction != null
-            NetworkManager.receiveActionAsync(remoteHero);
-            // curAction != null → while would exit immediately
+            return remoteHero.lanActionInbox.size();
         }
     }
 
-    /**
-     * Simulates the FIXED intermediate-step code path (after the fix):
-     * does NOT call receiveActionAsync() when curAction is already set.
-     * No stale reader is started.
-     */
-    void fixedIntermediateStep() {
-        // FIXED: act() checks curAction != null and skips receiveActionAsync()
-        // Nothing to do here — curAction is already set, no reader needed
-        assertNotNull(remoteHero.curAction,
-                "Fixed intermediate step: curAction must be set (we're mid-walk)");
+    /** Waits until the hero's inbox holds at least n commits. */
+    boolean awaitInboxSize(int n, long maxWaitMs) throws InterruptedException {
+        synchronized (remoteHero.lanActionLock) {
+            long deadline = System.currentTimeMillis() + maxWaitMs;
+            while (remoteHero.lanActionInbox.size() < n) {
+                long rem = deadline - System.currentTimeMillis();
+                if (rem <= 0) break;
+                remoteHero.lanActionLock.wait(rem);
+            }
+            return remoteHero.lanActionInbox.size() >= n;
+        }
+    }
+
+    static int countNetReaderThreads() {
+        int n = 0;
+        for (Thread t : Thread.getAllStackTraces().keySet()) {
+            if (t.isAlive() && t.getName().startsWith("net-reader-")) n++;
+        }
+        return n;
+    }
+
+    static void awaitNetReaderCount(int expected, long maxWaitMs) {
+        long deadline = System.currentTimeMillis() + maxWaitMs;
+        while (countNetReaderThreads() != expected
+                && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(10); } catch (InterruptedException e) { return; }
+        }
     }
 
     // =========================================================================
-    // Bug 1: Stale reader (BUGGY path) consumes next-turn's action early.
-    //
-    // Sequence:
-    //   Turn 1 step 1: curAction null → reader starts → A1 received → curAction = A1
-    //   Turn 1 step 2 (buggy): receiveActionAsync() called unconditionally → stale reader
-    //   Client sends A2 while stale reader is alive → stale reader consumes A2
-    //   ready() clears curAction
-    //   Turn 2: new reader starts but A2 already consumed → freeze
-    //
-    // With FIXED path:
-    //   Turn 1 step 2: curAction != null → receiveActionAsync() NOT called → no stale reader
-    //   ready() clears curAction
-    //   Turn 2: new reader starts, waits for A2, receives it → success
-    //
-    // This test demonstrates both paths side by side.
+    // Old bug 1: a stale per-turn reader stole the next turn's packet.
+    // v3 invariant: mid-walk receiveActionAsync() calls are idempotent no-ops
+    // (readers are persistent) and a commit arriving mid-walk is buffered in
+    // the hero's inbox — it can never be stolen or lost.
     // =========================================================================
 
     @Test
-    void buggyPath_staleReaderStealsNextAction_causesFreezeOnNextTurn()
+    void midWalkReaderCalls_cannotStealNextCommit_deliveredNextTurn()
             throws Exception {
 
-        // === BUGGY PATH DEMONSTRATION ===
-        // Turn 1, step 1: receive A1 (start of turn — reader correctly started)
+        // Turn 1, step 1: A1 committed and consumed
         clientSendsMove(10);
-        synchronized (remoteHero.lanActionLock) {
-            NetworkManager.receiveActionAsync(remoteHero);
-            long deadline = System.currentTimeMillis() + 3000;
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
-                long rem = deadline - System.currentTimeMillis();
-                if (rem <= 0) break;
-                remoteHero.lanActionLock.wait(rem);
-            }
-        }
-        assertNotNull(remoteHero.curAction, "Step 1: must receive A1");
-        assertEquals(10, ((HeroAction.Move) remoteHero.curAction).dst);
-
-        // Turn 1, step 2 (BUGGY): start stale reader even though curAction is set
-        buggyIntermediateStep();
-
-        // Verify stale reader is now running
-        Thread.sleep(30); // let stale reader reach readByte()
-        assertTrue(NetworkManager.isActionReaderRunning(),
-                "BUGGY: stale reader should be running after intermediate step");
-
-        // Client sends A2 (next turn action) while stale reader is alive
-        clientSendsMove(20);
-        Thread.sleep(60); // stale reader consumes A2
-
-        // Walk completes: ready() clears curAction
-        remoteHero.curAction = null;
-        Thread.sleep(20);
-
-        // Turn 2 (BUGGY): A2 already consumed, new reader starts but no more data
-        // This should time out (null) demonstrating the freeze
-        synchronized (remoteHero.lanActionLock) {
-            NetworkManager.receiveActionAsync(remoteHero);
-            long deadline = System.currentTimeMillis() + 800; // short timeout for test speed
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
-                long rem = deadline - System.currentTimeMillis();
-                if (rem <= 0) break;
-                remoteHero.lanActionLock.wait(rem);
-            }
-        }
-
-        // With the buggy path, A2 was consumed by the stale reader and cleared by ready().
-        // The test expects null here (demonstrating the freeze).
-        assertNull(remoteHero.curAction,
-                "BUGGY PATH CONFIRMED: stale reader consumed A2, ready() cleared it, " +
-                "turn 2 reader got no data → freeze (returns null after timeout). " +
-                "This is the multi-step walk stale reader bug.");
-    }
-
-    @Test
-    void fixedPath_noStaleReader_nextTurnReceivesAction()
-            throws Exception {
-
-        // === FIXED PATH DEMONSTRATION ===
-        // Turn 1, step 1: receive A1 (start of turn — reader correctly started)
-        clientSendsMove(10);
-        HeroAction a1 = fixedTurnStart(3000);
+        HeroAction a1 = turnStart(3000);
         assertNotNull(a1, "Step 1: must receive A1");
         assertEquals(10, ((HeroAction.Move) a1).dst);
 
-        // Turn 1, step 2 (FIXED): curAction != null → NO reader started
-        fixedIntermediateStep();
+        // Turn 1, steps 2..3 (the OLD buggy call pattern): receiveActionAsync
+        // on every intermediate act() call. In v3 this is a harmless idempotent
+        // shim — no per-turn reader exists to go stale.
+        NetworkManager.receiveActionAsync(remoteHero);
+        NetworkManager.receiveActionAsync(remoteHero);
 
-        // Verify NO stale reader is running
-        Thread.sleep(30);
-        assertFalse(NetworkManager.isActionReaderRunning(),
-                "FIXED: no stale reader should be running after intermediate step");
-
-        // Client sends A2 while NO stale reader is running — action safe in TCP buffer
+        // Client sends A2 mid-walk — in v2 the stale reader consumed it here
         clientSendsMove(20);
-        Thread.sleep(30); // A2 sits in buffer
+        assertTrue(awaitInboxSize(1, 2000),
+                "A2's commit must be buffered in the hero's lanActionInbox — " +
+                "it cannot be consumed early by any reader");
 
         // Walk completes: ready() clears curAction
         remoteHero.curAction = null;
 
-        // Turn 2 (FIXED): A2 is still in the buffer, new reader receives it
-        HeroAction a2 = fixedTurnStart(3000);
+        // Turn 2: A2 is still in the inbox and must be delivered — the v2
+        // freeze (packet stolen + wiped) is structurally impossible now.
+        HeroAction a2 = turnStart(2000);
         assertNotNull(a2,
-                "FIXED PATH: A2 must be received on turn 2. " +
-                "No stale reader consumed it, ready() did not wipe it.");
-        assertEquals(20, ((HeroAction.Move) a2).dst,
-                "Fixed: turn 2 must receive position 20");
+                "Turn 2 must receive A2 from the inbox. In v2 the stale reader " +
+                "consumed it mid-walk and ready() wiped it — a permanent freeze.");
+        assertEquals(20, ((HeroAction.Move) a2).dst);
     }
 
-    // =========================================================================
-    // Bug 2: Three-step walk with stale reader (BUGGY path)
-    //
-    // Step 1: reader starts, A1 received, curAction set
-    // Step 2 (buggy): stale reader starts, A2 arrives, stale reader consumes it,
-    //                 notifyAll fires (nobody waiting), stale reader resets guard
-    // Step 3 (buggy): receiveActionAsync() no-op (guard reset, but curAction still set,
-    //                 though if A2 was already consumed+set, another stale reader starts)
-    // Walk ends: ready() clears curAction (A2 was already cleared if it was set)
-    // Turn 2: no data → freeze
-    // =========================================================================
-
     @Test
-    void buggyPath_threeStepWalk_freezeOnNextTurn() throws Exception {
-        // Step 1: A1 received
+    void intermediateSteps_startNoExtraReaderThreads_nextTurnReceivesAction()
+            throws Exception {
+
+        // Turn 1, step 1
         clientSendsMove(10);
-        synchronized (remoteHero.lanActionLock) {
-            NetworkManager.receiveActionAsync(remoteHero);
-            long dl = System.currentTimeMillis() + 3000;
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
-                long rem = dl - System.currentTimeMillis();
-                if (rem <= 0) break;
-                remoteHero.lanActionLock.wait(rem);
-            }
-        }
-        assertNotNull(remoteHero.curAction, "Step 1 must receive A1");
+        HeroAction a1 = turnStart(3000);
+        assertNotNull(a1, "Step 1: must receive A1");
+        assertEquals(10, ((HeroAction.Move) a1).dst);
 
-        // Step 2 (buggy): stale reader starts
-        buggyIntermediateStep();
-        Thread.sleep(30);
+        int readers = countNetReaderThreads();
+        assertTrue(readers >= 1, "the persistent reader must be running");
 
-        // Client sends A2 early — stale reader from step 2 consumes it
+        // Intermediate steps: repeated calls must not add reader threads
+        NetworkManager.receiveActionAsync(remoteHero);
+        NetworkManager.receiveActionAsync(remoteHero);
+        Thread.sleep(50);
+        assertEquals(readers, countNetReaderThreads(),
+                "intermediate-step receiveActionAsync() calls must be no-ops — " +
+                "one persistent reader per stream, never a stale extra thread");
+
+        // A2 sent mid-walk sits safely in the inbox
         clientSendsMove(20);
-        Thread.sleep(60);
 
-        // Step 3: after stale reader consumed A2 and reset guard, another buggy call
-        // curAction was set to A2 by stale reader; now call again
-        buggyIntermediateStep(); // guard reset by step-2 reader, so this starts another stale reader
-        Thread.sleep(30);
-
-        // Walk ends: ready() clears curAction
+        // Walk completes
         remoteHero.curAction = null;
-        Thread.sleep(20);
 
-        // Turn 2: expects A2 but it was already consumed. With the fix, this should work.
-        // With the bug, this times out.
-        synchronized (remoteHero.lanActionLock) {
-            NetworkManager.receiveActionAsync(remoteHero);
-            long dl = System.currentTimeMillis() + 800;
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
-                long rem = dl - System.currentTimeMillis();
-                if (rem <= 0) break;
-                remoteHero.lanActionLock.wait(rem);
-            }
-        }
+        HeroAction a2 = turnStart(3000);
+        assertNotNull(a2, "Turn 2 must receive A2");
+        assertEquals(20, ((HeroAction.Move) a2).dst,
+                "turn 2 must receive position 20");
+    }
 
-        assertNull(remoteHero.curAction,
-                "BUGGY PATH: three-step walk — stale readers consumed A2, " +
-                "turn 2 gets nothing → freeze. " +
-                "Fix: guard receiveActionAsync() with curAction == null.");
+    // =========================================================================
+    // Old bug 2: three-step walk with stale readers lost the next-turn packet.
+    // v3 invariant: commits queue in the inbox and a multi-step walk consumes
+    // them strictly one per step, in commit order, none lost.
+    // =========================================================================
+
+    @Test
+    void threeStepWalk_commitsQueueInInbox_consumedOnePerStep_noneLost()
+            throws Exception {
+
+        // Readers run from gameplay start (HeroSelectScene) — bring them up before
+        // the client streams its ops, so the leader sequences them into the inbox.
+        NetworkManager.ensureGameplayReaders();
+
+        // Client pre-sends three ops (as if entered during a long walk)
+        clientSendsMove(10);
+        clientSendsMove(20);
+        clientSendsMove(30);
+
+        assertTrue(awaitInboxSize(3, 2000),
+                "all three commits must be buffered per hero — none consumed early");
+
+        // Consumed one per turn, in leader-sequenced order
+        HeroAction s1 = turnStart(1000);
+        assertNotNull(s1);
+        assertEquals(10, ((HeroAction.Move) s1).dst, "first commit first");
+        remoteHero.curAction = null;
+
+        HeroAction s2 = turnStart(1000);
+        assertNotNull(s2);
+        assertEquals(20, ((HeroAction.Move) s2).dst, "second commit second");
+        remoteHero.curAction = null;
+
+        HeroAction s3 = turnStart(1000);
+        assertNotNull(s3);
+        assertEquals(30, ((HeroAction.Move) s3).dst, "third commit third");
+        remoteHero.curAction = null;
+
+        assertNull(turnStart(300), "no phantom commits beyond the three sent");
     }
 
     @Test
-    void fixedPath_threeStepWalk_noFreeze() throws Exception {
-        // Step 1: A1 received (only reader started here — curAction was null)
+    void threeStepWalk_midWalkCommit_stillDeliveredAfterWalkCompletes()
+            throws Exception {
+
+        // Step 1: A1 consumed
         clientSendsMove(10);
-        HeroAction a1 = fixedTurnStart(3000);
+        HeroAction a1 = turnStart(3000);
         assertNotNull(a1, "Step 1: must receive A1");
 
-        // Steps 2 and 3 (FIXED): curAction != null → NO readers started
-        fixedIntermediateStep();
-        fixedIntermediateStep();
+        // Steps 2 and 3: the old buggy unconditional calls — now no-ops
+        NetworkManager.receiveActionAsync(remoteHero);
+        NetworkManager.receiveActionAsync(remoteHero);
 
-        // Client sends A2 between steps (safe — no reader consuming it)
+        // A2 arrives between steps — buffered, not stolen
         clientSendsMove(20);
-        Thread.sleep(30);
+        assertTrue(awaitInboxSize(1, 2000), "A2 must wait in the inbox");
 
-        // Walk ends: ready() clears curAction
-        remoteHero.curAction = null;
-
-        // Turn 2: fresh reader starts, receives A2 from buffer
-        HeroAction a2 = fixedTurnStart(3000);
-        assertNotNull(a2, "FIXED: three-step walk — turn 2 must receive A2");
-        assertEquals(20, ((HeroAction.Move) a2).dst, "Fixed: position must be 20");
-    }
-
-    // =========================================================================
-    // Bug 3: Guard state validation — buggy path leaves guard true mid-walk
-    //
-    // After the buggy intermediate step starts a stale reader, the guard becomes
-    // true. If the stale reader hasn't yet processed the packet, another call to
-    // receiveActionAsync() is a no-op (guard is true). This demonstrates the
-    // guard correctly prevents double-readers during the stale-reader phase,
-    // but cannot prevent the core issue (one stale reader is enough to steal A2).
-    // =========================================================================
-
-    @Test
-    void buggyPath_guardTrueDuringStaleReader_demonstratesStaleReaderIsAlive()
-            throws Exception {
-
-        // Turn 1, step 1: receive A1
-        clientSendsMove(10);
-        synchronized (remoteHero.lanActionLock) {
-            NetworkManager.receiveActionAsync(remoteHero);
-            long dl = System.currentTimeMillis() + 3000;
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
-                long rem = dl - System.currentTimeMillis();
-                if (rem <= 0) break;
-                remoteHero.lanActionLock.wait(rem);
-            }
-        }
-        assertNotNull(remoteHero.curAction, "Step 1: A1 received");
-        // Let step-1 reader's finally block run (it exits after notifyAll)
+        // Yet another intermediate call must not disturb the buffered commit
+        NetworkManager.receiveActionAsync(remoteHero);
         Thread.sleep(50);
-        assertFalse(NetworkManager.isActionReaderRunning(),
-                "After step 1, guard must be false (reader exited after A1 delivery)");
+        assertEquals(1, inboxSize(),
+                "the buffered commit must survive intermediate receiveActionAsync() calls");
 
-        // Step 2 (buggy): start stale reader
-        buggyIntermediateStep();
-        Thread.sleep(30);
+        // Walk ends
+        remoteHero.curAction = null;
 
-        // Guard is now true — stale reader running
-        assertTrue(NetworkManager.isActionReaderRunning(),
-                "After buggy intermediate step: guard must be true (stale reader running). " +
-                "This stale reader will consume A2 when it arrives.");
+        HeroAction a2 = turnStart(3000);
+        assertNotNull(a2, "three-step walk — turn 2 must receive A2, no freeze");
+        assertEquals(20, ((HeroAction.Move) a2).dst, "position must be 20");
+    }
 
-        // Client sends A2 — stale reader gets it, guard resets
-        clientSendsMove(20);
-        Thread.sleep(80); // stale reader processes A2
+    // =========================================================================
+    // Old bug 3: the per-turn reader guard flip-flopped mid-walk. The guard
+    // mechanics are dead in v3. Equivalent invariants: exactly one persistent
+    // reader thread per client stream regardless of how often the shim is
+    // called, and a commit arriving mid-walk waits untouched in the inbox.
+    // =========================================================================
 
-        // After stale reader consumed A2 and exited, guard is false
-        assertFalse(NetworkManager.isActionReaderRunning(),
-                "After stale reader consumed A2: guard must be false");
+    @Test
+    void persistentReader_isSingleton_acrossRepeatedShimCalls()
+            throws Exception {
 
-        // But curAction was set to A2 and then cleared by ready():
-        remoteHero.curAction = null; // simulate ready()
+        int baseline = countNetReaderThreads();
 
-        // Turn 2: no data left → timeout → freeze
-        synchronized (remoteHero.lanActionLock) {
+        NetworkManager.receiveActionAsync(remoteHero);
+        awaitNetReaderCount(baseline + 1, 2000);
+        assertEquals(baseline + 1, countNetReaderThreads(),
+                "first call must start exactly one persistent reader for the " +
+                "single client stream (net-reader-p1)");
+
+        for (int i = 0; i < 5; i++) {
             NetworkManager.receiveActionAsync(remoteHero);
-            long dl = System.currentTimeMillis() + 600;
-            while (remoteHero.curAction == null && NetworkManager.lanMode) {
-                long rem = dl - System.currentTimeMillis();
-                if (rem <= 0) break;
-                remoteHero.lanActionLock.wait(rem);
-            }
         }
-        assertNull(remoteHero.curAction,
-                "After stale reader consumed A2 and ready() cleared it: " +
-                "turn 2 has no action → FREEZE. " +
-                "Fix prevents this by never starting the stale reader.");
+        Thread.sleep(100);
+        assertEquals(baseline + 1, countNetReaderThreads(),
+                "repeated receiveActionAsync()/ensureGameplayReaders() calls must " +
+                "never spawn duplicate reader threads — duplicates were the v2 " +
+                "stream-corruption bug");
+
+        // ... and the singleton reader still delivers
+        clientSendsMove(10);
+        HeroAction a1 = turnStart(2000);
+        assertNotNull(a1, "the singleton persistent reader must deliver commits");
+        assertEquals(10, ((HeroAction.Move) a1).dst);
     }
 
     @Test
-    void fixedPath_guardFalseDuringIntermediateSteps_noStaleReader()
+    void commitArrivingMidWalk_waitsInInbox_untilWalkCompletes()
             throws Exception {
 
-        // Turn 1, step 1: receive A1
+        // Turn 1: A1 consumed — hero is now "mid-walk" with curAction set
         clientSendsMove(10);
-        HeroAction a1 = fixedTurnStart(3000);
+        HeroAction a1 = turnStart(3000);
         assertNotNull(a1, "Step 1: A1 received");
-        Thread.sleep(50); // let step-1 reader's finally run
-        assertFalse(NetworkManager.isActionReaderRunning(),
-                "After step 1 reader exits, guard must be false");
 
-        // Steps 2 and 3 (FIXED): curAction != null → NO reader started → guard stays false
-        fixedIntermediateStep();
-        Thread.sleep(30);
-        assertFalse(NetworkManager.isActionReaderRunning(),
-                "FIXED: guard must stay false during intermediate steps");
-
-        fixedIntermediateStep();
-        Thread.sleep(30);
-        assertFalse(NetworkManager.isActionReaderRunning(),
-                "FIXED: guard must still be false after step 3");
-
-        // Client sends A2 — nobody is consuming it (no stale reader)
+        // A2 arrives mid-walk
         clientSendsMove(20);
-        Thread.sleep(30);
+        assertTrue(awaitInboxSize(1, 2000),
+                "the mid-walk commit must wait in the hero's inbox");
+        Thread.sleep(100);
+        assertEquals(1, inboxSize(),
+                "still exactly one buffered commit — nothing may consume it early");
+        assertTrue(remoteHero.curAction instanceof HeroAction.Move
+                        && ((HeroAction.Move) remoteHero.curAction).dst == 10,
+                "curAction must stay the in-progress walk — the buffered commit " +
+                "must not overwrite it (in v2 the stale reader did exactly that)");
 
         // Walk ends: ready() clears curAction
         remoteHero.curAction = null;
 
-        // Turn 2: fresh reader starts, receives A2
-        HeroAction a2 = fixedTurnStart(3000);
-        assertNotNull(a2, "FIXED: turn 2 must receive A2");
-        assertEquals(20, ((HeroAction.Move) a2).dst, "FIXED: turn 2 position must be 20");
+        // Turn 2: the buffered commit is delivered
+        HeroAction a2 = turnStart(2000);
+        assertNotNull(a2, "turn 2 must receive the buffered A2");
+        assertEquals(20, ((HeroAction.Move) a2).dst, "turn 2 position must be 20");
+        assertEquals(0, inboxSize(), "inbox drained — one commit per step");
     }
 }

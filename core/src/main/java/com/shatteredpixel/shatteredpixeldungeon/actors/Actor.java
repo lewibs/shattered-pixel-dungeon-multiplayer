@@ -145,8 +145,11 @@ public abstract class Actor implements Bundlable {
 	// *** Static members ***
 	// **********************
 	
-	private static HashSet<Actor> all = new HashSet<>();
-	private static HashSet<Char> chars = new HashSet<>();
+	//LinkedHashSets so iteration follows insertion order. With a plain HashSet the
+	//order depends on identity hashCodes, which differ per JVM run — in LAN lockstep
+	//play that made actor tie-breaking and id assignment diverge between devices.
+	private static HashSet<Actor> all = new java.util.LinkedHashSet<>();
+	private static HashSet<Char> chars = new java.util.LinkedHashSet<>();
 	private static volatile Actor current;
 
 	private static SparseArray<Actor> ids = new SparseArray<>();
@@ -265,8 +268,12 @@ public abstract class Actor implements Bundlable {
 					for (Actor actor : all) {
 
 						//some actors will always go before others if time is equal.
+						//ties on (time, priority) break on the lower id — a fully
+						//deterministic order is required for LAN lockstep play
 						if (actor.time < earliest ||
-								actor.time == earliest && (current == null || actor.actPriority > current.actPriority)) {
+								actor.time == earliest && (current == null
+										|| actor.actPriority > current.actPriority
+										|| (actor.actPriority == current.actPriority && actor.id() < current.id()))) {
 							earliest = actor.time;
 							current = actor;
 						}
@@ -334,6 +341,34 @@ public abstract class Actor implements Bundlable {
 		} while (keepActorThreadAlive);
 	}
 	
+	//test seams — synchronous single-step drivers that mirror process()'s selection
+	//exactly (including the deterministic id tie-break), so headless lockstep tests
+	//can run the real scheduler without the actor thread's wait/notify machinery
+	public static synchronized Actor testPeekNext() {
+		Actor sel = null;
+		float earliest = Float.MAX_VALUE;
+		for (Actor actor : all) {
+			if (actor.time < earliest ||
+					actor.time == earliest && (sel == null
+							|| actor.actPriority > sel.actPriority
+							|| (actor.actPriority == sel.actPriority && actor.id() < sel.id()))) {
+				earliest = actor.time;
+				sel = actor;
+			}
+		}
+		return sel;
+	}
+
+	public static Actor testActNext() {
+		Actor sel = testPeekNext();
+		if (sel == null) return null;
+		now = sel.time;
+		current = sel;
+		sel.act();
+		current = null;
+		return sel;
+	}
+
 	public static void add( Actor actor ) {
 		add( actor, now );
 	}
@@ -398,10 +433,11 @@ public abstract class Actor implements Bundlable {
 	}
 
 	public static synchronized HashSet<Actor> all() {
-		return new HashSet<>(all);
+		return new java.util.LinkedHashSet<>(all);
 	}
 
-	public static synchronized HashSet<Char> chars() { return new HashSet<>(chars); }
+	//iteration order must stay deterministic — callers mutate state while iterating
+	public static synchronized HashSet<Char> chars() { return new java.util.LinkedHashSet<>(chars); }
 
 	public float getTimeForTesting() { return time; }
 	public void  setTimeForTesting(float t) { time = t; }

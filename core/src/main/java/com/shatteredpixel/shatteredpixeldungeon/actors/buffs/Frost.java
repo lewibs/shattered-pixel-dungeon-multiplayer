@@ -77,7 +77,7 @@ public class Frost extends FlavourBuff {
 					} else if (toFreeze instanceof MysteryMeat){
 						FrozenCarpaccio carpaccio = new FrozenCarpaccio();
 						if (!carpaccio.collect( hero.belongings.backpack )) {
-							Dungeon.level.drop( carpaccio, target.pos ).sprite.drop();
+							Dungeon.level.dropAndShow( carpaccio, target.pos );
 						}
 					}
 				}

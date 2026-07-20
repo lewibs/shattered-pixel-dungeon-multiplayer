@@ -59,6 +59,8 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.hero.spells.GuidingLight;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.spells.Stasis;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.npcs.DirectableAlly;
 import com.shatteredpixel.shatteredpixeldungeon.effects.CellEmitter;
+import com.shatteredpixel.shatteredpixeldungeon.items.Heap;
+import com.watabou.noosa.particles.Emitter;
 import com.shatteredpixel.shatteredpixeldungeon.effects.FloatingText;
 import com.shatteredpixel.shatteredpixeldungeon.effects.Surprise;
 import com.shatteredpixel.shatteredpixeldungeon.effects.Wound;
@@ -95,6 +97,8 @@ import com.watabou.utils.Bundle;
 import com.watabou.utils.PathFinder;
 import com.watabou.utils.Random;
 import com.watabou.utils.Reflection;
+
+import com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -233,12 +237,14 @@ public abstract class Mob extends Char {
 		boolean justAlerted = alerted;
 		alerted = false;
 		
-		if (justAlerted){
-			sprite.showAlert();
-		} else {
-			sprite.hideAlert();
-			sprite.hideLost();
-			sprite.hideInvestigate();
+		if (sprite != null) {
+			if (justAlerted) {
+				sprite.showAlert();
+			} else {
+				sprite.hideAlert();
+				sprite.hideLost();
+				sprite.hideInvestigate();
+			}
 		}
 		
 		if (paralysed > 0) {
@@ -322,7 +328,7 @@ public abstract class Mob extends Char {
 		if ( enemy == null || !enemy.isAlive() || !Actor.chars().contains(enemy) || state == WANDERING) {
 			newEnemy = true;
 		//We are amoked and current enemy is the hero
-		} else if (buff( Amok.class ) != null && enemy == Dungeon.hero) {
+		} else if (buff( Amok.class ) != null && enemy instanceof Hero) {
 			newEnemy = true;
 		//We are charmed and current enemy is what charmed us
 		} else if (buff(Charm.class) != null && buff(Charm.class).object == enemy.id()) {
@@ -413,12 +419,25 @@ public abstract class Mob extends Char {
 			if (enemies.isEmpty()){
 				return null;
 			} else {
-				//go after the closest potential enemy, preferring enemies that can be reached/attacked, and the hero if two are equidistant
+				//go after the closest potential enemy, preferring enemies that can be reached/attacked.
+				// Sort by position for deterministic order across JVMs (HashSet iteration order is
+				// identity-hashCode-dependent and differs between devices in LAN multiplayer,
+				// causing different target selection → different RNG consumption → desync).
+				ArrayList<Char> sortedEnemies = new ArrayList<>(enemies);
+				sortedEnemies.sort((a, b) -> {
+					if (a.pos != b.pos) return Integer.compare(a.pos, b.pos);
+					// Heroes: lower index wins ties (consistent across all LAN devices)
+					if (a instanceof Hero && b instanceof Hero && Dungeon.heroes != null) {
+						return Integer.compare(Dungeon.heroes.indexOf(a), Dungeon.heroes.indexOf(b));
+					}
+					return Integer.compare(a.id(), b.id());
+				});
+
 				PathFinder.buildDistanceMap(pos, Dungeon.findPassable(this, Dungeon.level.passable, fieldOfView, true));
 				Char closest = null;
 				int closestDist = Integer.MAX_VALUE;
 
-				for (Char curr : enemies){
+				for (Char curr : sortedEnemies){
 					int currDist = Integer.MAX_VALUE;
 					//we aren't trying to move into the target, just toward them
 					for (int i : PathFinder.NEIGHBOURS8){
@@ -434,14 +453,14 @@ public abstract class Mob extends Char {
 					} else if ((canAttack(curr) && !canAttack(closest))
 							|| (currDist < closestDist)){
 						closest = curr;
-					} else if ( curr == Dungeon.hero &&
-							(currDist == closestDist) || (canAttack(curr) && canAttack(closest))){
-						closest = curr;
+					} else if (canAttack(curr) && canAttack(closest)){
+						// Both within attack range — keep the first (lower-pos) one from sorted order.
+						// Do NOT use Dungeon.hero as tiebreaker: that differs per device in LAN.
 					}
 				}
-				//if we were going to target the hero, but an afterimage exists, target that instead
-				if (closest == Dungeon.hero){
-					for (Char ch : enemies){
+				//if we were going to target a hero but an afterimage exists, target that instead
+				if (closest instanceof Hero){
+					for (Char ch : sortedEnemies){
 						if (ch instanceof Feint.AfterImage){
 							closest = ch;
 							break;
@@ -478,7 +497,7 @@ public abstract class Mob extends Char {
 			if (state == FLEEING && ((buff instanceof Terror && buff(Dread.class) == null)
 					|| (buff instanceof Dread && buff(Terror.class) == null))) {
 				if (enemySeen) {
-					sprite.showStatus(CharSprite.WARNING, Messages.get(this, "rage"));
+					if (sprite != null) sprite.showStatus(CharSprite.WARNING, Messages.get(this, "rage"));
 					state = HUNTING;
 				} else {
 					state = WANDERING;
@@ -662,9 +681,9 @@ public abstract class Mob extends Char {
 	@Override
 	public void updateSpriteState() {
 		super.updateSpriteState();
-		if (Dungeon.hero.buff(TimekeepersHourglass.timeFreeze.class) != null
-				|| Dungeon.hero.buff(Swiftthistle.TimeBubble.class) != null)
-			sprite.add( CharSprite.State.PARALYSED );
+		if (Dungeon.hero != null && (Dungeon.hero.buff(TimekeepersHourglass.timeFreeze.class) != null
+				|| Dungeon.hero.buff(Swiftthistle.TimeBubble.class) != null))
+			if (sprite != null) sprite.add( CharSprite.State.PARALYSED );
 	}
 	
 	public float attackDelay() {
@@ -697,7 +716,10 @@ public abstract class Mob extends Char {
 	
 	@Override
 	public int defenseSkill( Char enemy ) {
-		if (buff(GuidingLight.Illuminated.class) != null && Dungeon.hero.heroClass == HeroClass.CLERIC){
+		// Check if the attacker (not Dungeon.hero) is a cleric — Dungeon.hero differs per
+		// device in LAN mode and would cause desync if used here.
+		if (buff(GuidingLight.Illuminated.class) != null
+				&& enemy instanceof Hero && ((Hero)enemy).heroClass == HeroClass.CLERIC){
 			//if the attacker is the cleric, they must be using a weapon they have the str for
 			if (enemy instanceof Hero){
 				Hero h = (Hero) enemy;
@@ -712,7 +734,7 @@ public abstract class Mob extends Char {
 
 		if ( !surprisedBy(enemy)
 				&& paralysed == 0
-				&& !(alignment == Alignment.ALLY && enemy == Dungeon.hero)) {
+				&& !(alignment == Alignment.ALLY && enemy instanceof Hero)) {
 			return this.defenseSkill;
 		} else {
 			return 0;
@@ -733,8 +755,8 @@ public abstract class Mob extends Char {
 			Badges.validateRogueUnlock();
 			//TODO this is somewhat messy, it would be nicer to not have to manually handle delays here
 			// playing the strong hit sound might work best as another property of weapon?
-			if (Dungeon.hero.belongings.attackingWeapon() instanceof SpiritBow.SpiritArrow
-				|| Dungeon.hero.belongings.attackingWeapon() instanceof Dart){
+			if (enemy instanceof Hero && (((Hero)enemy).belongings.attackingWeapon() instanceof SpiritBow.SpiritArrow
+				|| ((Hero)enemy).belongings.attackingWeapon() instanceof Dart)){
 				Sample.INSTANCE.playDelayed(Assets.Sounds.HIT_STRONG, 0.125f);
 			} else {
 				Sample.INSTANCE.play(Assets.Sounds.HIT_STRONG);
@@ -759,18 +781,20 @@ public abstract class Mob extends Char {
 
 		if (buff(SoulMark.class) != null) {
 			int restoration = Math.min(damage, HP+shielding());
-			
-			//physical damage that doesn't come from the hero is less effective
-			if (enemy != Dungeon.hero){
-				restoration = Math.round(restoration * 0.4f*Dungeon.hero.pointsInTalent(Talent.SOUL_SIPHON)/3f);
+			// Deterministic hero reference — Dungeon.hero differs per device in LAN
+			Hero soulHero = Dungeon.referenceHero();
+
+			//physical damage that doesn't come from a hero is less effective
+			if (!(enemy instanceof Hero)){
+				restoration = Math.round(restoration * 0.4f*soulHero.pointsInTalent(Talent.SOUL_SIPHON)/3f);
 			}
 			if (restoration > 0) {
-				Buff.affect(Dungeon.hero, Hunger.class).affectHunger(restoration*Dungeon.hero.pointsInTalent(Talent.SOUL_EATER)/3f);
+				Buff.affect(soulHero, Hunger.class).affectHunger(restoration*soulHero.pointsInTalent(Talent.SOUL_EATER)/3f);
 
-				if (Dungeon.hero.HP < Dungeon.hero.HT) {
+				if (soulHero.HP < soulHero.HT) {
 					int heal = (int)Math.ceil(restoration * 0.4f);
-					Dungeon.hero.HP = Math.min(Dungeon.hero.HT, Dungeon.hero.HP + heal);
-					Dungeon.hero.sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(heal), FloatingText.HEALING);
+					soulHero.HP = Math.min(soulHero.HT, soulHero.HP + heal);
+					if (soulHero.sprite != null) soulHero.sprite.showStatusWithIcon(CharSprite.POSITIVE, Integer.toString(heal), FloatingText.HEALING);
 				}
 			}
 		}
@@ -788,7 +812,9 @@ public abstract class Mob extends Char {
 	}
 
 	public boolean surprisedBy( Char enemy, boolean attacking ){
-		return enemy == Dungeon.hero
+		// In LAN mode, any hero can surprise-attack, not just Dungeon.hero (which is the
+		// local player's hero and differs between devices — using it would cause desync).
+		return enemy instanceof Hero
 				&& (enemy.invisible > 0 || !enemySeen || (fieldOfView != null && fieldOfView.length == Dungeon.level.length() && (enemy.pos < 0 || !fieldOfView[enemy.pos])))
 				&& (!attacking || enemy.canSurpriseAttack());
 	}
@@ -823,16 +849,19 @@ public abstract class Mob extends Char {
 				state = WANDERING;
 			}
 			if (!(src instanceof Corruption) && state != FLEEING) {
+				// Deterministic reference hero for wand/spell aggro — Dungeon.hero
+				// differs per device in LAN
+				Hero aggroTarget = Dungeon.referenceHero();
 				if (state != HUNTING) {
 					alerted = true;
 					//assume the hero is hitting us in these common cases
 					if (src instanceof Wand || src instanceof ClericSpell || src instanceof ArmorAbility) {
-						aggro(Dungeon.hero);
-						target = Dungeon.hero.pos;
+						aggro(aggroTarget);
+						target = aggroTarget.pos;
 					}
 				} else {
 					if (src instanceof Wand || src instanceof ClericSpell || src instanceof ArmorAbility) {
-						recentlyAttackedBy.add(Dungeon.hero);
+						recentlyAttackedBy.add(aggroTarget);
 					}
 				}
 			}
@@ -849,7 +878,10 @@ public abstract class Mob extends Char {
 		
 		Dungeon.level.mobs.remove( this );
 
-		if (Dungeon.hero.buff(MindVision.class) != null){
+		boolean anyMindVision = Dungeon.heroes != null
+				? Dungeon.heroes.stream().anyMatch(h -> h.isAlive() && h.buff(MindVision.class) != null)
+				: Dungeon.hero != null && Dungeon.hero.buff(MindVision.class) != null;
+		if (anyMindVision){
 			Dungeon.observe();
 			GameScene.updateFog(pos, 2);
 		}
@@ -899,7 +931,9 @@ public abstract class Mob extends Char {
 		if (cause instanceof Hero) {
 			killerHero = (Hero) cause;
 		} else {
-			killerHero = Dungeon.hero;
+			// Non-hero kill (trap, environment, etc.): all devices must agree on
+			// which hero receives credit.
+			killerHero = Dungeon.referenceHero();
 		}
 
 		if (cause == Chasm.class){
@@ -931,7 +965,10 @@ public abstract class Mob extends Char {
 
 		}
 
-		if (Dungeon.hero.isAlive() && !Dungeon.level.heroFOV[pos]) {
+		boolean anyHeroAlive = Dungeon.heroes != null
+				? Dungeon.heroes.stream().anyMatch(h -> h.isAlive())
+				: Dungeon.hero != null && Dungeon.hero.isAlive();
+		if (anyHeroAlive && !Dungeon.level.heroFOV[pos]) {
 			GLog.i( Messages.get(this, "died") );
 		}
 
@@ -946,7 +983,8 @@ public abstract class Mob extends Char {
 			if (w != null) {
 				Buff.affect(w, Corruption.class);
 				if (Dungeon.level.heroFOV[pos]) {
-					CellEmitter.get(pos).burst(ShadowParticle.CURSE, 6);
+					Emitter wrCellEmitter = CellEmitter.get(pos);
+					if (wrCellEmitter != null) wrCellEmitter.burst(ShadowParticle.CURSE, 6);
 					Sample.INSTANCE.play(Assets.Sounds.CURSED);
 				}
 			}
@@ -954,7 +992,7 @@ public abstract class Mob extends Char {
 	}
 
 	public float lootChance(){
-		Hero h = killerHero != null ? killerHero : Dungeon.hero;
+		Hero h = killerHero != null ? killerHero : Dungeon.referenceHero();
 		float lootChance = this.lootChance;
 
 		float dropBonus = RingOfWealth.dropChanceMultiplier( h );
@@ -976,7 +1014,7 @@ public abstract class Mob extends Char {
 	}
 
 	public void rollToDropLoot(){
-		Hero h = killerHero != null ? killerHero : Dungeon.hero;
+		Hero h = killerHero != null ? killerHero : Dungeon.referenceHero();
 		if (h.lvl > maxLvl + 2) return;
 
 		MasterThievesArmband.StolenTracker stolen = buff(MasterThievesArmband.StolenTracker.class);
@@ -984,7 +1022,7 @@ public abstract class Mob extends Char {
 			if (Random.Float() < lootChance()) {
 				Item loot = createLoot();
 				if (loot != null) {
-					Dungeon.level.drop(loot, pos).sprite.drop();
+					Dungeon.level.dropAndShow(loot, pos);
 				}
 			}
 		}
@@ -996,15 +1034,17 @@ public abstract class Mob extends Char {
 			else if (properties.contains(Property.MINIBOSS)) rolls = 5;
 			ArrayList<Item> bonus = RingOfWealth.tryForBonusDrop(h, rolls);
 			if (bonus != null && !bonus.isEmpty()) {
-				for (Item b : bonus) Dungeon.level.drop(b, pos).sprite.drop();
-				RingOfWealth.showFlareForBonusDrop(sprite);
+				for (Item b : bonus) {
+					Dungeon.level.dropAndShow(b, pos);
+				}
+				if (sprite != null) RingOfWealth.showFlareForBonusDrop(sprite);
 			}
 		}
 
 		//lucky enchant logic
 		if (buff(Lucky.LuckProc.class) != null){
-			Dungeon.level.drop(buff(Lucky.LuckProc.class).genLoot(), pos).sprite.drop();
-			Lucky.showFlare(sprite);
+			Dungeon.level.dropAndShow(buff(Lucky.LuckProc.class).genLoot(), pos);
+			if (sprite != null) Lucky.showFlare(sprite);
 		}
 
 		//soul eater talent
@@ -1081,7 +1121,7 @@ public abstract class Mob extends Char {
 	}
 	
 	public void notice() {
-		sprite.showAlert();
+		if (sprite != null) sprite.showAlert();
 	}
 	
 	public void yell( String str ) {
@@ -1127,9 +1167,23 @@ public abstract class Mob extends Char {
 					if (ch.pos >= 0 && fieldOfView[ch.pos] && ch.invisible == 0 && ch.alignment != alignment && ch.alignment != Alignment.NEUTRAL){
 						float bestChance = detectionChance(ch);
 						//silent steps rogue talent, which also applies to rogue's shadow clone
-						if ((ch instanceof Hero || ch instanceof ShadowClone.ShadowAlly)
-								&& Dungeon.hero.hasTalent(Talent.SILENT_STEPS)){
-							if (distance(ch) >= 4 - Dungeon.hero.pointsInTalent(Talent.SILENT_STEPS)) {
+						// Use the actual hero's talent, not Dungeon.hero (which differs per device in LAN).
+						if (ch instanceof Hero && ((Hero)ch).hasTalent(Talent.SILENT_STEPS)){
+							if (distance(ch) >= 4 - ((Hero)ch).pointsInTalent(Talent.SILENT_STEPS)) {
+								bestChance = Float.POSITIVE_INFINITY;
+							}
+						} else if (ch instanceof ShadowClone.ShadowAlly){
+							//LAN: the clone has no owner reference — use the best Silent
+							//Steps among all heroes (deterministic; Dungeon.hero is not)
+							int silentSteps = 0;
+							if (Dungeon.heroes != null) {
+								for (Hero h : Dungeon.heroes) {
+									silentSteps = Math.max(silentSteps, h.pointsInTalent(Talent.SILENT_STEPS));
+								}
+							} else if (Dungeon.hero != null) {
+								silentSteps = Dungeon.hero.pointsInTalent(Talent.SILENT_STEPS);
+							}
+							if (silentSteps > 0 && distance(ch) >= 4 - silentSteps) {
 								bestChance = Float.POSITIVE_INFINITY;
 							}
 						}
@@ -1281,7 +1335,7 @@ public abstract class Mob extends Char {
 				if (enemyInFOV) {
 					target = enemy.pos;
 				} else if (enemy == null) {
-					sprite.showLost();
+					if (sprite != null) sprite.showLost();
 					state = WANDERING;
 					target = ((Mob.Wandering)WANDERING).randomDestination();
 					spend( TICK );
@@ -1338,7 +1392,7 @@ public abstract class Mob extends Char {
 
 			spend( TICK );
 			if (!enemyInFOV) {
-				sprite.showLost();
+				if (sprite != null) sprite.showLost();
 				state = WANDERING;
 				target = ((Mob.Wandering)WANDERING).randomDestination();
 			}
@@ -1359,7 +1413,7 @@ public abstract class Mob extends Char {
 			} else {
 				//we lose our target BEFORE reaching their last known position
 				if (Dungeon.level.distance(pos, target) <= 1){
-					sprite.showLost();
+					if (sprite != null) sprite.showLost();
 					state = WANDERING;
 					target = ((Mob.Wandering)WANDERING).randomDestination();
 					spend( TICK );
@@ -1416,7 +1470,7 @@ public abstract class Mob extends Char {
 		protected void nowhereToRun() {
 			if (buff( Terror.class ) == null && buff( Dread.class ) == null) {
 				if (enemySeen) {
-					sprite.showStatus(CharSprite.WARNING, Messages.get(Mob.class, "rage"));
+					if (sprite != null) sprite.showStatus(CharSprite.WARNING, Messages.get(Mob.class, "rage"));
 					state = HUNTING;
 				} else {
 					state = WANDERING;
@@ -1441,7 +1495,9 @@ public abstract class Mob extends Char {
 	private static ArrayList<Mob> heldAllies = new ArrayList<>();
 
 	public static void holdAllies( Level level ){
-		holdAllies(level, Dungeon.hero.pos);
+		//LAN: which allies follow through a transition must be decided from the
+		//same position on every device — Dungeon.hero.pos is per-device
+		holdAllies(level, Dungeon.referenceHero().pos);
 	}
 
 	public static void holdAllies( Level level, int holdFromPos ){

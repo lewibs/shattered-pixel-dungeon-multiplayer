@@ -554,11 +554,11 @@ public enum Talent {
 		if (talent == UNENCUMBERED_SPIRIT && hero.pointsInTalent(talent) == 3){
 			Item toGive = new ClothArmor().identify();
 			if (!toGive.collect()){
-				Dungeon.level.drop(toGive, hero.pos).sprite.drop();
+				Dungeon.level.dropAndShow(toGive, hero.pos);
 			}
 			toGive = new Gloves().identify();
 			if (!toGive.collect()){
-				Dungeon.level.drop(toGive, hero.pos).sprite.drop();
+				Dungeon.level.dropAndShow(toGive, hero.pos);
 			}
 		}
 
@@ -803,17 +803,19 @@ public enum Talent {
 			Buff.prolong(hero, EnhancedRings.class, 3f*hero.pointsInTalent(ENHANCED_RINGS));
 		}
 
-		if (Dungeon.hero.heroClass != HeroClass.CLERIC
-				&& Dungeon.hero.hasTalent(Talent.DIVINE_SENSE)){
-			Buff.prolong(Dungeon.hero, DivineSense.DivineSenseTracker.class, Dungeon.hero.cooldown()+1);
+		//LAN: key off the acting hero — Dungeon.hero is the device-local hero, and
+		//the CLEANSE branch draws sim RNG, so gating on it desyncs the RNG stream
+		if (hero.heroClass != HeroClass.CLERIC
+				&& hero.hasTalent(Talent.DIVINE_SENSE)){
+			Buff.prolong(hero, DivineSense.DivineSenseTracker.class, hero.cooldown()+1);
 		}
 
 		// 10/20/30%
-		if (Dungeon.hero.heroClass != HeroClass.CLERIC
-				&& Dungeon.hero.hasTalent(Talent.CLEANSE)
-				&& Random.Int(10) < Dungeon.hero.pointsInTalent(Talent.CLEANSE)){
+		if (hero.heroClass != HeroClass.CLERIC
+				&& hero.hasTalent(Talent.CLEANSE)
+				&& Random.Int(10) < hero.pointsInTalent(Talent.CLEANSE)){
 			boolean removed = false;
-			for (Buff b : Dungeon.hero.buffs()) {
+			for (Buff b : hero.buffs()) {
 				if (b.type == Buff.buffType.NEGATIVE
 						&& !(b instanceof LostInventory)) {
 					b.detach();

@@ -951,6 +951,9 @@ public class GameScene extends PixelScene {
 					@Override
 					public void run() {
 						try {
+							// LAN lockstep: the actor thread runs the simulation and must
+							// draw from the shared deterministic generator, never the base
+							Random.registerSimThread();
 							Actor.process();
 						} catch (Throwable t) {
 							// Actor thread crash — report with full stack trace so it
@@ -1464,6 +1467,15 @@ public class GameScene extends PixelScene {
 	}
 	
 	public static void show( Window wnd ) {
+		// LAN: a choice dialog raised by a REMOTE hero's synced action must not
+		// appear on this device — park it and let the owner's OPTION_CHOICE
+		// packet resolve it (mirrors selectItem/selectCell parking above)
+		if (NetworkManager.lanMode && NetworkManager.remoteItemExecution
+				&& wnd instanceof com.shatteredpixel.shatteredpixeldungeon.windows.LanChoiceWindow) {
+			NetworkManager.parkRemoteOptionHandler(
+					((com.shatteredpixel.shatteredpixeldungeon.windows.LanChoiceWindow) wnd)::selectLanChoice);
+			return;
+		}
 		if (scene != null) {
 			cancel();
 
@@ -1666,6 +1678,15 @@ public class GameScene extends PixelScene {
 	}
 	
 	public static void selectCell( CellSelector.Listener listener ) {
+		// LAN: see selectItem — same treatment for mid-action cell prompts
+		if (NetworkManager.lanMode) {
+			if (NetworkManager.remoteItemExecution) {
+				NetworkManager.parkRemoteCellListener(listener);
+				return;
+			} else if (NetworkManager.localItemExecution) {
+				listener = NetworkManager.wrapCellListenerForLan(listener);
+			}
+		}
 		if (cellSelector == null) return;
 		if (cellSelector.listener != null && cellSelector.listener != defaultCellListener){
 			cellSelector.listener.onSelect(null);
@@ -1688,6 +1709,18 @@ public class GameScene extends PixelScene {
 	}
 	
 	public static WndBag selectItem( WndBag.ItemSelector listener ) {
+		// LAN: prompts raised while executing a queued item action are part of the
+		// synced simulation. On remote devices, park the listener until the owner's
+		// ITEM_CHOICE packet resolves it; on the owning device, wrap it so the
+		// resolved choice is broadcast.
+		if (NetworkManager.lanMode) {
+			if (NetworkManager.remoteItemExecution) {
+				NetworkManager.parkRemoteItemSelector(listener);
+				return null;
+			} else if (NetworkManager.localItemExecution) {
+				listener = NetworkManager.wrapItemSelectorForLan(listener);
+			}
+		}
 		cancel();
 
 		if (scene != null) {
@@ -1743,6 +1776,7 @@ public class GameScene extends PixelScene {
 	}
 
 	public static boolean cancel() {
+		if (cellSelector == null) return false;
 		cellSelector.resetKeyHold();
 		if (Dungeon.hero != null && (Dungeon.hero.curAction != null || Dungeon.hero.resting)) {
 			

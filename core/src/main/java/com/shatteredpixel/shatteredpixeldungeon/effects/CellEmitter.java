@@ -28,43 +28,57 @@ import com.watabou.utils.PointF;
 
 public class CellEmitter {
 
+	//headless contexts (tests, actor thread before scene init) have no GameScene
+	//emitter — hand out a shared emitter that silently discards every emission so
+	//the many `CellEmitter.get(cell).burst(...)` call sites need no null checks
+	private static final Emitter NO_OP = new Emitter() {
+		@Override
+		public void start( Factory factory, float interval, int quantity ) {
+			//no-op: never emits, never added to a scene
+		}
+	};
+
 	public static Emitter floor( int cell ) {
 
-		PointF p = DungeonTilemap.tileToWorld( cell );
-
 		Emitter emitter = GameScene.floorEmitter();
+		if (emitter == null) return NO_OP;
+
+		PointF p = DungeonTilemap.tileToWorld( cell );
 		emitter.pos( p.x, p.y, DungeonTilemap.SIZE, DungeonTilemap.SIZE );
 
 		return emitter;
 	}
 
 	public static Emitter get( int cell ) {
-		
-		PointF p = DungeonTilemap.tileToWorld( cell );
-		
+
 		Emitter emitter = GameScene.emitter();
+		if (emitter == null) return NO_OP;
+
+		PointF p = DungeonTilemap.tileToWorld( cell );
 		emitter.pos( p.x, p.y, DungeonTilemap.SIZE, DungeonTilemap.SIZE );
-		
+
 		return emitter;
 	}
-	
+
 	public static Emitter center( int cell ) {
-		
-		PointF p = DungeonTilemap.tileToWorld( cell );
-		
+
 		Emitter emitter = GameScene.emitter();
+		if (emitter == null) return NO_OP;
+
+		PointF p = DungeonTilemap.tileToWorld( cell );
 		emitter.pos( p.x + DungeonTilemap.SIZE / 2, p.y + DungeonTilemap.SIZE / 2 );
-		
+
 		return emitter;
 	}
-	
+
 	public static Emitter bottom( int cell ) {
-		
-		PointF p = DungeonTilemap.tileToWorld( cell );
-		
+
 		Emitter emitter = GameScene.emitter();
+		if (emitter == null) return NO_OP;
+
+		PointF p = DungeonTilemap.tileToWorld( cell );
 		emitter.pos( p.x, p.y + DungeonTilemap.SIZE, DungeonTilemap.SIZE, 0 );
-		
+
 		return emitter;
 	}
 }

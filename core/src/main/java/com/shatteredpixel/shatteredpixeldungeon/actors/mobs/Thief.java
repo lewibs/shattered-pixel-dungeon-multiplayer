@@ -98,7 +98,7 @@ public class Thief extends Mob {
 	@Override
 	public void rollToDropLoot() {
 		if (item != null) {
-			Dungeon.level.drop( item, pos ).sprite.drop();
+			Dungeon.level.dropAndShow( item, pos );
 			//updates position
 			if (item instanceof Honeypot.ShatteredPot) ((Honeypot.ShatteredPot)item).dropPot( this, pos );
 			item = null;
@@ -137,7 +137,7 @@ public class Thief extends Mob {
 	@Override
 	public int defenseProc(Char enemy, int damage) {
 		if (state == FLEEING) {
-			Dungeon.level.drop( new Gold(), pos ).sprite.drop();
+			Dungeon.level.dropAndShow( new Gold(), pos );
 		}
 
 		return super.defenseProc(enemy, damage);
@@ -197,9 +197,11 @@ public class Thief extends Mob {
 	private class Fleeing extends Mob.Fleeing {
 		@Override
 		protected void escaped() {
+			//LAN: nearest-hero distance, not the device-local hero's — this gates
+			//an RNG loop, so a per-device answer desyncs the whole RNG stream
 			if (item != null
 					&& !Dungeon.level.heroFOV[pos]
-					&& Dungeon.level.distance(Dungeon.hero.pos, pos) >= 6) {
+					&& Dungeon.distanceToNearestHero(pos) >= 6) {
 
 				int count = 32;
 				int newPos;
@@ -213,8 +215,10 @@ public class Thief extends Mob {
 				if (newPos != -1) {
 
 					pos = newPos;
-					sprite.place( pos );
-					sprite.visible = Dungeon.level.heroFOV[pos];
+					if (sprite != null) {
+						sprite.place( pos );
+						sprite.visible = Dungeon.level.heroFOV[pos];
+					}
 					if (Dungeon.level.heroFOV[pos]) CellEmitter.get(pos).burst(Speck.factory(Speck.WOOL), 6);
 
 				}

@@ -32,6 +32,7 @@ import com.shatteredpixel.shatteredpixeldungeon.effects.FloatingText;
 import com.shatteredpixel.shatteredpixeldungeon.items.Generator;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.CharSprite;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.RotLasherSprite;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.watabou.utils.Random;
 
 public class RotLasher extends Mob {
@@ -75,7 +76,7 @@ public class RotLasher extends Mob {
 
 	@Override
 	public boolean attack(Char enemy, float dmgMulti, float dmgBonus, float accMulti) {
-		if (enemy == Dungeon.hero){
+		if (enemy instanceof Hero){
 			Statistics.questScores[1] -= 100;
 		}
 		return super.attack(enemy, dmgMulti, dmgBonus, accMulti);

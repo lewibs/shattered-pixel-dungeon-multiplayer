@@ -494,6 +494,17 @@ public class SpiritBow extends Weapon {
 		@Override
 		public void onSelect( Integer target ) {
 			if (target != null) {
+				// LAN: shots must execute on the actor thread and be broadcast —
+				// route through the action queue with the chosen cell. Remote
+				// devices must not cast here: the owner's USE_ITEM_AT broadcast is
+				// the single execution (see Item.thrower).
+				if (com.shatteredpixel.shatteredpixeldungeon.network.NetworkManager.lanMode) {
+					if (!curUser.isRemoteLanHero()) {
+						curUser.queueUseItemAt(SpiritBow.this,
+								com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroAction.UseItemAt.VERB_SHOOT, target);
+					}
+					return;
+				}
 				knockArrow().cast(curUser, target);
 			}
 		}
@@ -502,4 +513,11 @@ public class SpiritBow extends Weapon {
 			return Messages.get(SpiritBow.class, "prompt");
 		}
 	};
+
+	/** LAN: executes a queued shot — identical on the owning and remote devices. */
+	public void performShot(com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero user, int target) {
+		curUser = user;
+		curItem = this;
+		knockArrow().cast(user, target);
+	}
 }
